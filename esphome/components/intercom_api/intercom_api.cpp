@@ -8,6 +8,7 @@
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 
 namespace esphome {
 namespace intercom_api {
@@ -60,12 +61,13 @@ void IntercomApi::setup() {
 #endif
 
   // Create server task (Core 1) - handles TCP connections and receiving
+  // Highest priority (7) - RX must never starve, data must flow immediately
   BaseType_t ok = xTaskCreatePinnedToCore(
       IntercomApi::server_task,
       "intercom_srv",
       4096,
       this,
-      5,
+      7,  // Highest priority - RX must win always
       &this->server_task_handle_,
       1  // Core 1
   );
@@ -77,6 +79,7 @@ void IntercomApi::setup() {
   }
 
   // Create TX task (Core 0) - handles mic capture and sending
+  // High priority (6) for low latency mic→network
   ok = xTaskCreatePinnedToCore(
       IntercomApi::tx_task,
       "intercom_tx",
@@ -93,15 +96,16 @@ void IntercomApi::setup() {
     return;
   }
 
-  // Create speaker task (Core 1) - handles playback alongside server
+  // Create speaker task (Core 0) - handles playback
+  // Lower priority (4) - if speaker blocks, it shouldn't starve TX
   ok = xTaskCreatePinnedToCore(
       IntercomApi::speaker_task,
       "intercom_spk",
       8192,  // Larger stack for audio buffer
       this,
-      5,  // Medium priority
+      4,  // Lower priority than TX
       &this->speaker_task_handle_,
-      1  // Core 1 - same as server, RX direction
+      0  // Core 0 - same as TX, keeps Core 1 free for RX
   );
 
   if (ok != pdPASS) {
@@ -136,34 +140,12 @@ void IntercomApi::start() {
   }
 
   ESP_LOGI(TAG, "Starting intercom");
-  this->active_.store(true, std::memory_order_release);
+  this->set_active_(true);
 
-  // Start microphone
-#ifdef USE_MICROPHONE
-  if (this->microphone_ != nullptr) {
-    this->microphone_->start();
-  }
-#endif
-
-  // Start speaker
-#ifdef USE_SPEAKER
-  if (this->speaker_ != nullptr) {
-    this->speaker_->start();
-  }
-#endif
-
-  // Notify tasks
-  if (this->server_task_handle_) {
-    xTaskNotifyGive(this->server_task_handle_);
-  }
-  if (this->tx_task_handle_) {
-    xTaskNotifyGive(this->tx_task_handle_);
-  }
-  if (this->speaker_task_handle_) {
-    xTaskNotifyGive(this->speaker_task_handle_);
-  }
-
-  this->start_trigger_.trigger();
+  // Notify tasks to wake up
+  if (this->server_task_handle_) xTaskNotifyGive(this->server_task_handle_);
+  if (this->tx_task_handle_) xTaskNotifyGive(this->tx_task_handle_);
+  if (this->speaker_task_handle_) xTaskNotifyGive(this->speaker_task_handle_);
 }
 
 void IntercomApi::stop() {
@@ -172,35 +154,17 @@ void IntercomApi::stop() {
   }
 
   ESP_LOGI(TAG, "Stopping intercom");
-  this->active_.store(false, std::memory_order_release);
 
-  // Give audio task time to notice and exit its loops gracefully
-  // This prevents "Audio TX failed" spam during shutdown
+  // Give tasks time to notice active=false before closing socket
+  this->set_active_(false);
   vTaskDelay(pdMS_TO_TICKS(20));
 
-  // Close client connection
+  // Close client connection and reset buffers
   this->close_client_socket_();
-
-  // Clear buffers
   if (this->mic_buffer_) this->mic_buffer_->reset();
   if (this->speaker_buffer_) this->speaker_buffer_->reset();
 
-  // Stop microphone
-#ifdef USE_MICROPHONE
-  if (this->microphone_ != nullptr) {
-    this->microphone_->stop();
-  }
-#endif
-
-  // Stop speaker
-#ifdef USE_SPEAKER
-  if (this->speaker_ != nullptr) {
-    this->speaker_->stop();
-  }
-#endif
-
   this->state_ = ConnectionState::DISCONNECTED;
-  this->stop_trigger_.trigger();
 }
 
 void IntercomApi::set_volume(float volume) {
@@ -234,6 +198,31 @@ const char *IntercomApi::get_state_str() const {
   }
 }
 
+// === State Helpers ===
+
+void IntercomApi::set_active_(bool on) {
+  bool was = this->active_.exchange(on, std::memory_order_acq_rel);
+  if (was == on) return;  // No change
+
+#ifdef USE_MICROPHONE
+  if (this->microphone_) {
+    on ? this->microphone_->start() : this->microphone_->stop();
+  }
+#endif
+#ifdef USE_SPEAKER
+  if (this->speaker_) {
+    on ? this->speaker_->start() : this->speaker_->stop();
+  }
+#endif
+
+  on ? this->start_trigger_.trigger() : this->stop_trigger_.trigger();
+}
+
+void IntercomApi::set_streaming_(bool on) {
+  this->client_.streaming.store(on, std::memory_order_release);
+  this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
+}
+
 // === Server Task ===
 
 void IntercomApi::server_task(void *param) {
@@ -253,7 +242,7 @@ void IntercomApi::server_task_() {
   while (true) {
     // When streaming, don't wait - poll as fast as possible
     // When idle, wait up to 100ms to save CPU
-    if (this->client_.streaming) {
+    if (this->client_.streaming.load()) {
       // During streaming: just check notification without blocking
       ulTaskNotifyTake(pdTRUE, 0);  // Non-blocking
     } else {
@@ -267,7 +256,7 @@ void IntercomApi::server_task_() {
         vTaskDelay(pdMS_TO_TICKS(100));
         continue;
       }
-      if (this->client_.socket < 0) {
+      if (this->client_.socket.load() < 0) {
         this->state_ = ConnectionState::CONNECTING;
 
         // Create socket
@@ -324,8 +313,8 @@ void IntercomApi::server_task_() {
         ESP_LOGI(TAG, "Connected to %s:%d", this->remote_host_.c_str(), this->remote_port_);
 
         xSemaphoreTake(this->client_mutex_, portMAX_DELAY);
-        this->client_.socket = sock;
-        this->client_.streaming = false;
+        this->client_.socket.store(sock);
+        this->client_.streaming.store(false);
         this->client_.last_ping = millis();
         xSemaphoreGive(this->client_mutex_);
 
@@ -345,45 +334,41 @@ void IntercomApi::server_task_() {
       }
 
       // Accept new connection if none
-      if (this->client_.socket < 0) {
+      if (this->client_.socket.load() < 0) {
         this->accept_client_();
       }
     }
 
     // Handle existing client
-    if (this->client_.socket >= 0) {
+    if (this->client_.socket.load() >= 0) {
+      // Monitor TCP backlog during streaming (helps debug latency issues)
+      if (this->client_.streaming.load()) {
+        int pending = 0;
+        if (ioctl(this->client_.socket.load(), FIONREAD, &pending) == 0 && pending > 4096) {
+          static uint32_t backlog_warn_count = 0;
+          backlog_warn_count++;
+          if (backlog_warn_count <= 5 || backlog_warn_count % 100 == 0) {
+            ESP_LOGW(TAG, "TCP backlog: %d bytes (RX falling behind)", pending);
+          }
+        }
+      }
+
       // Check for incoming data
       fd_set read_fds;
       FD_ZERO(&read_fds);
-      FD_SET(this->client_.socket, &read_fds);
+      FD_SET(this->client_.socket.load(), &read_fds);
       struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};  // 10ms
 
-      int ret = select(this->client_.socket + 1, &read_fds, nullptr, nullptr, &tv);
-      if (ret > 0 && FD_ISSET(this->client_.socket, &read_fds)) {
+      int ret = select(this->client_.socket.load() + 1, &read_fds, nullptr, nullptr, &tv);
+      if (ret > 0 && FD_ISSET(this->client_.socket.load(), &read_fds)) {
         MessageHeader header;
-        if (this->receive_message_(this->client_.socket, header, this->rx_buffer_, MAX_MESSAGE_SIZE)) {
+        if (this->receive_message_(this->client_.socket.load(), header, this->rx_buffer_, MAX_MESSAGE_SIZE)) {
           this->handle_message_(header, this->rx_buffer_ + HEADER_SIZE);
         } else {
           // Connection closed or error
           ESP_LOGI(TAG, "Client disconnected");
           this->close_client_socket_();
-
-          // Stop audio components when client disconnects
-          if (this->active_.load(std::memory_order_acquire)) {
-            this->active_.store(false, std::memory_order_release);
-#ifdef USE_MICROPHONE
-            if (this->microphone_ != nullptr) {
-              this->microphone_->stop();
-            }
-#endif
-#ifdef USE_SPEAKER
-            if (this->speaker_ != nullptr) {
-              this->speaker_->stop();
-            }
-#endif
-            this->stop_trigger_.trigger();
-          }
-
+          this->set_active_(false);
           this->state_ = ConnectionState::DISCONNECTED;
           this->disconnect_trigger_.trigger();
         }
@@ -392,7 +377,7 @@ void IntercomApi::server_task_() {
       // Send ping if needed - but NOT during streaming to avoid interference with audio
       if (this->state_ != ConnectionState::STREAMING &&
           millis() - this->client_.last_ping > PING_INTERVAL_MS) {
-        this->send_message_(this->client_.socket, MessageType::PING);
+        this->send_message_(this->client_.socket.load(), MessageType::PING);
         this->client_.last_ping = millis();
       }
     }
@@ -417,8 +402,8 @@ void IntercomApi::tx_task_() {
   while (true) {
     // Wait until active and connected
     if (!this->active_.load(std::memory_order_acquire) ||
-        this->client_.socket < 0 ||
-        !this->client_.streaming) {
+        this->client_.socket.load() < 0 ||
+        !this->client_.streaming.load()) {
       if (tx_count > 0) {
         ESP_LOGI(TAG, "TX task paused (sent %lu)", (unsigned long)tx_count);
         tx_count = 0;
@@ -449,12 +434,12 @@ void IntercomApi::tx_task_() {
     }
 
     // Check still active before sending
-    if (!this->active_.load(std::memory_order_acquire) || this->client_.socket < 0) {
+    if (!this->active_.load(std::memory_order_acquire) || this->client_.socket.load() < 0) {
       continue;
     }
 
     // Send directly using dedicated audio_tx_buffer_ (no mutex needed)
-    int socket = this->client_.socket;
+    int socket = this->client_.socket.load();
     if (socket >= 0) {
       MessageHeader header;
       header.type = static_cast<uint8_t>(MessageType::AUDIO);
@@ -543,8 +528,9 @@ void IntercomApi::speaker_task_() {
       // Time the play() call
       uint32_t start_ms = millis();
 
-      // Play entire batch at once - use short timeout to avoid blocking
-      this->speaker_->play(audio_chunk, read, pdMS_TO_TICKS(20));
+      // Play with zero timeout - drop audio if speaker buffer is full
+      // This prevents latency accumulation; better to drop than delay
+      this->speaker_->play(audio_chunk, read, 0);
 
       uint32_t elapsed_ms = millis() - start_ms;
       total_play_time_ms += elapsed_ms;
@@ -641,67 +627,69 @@ bool IntercomApi::send_message_(int socket, MessageType type, MessageFlags flags
 }
 
 bool IntercomApi::receive_message_(int socket, MessageHeader &header, uint8_t *buffer, size_t buffer_size) {
-  // Read header with retry for partial reads (non-blocking socket)
-  // Use 500 retries (500ms max) to handle TCP congestion under high bidirectional load
+  // Read header - handle partial reads (non-blocking socket)
   size_t header_read = 0;
   int retry = 0;
-  while (header_read < HEADER_SIZE && retry < 500) {
+  const int MAX_RETRY = 50;  // 50ms max wait for complete message
+
+  while (header_read < HEADER_SIZE && retry < MAX_RETRY) {
     ssize_t received = recv(socket, buffer + header_read, HEADER_SIZE - header_read, 0);
-    if (received < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // No data available yet, wait a bit
-        retry++;
-        vTaskDelay(pdMS_TO_TICKS(1));
-        continue;
-      }
-      // Real error
-      return false;
+    if (received > 0) {
+      header_read += received;
+      retry = 0;  // Reset on progress
+      continue;
     }
     if (received == 0) {
-      // Connection closed
-      return false;
+      return false;  // Connection closed
     }
-    header_read += received;
-    retry = 0;  // Reset retry on successful read
+    // received < 0
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      retry++;
+      vTaskDelay(pdMS_TO_TICKS(1));
+      continue;
+    }
+    return false;  // Real error
   }
 
   if (header_read != HEADER_SIZE) {
-    ESP_LOGW(TAG, "Header incomplete: got %zu of %d after %d retries", header_read, HEADER_SIZE, retry);
+    if (header_read > 0) {
+      ESP_LOGW(TAG, "Header incomplete: %zu/%d", header_read, HEADER_SIZE);
+    }
     return false;
   }
 
   memcpy(&header, buffer, HEADER_SIZE);
 
-  // Validate length
   if (header.length > buffer_size - HEADER_SIZE) {
     ESP_LOGW(TAG, "Message too large: %d", header.length);
     return false;
   }
 
-  // Read payload with retry for partial reads
+  // Read payload
   if (header.length > 0) {
     size_t payload_read = 0;
     retry = 0;
-    while (payload_read < header.length && retry < 500) {
+    while (payload_read < header.length && retry < MAX_RETRY) {
       ssize_t received = recv(socket, buffer + HEADER_SIZE + payload_read,
                               header.length - payload_read, 0);
-      if (received < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          retry++;
-          vTaskDelay(pdMS_TO_TICKS(1));
-          continue;
-        }
-        return false;
+      if (received > 0) {
+        payload_read += received;
+        retry = 0;
+        continue;
       }
       if (received == 0) {
         return false;
       }
-      payload_read += received;
-      retry = 0;
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        retry++;
+        vTaskDelay(pdMS_TO_TICKS(1));
+        continue;
+      }
+      return false;
     }
 
     if (payload_read != header.length) {
-      ESP_LOGW(TAG, "Payload incomplete: got %zu of %d after %d retries", payload_read, header.length, retry);
+      ESP_LOGW(TAG, "Payload incomplete: %zu/%d", payload_read, header.length);
       return false;
     }
   }
@@ -714,10 +702,18 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
 
   switch (type) {
     case MessageType::AUDIO:
-      // Write to speaker buffer
+      // Write to speaker buffer with overflow tracking
       if (xSemaphoreTake(this->speaker_mutex_, pdMS_TO_TICKS(1)) == pdTRUE) {
-        this->speaker_buffer_->write((void *)data, header.length);
+        size_t written = this->speaker_buffer_->write((void *)data, header.length);
         xSemaphoreGive(this->speaker_mutex_);
+        if (written != header.length) {
+          static uint32_t spk_drop = 0;
+          spk_drop++;
+          if (spk_drop <= 5 || spk_drop % 100 == 0) {
+            ESP_LOGW(TAG, "SPK buffer overflow: %zu/%d (drops=%lu)",
+                     written, header.length, (unsigned long)spk_drop);
+          }
+        }
       }
       if (this->state_ != ConnectionState::STREAMING) {
         this->state_ = ConnectionState::STREAMING;
@@ -726,57 +722,26 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
 
     case MessageType::START:
       ESP_LOGI(TAG, "Received START from client");
-      // Start microphone/speaker if not already active
-      if (!this->active_.load(std::memory_order_acquire)) {
-        this->active_.store(true, std::memory_order_release);
-#ifdef USE_MICROPHONE
-        if (this->microphone_ != nullptr) {
-          this->microphone_->start();
-        }
-#endif
-#ifdef USE_SPEAKER
-        if (this->speaker_ != nullptr) {
-          this->speaker_->start();
-        }
-#endif
-        this->start_trigger_.trigger();
-      }
-      this->client_.streaming = true;
-      this->state_ = ConnectionState::STREAMING;
-      // Send PONG as ACK
-      this->send_message_(this->client_.socket, MessageType::PONG);
+      this->set_active_(true);
+      this->set_streaming_(true);
+      this->send_message_(this->client_.socket.load(), MessageType::PONG);
       break;
 
     case MessageType::STOP:
       ESP_LOGI(TAG, "Received STOP from client");
-      this->client_.streaming = false;
-      // Stop microphone/speaker
-      if (this->active_.load(std::memory_order_acquire)) {
-        this->active_.store(false, std::memory_order_release);
-#ifdef USE_MICROPHONE
-        if (this->microphone_ != nullptr) {
-          this->microphone_->stop();
-        }
-#endif
-#ifdef USE_SPEAKER
-        if (this->speaker_ != nullptr) {
-          this->speaker_->stop();
-        }
-#endif
-        this->stop_trigger_.trigger();
-      }
-      this->state_ = ConnectionState::CONNECTED;
+      this->set_streaming_(false);
+      this->set_active_(false);
       break;
 
     case MessageType::PING:
-      this->send_message_(this->client_.socket, MessageType::PONG);
+      this->send_message_(this->client_.socket.load(), MessageType::PONG);
       break;
 
     case MessageType::PONG:
       this->client_.last_ping = millis();
       if (this->client_mode_ && this->state_ == ConnectionState::CONNECTED) {
         // ACK for START - begin streaming
-        this->client_.streaming = true;
+        this->client_.streaming.store(true);
         this->state_ = ConnectionState::STREAMING;
       }
       break;
@@ -843,14 +808,14 @@ void IntercomApi::close_server_socket_() {
 
 void IntercomApi::close_client_socket_() {
   xSemaphoreTake(this->client_mutex_, portMAX_DELAY);
-  if (this->client_.socket >= 0) {
+  if (this->client_.socket.load() >= 0) {
     // Send STOP if streaming
-    if (this->client_.streaming) {
-      this->send_message_(this->client_.socket, MessageType::STOP);
+    if (this->client_.streaming.load()) {
+      this->send_message_(this->client_.socket.load(), MessageType::STOP);
     }
-    close(this->client_.socket);
-    this->client_.socket = -1;
-    this->client_.streaming = false;
+    close(this->client_.socket.load());
+    this->client_.socket.store(-1);
+    this->client_.streaming.store(false);
   }
   xSemaphoreGive(this->client_mutex_);
 }
@@ -868,7 +833,7 @@ void IntercomApi::accept_client_() {
   }
 
   // Check if already have a client
-  if (this->client_.socket >= 0) {
+  if (this->client_.socket.load() >= 0) {
     ESP_LOGW(TAG, "Rejecting connection - already have client");
     // Send ERROR
     MessageHeader header;
@@ -893,7 +858,7 @@ void IntercomApi::accept_client_() {
   setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
   setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 
-  // Set non-blocking
+  // Set non-blocking for async operation
   int flags = fcntl(client_sock, F_GETFL, 0);
   fcntl(client_sock, F_SETFL, flags | O_NONBLOCK);
 
@@ -902,10 +867,10 @@ void IntercomApi::accept_client_() {
   ESP_LOGI(TAG, "Client connected from %s", ip_str);
 
   xSemaphoreTake(this->client_mutex_, portMAX_DELAY);
-  this->client_.socket = client_sock;
+  this->client_.socket.store(client_sock);
   this->client_.addr = client_addr;
   this->client_.last_ping = millis();
-  this->client_.streaming = false;
+  this->client_.streaming.store(false);
   xSemaphoreGive(this->client_mutex_);
 
   this->state_ = ConnectionState::CONNECTED;
@@ -929,7 +894,7 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
     return;
   }
 
-  if (this->client_.socket < 0) {
+  if (this->client_.socket.load() < 0) {
     drop_socket++;
     if (drop_socket <= 5 || drop_socket % 100 == 0) {
       ESP_LOGW(TAG, "Mic DROP: socket closed (total=%lu)", (unsigned long)drop_socket);
@@ -937,11 +902,11 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
     return;
   }
 
-  if (!this->client_.streaming) {
+  if (!this->client_.streaming.load()) {
     drop_streaming++;
     if (drop_streaming <= 5 || drop_streaming % 100 == 0) {
       ESP_LOGW(TAG, "Mic DROP: not streaming (total=%lu, socket=%d)",
-               (unsigned long)drop_streaming, this->client_.socket);
+               (unsigned long)drop_streaming, this->client_.socket.load());
     }
     return;
   }

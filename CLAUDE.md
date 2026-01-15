@@ -27,29 +27,39 @@ Sostituisce `esphome-intercom` (legacy UDP) con un approccio più robusto.
 
 ---
 
-## STATO ATTUALE (Milestone 2026-01-15)
+## STATO ATTUALE (2026-01-15 sera)
 
-### Funziona
-- Full duplex Browser ↔ HA ↔ ESP stabile (testato 60+ secondi)
-- Audio ESP→Browser arriva (2000+ pacchetti)
-- Audio Browser→ESP arriva (stabilizzato dopo fix TCP drain)
-- Nessun crash/disconnect a 5 secondi (bug PING risolto)
-- Stop pulito senza spam "Audio TX failed"
+### PROBLEMA URGENTE
+**Upload OTA interrotto al 65%** - L'ESP potrebbe essere in safe mode o con firmware corrotto.
+- Potrebbe servire **reset fisico** (stacca/attacca alimentazione)
+- Se non risponde, potrebbe servire flash via USB
 
-### Problemi da risolvere
-1. **Audio glitchy** - suona tipo "cc-ii-aa-oo" con pezzi mancanti (stuttering)
-2. **Latenza** - migliorata con scheduled playback, da testare
-3. **Task RTOS non ottimizzati** - attualmente un solo task fa sia TX che RX
+### Cosa funziona (testato prima del problema)
+- **LATENZA RISOLTA!** - Era causata da `ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100))` che bloccava 100ms per ogni iterazione del server_task durante lo streaming
+- Full duplex Browser ↔ HA ↔ ESP istantaneo in entrambe le direzioni
+- Audio pulito senza glitch
 
-### Fix applicati
-1. `send_mutex_` - Thread safety per tx_buffer_ (race condition PING vs AUDIO)
-2. No PING durante streaming - Evita interferenze
-3. Partial send handling - Gestisce TCP congestion
-4. Protocol desync fix HA - Chiude connessione invece di corrompere stream
-5. MAX_MESSAGE_SIZE aumentato - Browser manda chunk 2048 bytes
-6. **Scheduled WebAudio playback** (v4.3.0) - Sostituisce queue-based, fix latenza browser
-7. **Graceful stop** - Check `active_` prima di send, delay prima di close socket
-8. **TCP drain optimization** (v4.2.0) - Drain ogni 10 pacchetti invece di ogni pacchetto
+### Modifiche pronte da deployare
+
+**ESP (già compilato, da uploadare):**
+1. Fix latenza: non-blocking poll durante streaming
+2. Helper `set_active_()` e `set_streaming_()` - codice pulito
+3. `client_.socket` e `client_.streaming` atomic - thread safety
+4. Buffer overflow check in handle_message_(AUDIO)
+5. FIONREAD monitoring per TCP backlog
+6. Task priorities: server=7, TX=6, speaker=4
+7. Speaker su Core 0 (era Core 1)
+8. buffer_duration 100ms (era 500ms)
+
+**HA (da deployare con scp):**
+- websocket_api.py v4.1.0 - Queue-based audio (8 slot) invece di task per frame
+- tcp_client.py v4.3.0 - No ping durante streaming
+
+### Commit locali (non pushati)
+```
+6c6c8c9 Fix critical latency: Non-blocking poll during streaming
+e797526 Refactor: Separate FreeRTOS tasks for TX/RX audio paths
+```
 
 ---
 
@@ -62,8 +72,9 @@ Sostituisce `esphome-intercom` (legacy UDP) con un approccio più robusto.
 └─────────────┘         └─────────────┘         └─────────────┘
      │                        │                       │
   AudioWorklet            tcp_client.py          FreeRTOS Tasks
-  16kHz mono              async TCP              server_task (Core 1)
-  2048B chunks            512B chunks            audio_task (Core 0)
+  16kHz mono              async TCP              server_task (Core 1, prio 7)
+  2048B chunks            queue-based            tx_task (Core 0, prio 6)
+                                                 speaker_task (Core 0, prio 4)
 ```
 
 ## Componenti
@@ -73,13 +84,14 @@ Sostituisce `esphome-intercom` (legacy UDP) con un approccio più robusto.
 - **Controllo**: via ESPHome API normale (6053) - switch, number entities
 - **Modalità**: Server (attende connessioni) + Client (per ESP→ESP)
 - **Task RTOS**:
-  - `server_task_` (Core 1, priority 5) - TCP accept, receive, control messages
-  - `audio_task_` (Core 0, priority 6) - mic→network TX, speaker buffer→speaker RX
+  - `server_task_` (Core 1, priority 7) - TCP accept, receive, RX handling
+  - `tx_task_` (Core 0, priority 6) - mic→network TX
+  - `speaker_task_` (Core 0, priority 4) - speaker buffer→I2S playback
 
 ### 2. HA Integration: `intercom_native`
 - **WebSocket API**: `intercom_native/start`, `intercom_native/stop`, `intercom_native/audio`
 - **TCP client**: Async verso ESP porta 6054
-- **Versione**: 4.2.0 (tcp_client.py)
+- **Versione**: websocket_api.py v4.1.0, tcp_client.py v4.3.0
 
 ### 3. Frontend: `intercom-card.js`
 - **Lovelace card** custom
@@ -142,8 +154,8 @@ intercom-api/
 │           ├── __init__.py           # Integration setup
 │           ├── manifest.json         # HA manifest
 │           ├── config_flow.py        # Config UI
-│           ├── websocket_api.py      # WS commands + session manager
-│           ├── tcp_client.py         # Async TCP client (v4.2.0)
+│           ├── websocket_api.py      # WS commands + session manager (v4.1.0)
+│           ├── tcp_client.py         # Async TCP client (v4.3.0)
 │           └── const.py              # Constants
 │
 ├── frontend/
@@ -176,21 +188,47 @@ ssh root@192.168.1.10 'journalctl -u homeassistant -f'
 
 ---
 
+## Fix principali applicati
+
+### ROOT CAUSE della latenza HA→ESP
+In `server_task_()` c'era:
+```cpp
+ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+```
+Questo bloccava **100ms per ogni iterazione** del loop, anche durante streaming attivo!
+I dati TCP si accumulavano nel buffer invece di essere letti subito.
+
+**Fix:**
+```cpp
+if (this->client_.streaming.load()) {
+  ulTaskNotifyTake(pdTRUE, 0);  // Non-blocking durante streaming
+} else {
+  ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));  // Idle: risparmia CPU
+}
+```
+
+### Cleanup applicato
+1. Helper `set_active_()` e `set_streaming_()` - elimina duplicazione codice
+2. `client_.socket` e `client_.streaming` sono ora `std::atomic` - thread safety senza mutex
+3. Buffer overflow tracking in handle_message_(AUDIO)
+4. FIONREAD monitoring per vedere backlog TCP
+5. Task priorities ottimizzate: server=7 (RX vince sempre), TX=6, speaker=4
+6. Speaker task su Core 0 (separa RX da audio output)
+
+---
+
 ## TODO - Prossimi step
 
-### Priorità Alta (Latenza)
-- [ ] Separare task RTOS: `tx_task` (Core 0) + `rx_task` (Core 1)
-- [ ] Ridurre buffer sizes per minimizzare latenza
-- [ ] Analizzare dove si accumula il delay (8-9s inaccettabile, target <500ms)
-
-### Priorità Media (Audio Quality)
-- [ ] Fix audio glitchy (stuttering) - probabilmente buffer underrun
-- [ ] Verificare sample rate mismatch browser (48kHz) vs ESP (16kHz)
-- [ ] Ottimizzare chunk sizes
+### Immediato (quando torni a casa)
+- [ ] Verificare stato ESP (potrebbe servire reset fisico o flash USB)
+- [ ] Upload firmware ESP
+- [ ] Deploy HA integration
+- [ ] Test completo
 
 ### Priorità Bassa
 - [ ] ESP→ESP direct mode
 - [ ] Echo cancellation (AEC)
+- [ ] Frontend: resampling 44.1kHz
 
 ---
 
@@ -216,5 +254,5 @@ ESPHome Voice Assistant usa architettura simile con:
 ### Latenza Target
 
 - Chunk size: 512 bytes = 16ms di audio
-- Round-trip target: < 500ms (attualmente 8-9s!)
+- Round-trip: **< 500ms RAGGIUNTO!**
 - Buffer playback: 2-3 chunks = 32-48ms

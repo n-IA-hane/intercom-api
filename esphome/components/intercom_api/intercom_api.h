@@ -38,12 +38,12 @@ enum class ConnectionState : uint8_t {
   STREAMING,
 };
 
-// Client info
+// Client info - socket and streaming are atomic for thread safety
 struct ClientInfo {
-  int socket{-1};
+  std::atomic<int> socket{-1};
   struct sockaddr_in addr{};
   uint32_t last_ping{0};
-  bool streaming{false};
+  std::atomic<bool> streaming{false};
 };
 
 class IntercomApi : public Component {
@@ -115,6 +115,10 @@ class IntercomApi : public Component {
 
   // Microphone callback
   void on_microphone_data_(const uint8_t *data, size_t len);
+
+  // State helpers - consolidate duplicated start/stop logic
+  void set_active_(bool on);
+  void set_streaming_(bool on);
 
   // Components
 #ifdef USE_MICROPHONE

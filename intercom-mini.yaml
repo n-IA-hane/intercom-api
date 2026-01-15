@@ -132,7 +132,7 @@ speaker:
     sample_rate: 16000
     bits_per_sample: 16bit
     timeout: never
-    buffer_duration: 500ms  # Larger buffer to prevent blocking
+    buffer_duration: 100ms  # ~6 chunks buffer - low latency without underrun
 
 # ==============================================================================
 # INTERCOM API (TCP-based, port 6054)
@@ -157,13 +157,6 @@ switch:
 # VOLUME CONTROL
 # ==============================================================================
 number:
-  # Intercom volume (via intercom_api component)
-  - platform: intercom_api
-    id: intercom_volume
-    name: "Intercom Volume"
-    icon: "mdi:volume-high"
-
-  # Speaker volume (software volume)
   - platform: template
     id: speaker_volume
     name: "Speaker Volume"

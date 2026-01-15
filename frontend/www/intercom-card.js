@@ -1,9 +1,8 @@
 /**
  * Intercom Card - Lovelace custom card for intercom_native integration
- * VERSION: 4.3.0 - Scheduled playback for low latency (no queue accumulation)
  */
 
-const INTERCOM_CARD_VERSION = "4.3.0";
+const INTERCOM_CARD_VERSION = "1.0.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -33,7 +32,6 @@ class IntercomCard extends HTMLElement {
     this._chunksSent = 0;
     this._chunksReceived = 0;
 
-    console.log(`[IntercomCard] v${INTERCOM_CARD_VERSION} loaded`);
   }
 
   setConfig(config) {
@@ -195,11 +193,10 @@ class IntercomCard extends HTMLElement {
   }
 
   _log(msg) {
-    console.log("[Intercom]", msg);
     const el = this.shadowRoot?.getElementById("dbg");
     if (el) {
       const time = new Date().toLocaleTimeString();
-      el.innerHTML = `[${time}] ${msg}<br>` + el.innerHTML.split("<br>").slice(0, 15).join("<br>");
+      el.innerHTML = `[${time}] ${msg}<br>` + el.innerHTML.split("<br>").slice(0, 10).join("<br>");
     }
   }
 
@@ -225,25 +222,21 @@ class IntercomCard extends HTMLElement {
   async _start() {
     this._starting = true;
     this._render();
-    this._log("Starting...");
     this._showError("");
     this._chunksSent = 0;
     this._chunksReceived = 0;
 
     try {
-      // 1. Microphone
-      this._log("Getting microphone...");
+      // Microphone
       this._mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
-      this._log("Mic OK: " + this._mediaStream.getAudioTracks()[0].label);
 
-      // 2. Audio context - force 16kHz if possible
+      // Audio context
       this._audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       if (this._audioContext.state === "suspended") await this._audioContext.resume();
-      this._log(`AudioContext: ${this._audioContext.sampleRate}Hz (requested 16000)`);
 
-      // 3. Worklet
+      // Worklet
       await this._audioContext.audioWorklet.addModule(`/local/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
       this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
       this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
@@ -255,16 +248,14 @@ class IntercomCard extends HTMLElement {
       };
 
       this._source.connect(this._workletNode);
-      this._log("Audio pipeline ready");
 
-      // 4. Playback context
+      // Playback context
       this._playbackContext = new (window.AudioContext || window.webkitAudioContext)();
       this._gainNode = this._playbackContext.createGain();
       this._gainNode.gain.value = this._volume / 100;
       this._gainNode.connect(this._playbackContext.destination);
 
-      // 5. Start HA session
-      this._log("Starting HA session...");
+      // Start HA session
       const result = await this._hass.connection.sendMessagePromise({
         type: "intercom_native/start",
         device_id: this.config.device_id,
@@ -272,9 +263,8 @@ class IntercomCard extends HTMLElement {
       });
 
       if (!result.success) throw new Error("Start failed");
-      this._log("Session started");
 
-      // 6. Subscribe to ESP audio events
+      // Subscribe to ESP audio events
       this._unsubscribe = await this._hass.connection.subscribeEvents(
         (e) => this._handleAudioEvent(e),
         "intercom_audio"
@@ -283,12 +273,10 @@ class IntercomCard extends HTMLElement {
       this._active = true;
       this._starting = false;
       this._render();
-      this._log("=== STREAMING ===");
+      this._log("Connected");
 
     } catch (err) {
-      console.error("[Intercom] Start error:", err);
       this._showError(err.message || String(err));
-      this._log("ERROR: " + err.message);
       await this._cleanup();
       this._starting = false;
       this._render();
@@ -298,7 +286,6 @@ class IntercomCard extends HTMLElement {
   async _stop() {
     this._stopping = true;
     this._render();
-    this._log("Stopping...");
 
     try {
       await this._hass.connection.sendMessagePromise({
@@ -306,14 +293,14 @@ class IntercomCard extends HTMLElement {
         device_id: this.config.device_id,
       });
     } catch (err) {
-      this._log("Stop error: " + err.message);
+      // Ignore stop errors
     }
 
     await this._cleanup();
     this._active = false;
     this._stopping = false;
     this._render();
-    this._log("=== STOPPED ===");
+    this._log("Disconnected");
   }
 
   async _cleanup() {
@@ -375,35 +362,12 @@ class IntercomCard extends HTMLElement {
 
   // Handle audio from ESP
   _handleAudioEvent(event) {
-    // Log first few events for debugging
-    if (this._chunksReceived < 5) {
-      console.log("[Intercom] Event received:", event);
-      console.log("[Intercom] event.data:", event.data);
-      console.log("[Intercom] config.device_id:", this.config.device_id);
-    }
-
-    if (!event.data) {
-      if (this._chunksReceived < 5) this._log("Event has no data");
-      return;
-    }
-    if (event.data.device_id !== this.config.device_id) {
-      if (this._chunksReceived < 5) this._log(`Device mismatch: ${event.data.device_id} vs ${this.config.device_id}`);
-      return;
-    }
-    if (!this._active) {
-      if (this._chunksReceived < 5) this._log("Not active, ignoring");
-      return;
-    }
-    if (!this._playbackContext) {
-      if (this._chunksReceived < 5) this._log("No playback context");
-      return;
-    }
+    if (!event.data || event.data.device_id !== this.config.device_id) return;
+    if (!this._active || !this._playbackContext) return;
 
     this._chunksReceived++;
-    if (this._chunksReceived <= 5 || this._chunksReceived % 100 === 0) {
+    if (this._chunksReceived % 50 === 0) {
       this._updateStats();
-      const latency = this._nextPlayTime - this._playbackContext.currentTime;
-      this._log(`Recv #${this._chunksReceived}: latency=${(latency*1000).toFixed(0)}ms dropped=${this._chunksDropped}`);
     }
 
     try {
@@ -441,15 +405,11 @@ class IntercomCard extends HTMLElement {
         this._nextPlayTime = now + 0.01; // Small buffer
       }
 
-      // If latency is too high (>200ms), drop this chunk to catch up
+      // If latency is too high (>200ms), drop and reset
       const latency = this._nextPlayTime - now;
       if (latency > 0.2) {
         this._chunksDropped++;
-        // Reset to catch up
-        if (this._chunksDropped % 50 === 1) {
-          this._log(`High latency ${(latency*1000).toFixed(0)}ms, resetting`);
-          this._nextPlayTime = now + 0.02;
-        }
+        this._nextPlayTime = now + 0.02;
         return;
       }
 

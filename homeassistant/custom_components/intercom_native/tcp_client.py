@@ -1,5 +1,4 @@
 """Async TCP client for Intercom Native protocol."""
-# VERSION: 4.2.0 - Reduce drain() calls for better throughput
 
 MAX_PAYLOAD_SIZE = 2048
 DRAIN_INTERVAL = 10  # Drain every N packets instead of every packet
@@ -159,30 +158,21 @@ class IntercomTcpClient:
 
     async def send_audio(self, data: bytes) -> bool:
         """Send audio data - drain periodically to avoid blocking."""
-        if not self._connected or not self._streaming:
+        if not self._connected or not self._streaming or not self._writer:
             return False
 
         self._audio_sent += 1
-        if self._audio_sent <= 5 or self._audio_sent % 100 == 0:
-            _LOGGER.debug("[TCP#%d] send_audio #%d: %d bytes",
-                         self._instance_id, self._audio_sent, len(data))
-
-        if not self._writer:
-            return False
 
         try:
             header = struct.pack("<BBH", MSG_AUDIO, FLAG_NONE, len(data))
             self._writer.write(header + data)
 
-            # Only drain periodically to avoid blocking on every packet
-            # This allows TCP to batch data more efficiently
+            # Drain periodically to avoid blocking on every packet
             if self._audio_sent % DRAIN_INTERVAL == 0:
                 try:
                     await asyncio.wait_for(self._writer.drain(), timeout=0.1)
                 except asyncio.TimeoutError:
-                    # TCP congestion - log but continue writing
-                    if self._audio_sent % 100 == 0:
-                        _LOGGER.warning("[TCP#%d] Drain slow at #%d", self._instance_id, self._audio_sent)
+                    pass  # TCP congestion - continue anyway
             return True
         except Exception as err:
             _LOGGER.error("[TCP#%d] Audio send error: %s", self._instance_id, err)
@@ -239,9 +229,6 @@ class IntercomTcpClient:
     async def _handle_message(self, msg_type: int, flags: int, payload: bytes) -> None:
         if msg_type == MSG_AUDIO:
             self._audio_recv += 1
-            if self._audio_recv <= 5 or self._audio_recv % 100 == 0:
-                _LOGGER.debug("[TCP#%d] Audio recv #%d: %d bytes",
-                             self._instance_id, self._audio_recv, len(payload))
             if self._on_audio:
                 self._on_audio(payload)
 
@@ -263,7 +250,9 @@ class IntercomTcpClient:
         try:
             while self._connected:
                 await asyncio.sleep(PING_INTERVAL)
-                if self._connected:
+                # Don't ping during streaming - TCP already detects dead connections
+                # and ping could interfere with audio flow
+                if self._connected and not self._streaming:
                     await self._send_message(MSG_PING)
         except asyncio.CancelledError:
             pass
