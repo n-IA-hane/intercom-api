@@ -43,6 +43,17 @@ class IntercomCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    // Update volume from ESP entity state
+    if (this.config.volume_entity && hass.states[this.config.volume_entity]) {
+      const vol = parseInt(hass.states[this.config.volume_entity].state);
+      if (!isNaN(vol) && vol !== this._volume) {
+        this._volume = vol;
+        const el = this.shadowRoot?.getElementById("vol");
+        const valEl = this.shadowRoot?.getElementById("volVal");
+        if (el) el.value = vol;
+        if (valEl) valEl.textContent = vol;
+      }
+    }
   }
 
   _render() {
@@ -174,8 +185,8 @@ class IntercomCard extends HTMLElement {
         </div>
         <div class="stats" id="stats">Sent: 0 | Recv: 0</div>
         <div class="volume-control">
-          <label>Volume: <span id="volVal">${this._volume}</span>%</label>
-          <input type="range" id="vol" min="0" max="100" value="${this._volume}">
+          <label>ESP Volume: <span id="volVal">${this._volume}</span>%</label>
+          <input type="range" id="vol" min="0" max="100" step="5" value="${this._volume}">
         </div>
         <div class="error" id="err"></div>
         <div class="debug" id="dbg"></div>
@@ -186,8 +197,12 @@ class IntercomCard extends HTMLElement {
     this.shadowRoot.getElementById("vol").oninput = (e) => {
       this._volume = parseInt(e.target.value);
       this.shadowRoot.getElementById("volVal").textContent = this._volume;
-      if (this._gainNode) {
-        this._gainNode.gain.value = this._volume / 100;
+      // Set ESP speaker volume
+      if (this.config.volume_entity && this._hass) {
+        this._hass.callService("number", "set_value", {
+          entity_id: this.config.volume_entity,
+          value: this._volume
+        });
       }
     };
   }
@@ -249,10 +264,10 @@ class IntercomCard extends HTMLElement {
 
       this._source.connect(this._workletNode);
 
-      // Playback context
+      // Playback context (volume controlled on ESP, not here)
       this._playbackContext = new (window.AudioContext || window.webkitAudioContext)();
       this._gainNode = this._playbackContext.createGain();
-      this._gainNode.gain.value = this._volume / 100;
+      this._gainNode.gain.value = 1.0;
       this._gainNode.connect(this._playbackContext.destination);
 
       // Start HA session
@@ -425,7 +440,7 @@ class IntercomCard extends HTMLElement {
 
   getCardSize() { return 3; }
   static getStubConfig() {
-    return { device_id: "", host: "", name: "Intercom" };
+    return { device_id: "", host: "", name: "Intercom", volume_entity: "" };
   }
 }
 
