@@ -24,9 +24,9 @@ CONFIG_SCHEMA = number.number_schema(
 ).extend(
     {
         cv.GenerateID(CONF_INTERCOM_API_ID): cv.use_id(IntercomApi),
-        cv.Optional(CONF_MIN_VALUE, default=0): cv.float_,
-        cv.Optional(CONF_MAX_VALUE, default=200): cv.float_,
-        cv.Optional(CONF_STEP, default=5): cv.float_,
+        cv.Optional(CONF_MIN_VALUE, default=-20): cv.float_,
+        cv.Optional(CONF_MAX_VALUE, default=20): cv.float_,
+        cv.Optional(CONF_STEP, default=1): cv.float_,
         cv.Optional(CONF_MODE, default="SLIDER"): cv.enum(
             number.NUMBER_MODES, upper=True
         ),

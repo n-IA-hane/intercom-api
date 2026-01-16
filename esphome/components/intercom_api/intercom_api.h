@@ -74,8 +74,8 @@ class IntercomApi : public Component {
   void set_volume(float volume);
   float get_volume() const { return this->volume_; }
 
-  // Mic gain control
-  void set_mic_gain(float gain);
+  // Mic gain control (dB scale: -20 to +20)
+  void set_mic_gain_db(float db);
   float get_mic_gain() const { return this->mic_gain_; }
 
   // Client mode (for ESP→ESP)
@@ -204,11 +204,11 @@ class IntercomApiVolume : public number::Number, public Parented<IntercomApi> {
   }
 };
 
-// Number for mic gain control
+// Number for mic gain control (dB scale)
 class IntercomApiMicGain : public number::Number, public Parented<IntercomApi> {
  public:
   void control(float value) override {
-    this->parent_->set_mic_gain(value / 100.0f);
+    this->parent_->set_mic_gain_db(value);
     this->publish_state(value);
   }
 };

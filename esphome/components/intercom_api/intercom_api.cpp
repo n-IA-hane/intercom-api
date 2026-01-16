@@ -176,10 +176,12 @@ void IntercomApi::set_volume(float volume) {
 #endif
 }
 
-void IntercomApi::set_mic_gain(float gain) {
-  // Allow 0x to 2x gain (0% to 200%)
-  this->mic_gain_ = std::max(0.0f, std::min(2.0f, gain));
-  ESP_LOGD(TAG, "Mic gain set to %.2f", this->mic_gain_);
+void IntercomApi::set_mic_gain_db(float db) {
+  // Convert dB to linear gain: gain = 10^(dB/20)
+  // Range: -20dB (0.1x) to +20dB (10x)
+  db = std::max(-20.0f, std::min(20.0f, db));
+  this->mic_gain_ = powf(10.0f, db / 20.0f);
+  ESP_LOGD(TAG, "Mic gain set to %.1f dB (%.2fx)", db, this->mic_gain_);
 }
 
 void IntercomApi::connect_to(const std::string &host, uint16_t port) {
