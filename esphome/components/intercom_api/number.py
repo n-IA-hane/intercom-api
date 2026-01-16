@@ -8,7 +8,6 @@ from esphome.const import (
     CONF_STEP,
     CONF_MODE,
     CONF_ICON,
-    ENTITY_CATEGORY_CONFIG,
 )
 
 from . import intercom_api_ns, IntercomApi, CONF_INTERCOM_API_ID
@@ -22,7 +21,6 @@ IntercomApiVolume = intercom_api_ns.class_(
 CONFIG_SCHEMA = number.number_schema(
     IntercomApiVolume,
     icon="mdi:volume-high",
-    entity_category=ENTITY_CATEGORY_CONFIG,
 ).extend(
     {
         cv.GenerateID(CONF_INTERCOM_API_ID): cv.use_id(IntercomApi),
