@@ -17,6 +17,8 @@ from .const import (
     MSG_PING,
     MSG_PONG,
     MSG_ERROR,
+    MSG_RING,
+    MSG_ANSWER,
     FLAG_NONE,
     CONNECT_TIMEOUT,
     PING_INTERVAL,
@@ -37,6 +39,8 @@ class IntercomTcpClient:
         on_audio: Optional[Callable[[bytes], None]] = None,
         on_connected: Optional[Callable[[], None]] = None,
         on_disconnected: Optional[Callable[[], None]] = None,
+        on_ringing: Optional[Callable[[], None]] = None,
+        on_answered: Optional[Callable[[], None]] = None,
     ):
         IntercomTcpClient._instance_counter += 1
         self._instance_id = IntercomTcpClient._instance_counter
@@ -46,11 +50,14 @@ class IntercomTcpClient:
         self._on_audio = on_audio
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_ringing = on_ringing
+        self._on_answered = on_answered
 
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
         self._streaming = False
+        self._ringing = False  # ESP has auto_answer OFF, waiting for local answer
         self._receive_task: Optional[asyncio.Task] = None
         self._ping_task: Optional[asyncio.Task] = None
 
@@ -94,6 +101,7 @@ class IntercomTcpClient:
 
         self._connected = False
         self._streaming = False
+        self._ringing = False
 
         if self._receive_task:
             self._receive_task.cancel()
@@ -127,18 +135,48 @@ class IntercomTcpClient:
         _LOGGER.info("[TCP#%d] Disconnected (sent=%d recv=%d)",
                      self._instance_id, self._audio_sent, self._audio_recv)
 
-    async def start_stream(self) -> bool:
+    async def start_stream(self) -> str:
+        """Start streaming.
+
+        Returns:
+            "streaming" - ESP accepted, streaming started
+            "ringing" - ESP has auto_answer OFF, waiting for local answer
+            "error" - Connection or send failed
+        """
         _LOGGER.info("[TCP#%d] start_stream()", self._instance_id)
 
         if not self._connected:
             if not await self.connect():
-                return False
+                return "error"
 
-        if await self._send_message(MSG_START):
-            self._streaming = True
-            _LOGGER.info("[TCP#%d] Stream started", self._instance_id)
-            return True
-        return False
+        if not await self._send_message(MSG_START):
+            return "error"
+
+        # Wait briefly for ESP response (PONG=accept, RING=waiting)
+        # The actual state is set in _handle_message
+        for _ in range(50):  # 500ms max wait
+            await asyncio.sleep(0.01)
+            if self._streaming:
+                _LOGGER.info("[TCP#%d] Stream started (auto_answer ON)", self._instance_id)
+                return "streaming"
+            if self._ringing:
+                _LOGGER.info("[TCP#%d] ESP ringing (auto_answer OFF)", self._instance_id)
+                return "ringing"
+
+        # Timeout - assume old ESP that doesn't send response, treat as streaming
+        self._streaming = True
+        _LOGGER.warning("[TCP#%d] No response, assuming stream started", self._instance_id)
+        return "streaming"
+
+    @property
+    def is_ringing(self) -> bool:
+        """Return True if ESP is ringing (auto_answer OFF)."""
+        return self._ringing
+
+    @property
+    def is_streaming(self) -> bool:
+        """Return True if actively streaming."""
+        return self._streaming
 
     async def stop_stream(self) -> None:
         _LOGGER.info("[TCP#%d] stop_stream()", self._instance_id)
@@ -233,11 +271,28 @@ class IntercomTcpClient:
                 self._on_audio(payload)
 
         elif msg_type == MSG_PONG:
-            _LOGGER.debug("[TCP#%d] PONG", self._instance_id)
+            _LOGGER.debug("[TCP#%d] PONG - stream accepted", self._instance_id)
+            # PONG after START means ESP accepted (auto_answer ON)
+            if not self._streaming and not self._ringing:
+                self._streaming = True
+
+        elif msg_type == MSG_RING:
+            _LOGGER.info("[TCP#%d] RING - ESP waiting for local answer", self._instance_id)
+            self._ringing = True
+            if self._on_ringing:
+                self._on_ringing()
+
+        elif msg_type == MSG_ANSWER:
+            _LOGGER.info("[TCP#%d] ANSWER - ESP accepted, starting stream", self._instance_id)
+            self._ringing = False
+            self._streaming = True
+            if self._on_answered:
+                self._on_answered()
 
         elif msg_type == MSG_STOP:
             _LOGGER.info("[TCP#%d] STOP from ESP", self._instance_id)
             self._streaming = False
+            self._ringing = False
 
         elif msg_type == MSG_PING:
             _LOGGER.debug("[TCP#%d] PING -> PONG", self._instance_id)

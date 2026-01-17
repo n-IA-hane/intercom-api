@@ -155,6 +155,9 @@ intercom_api:
   mic_bits: 32              # SPH0645 is 32-bit I2S mic
   dc_offset_removal: true   # Required for SPH0645 (has DC bias)
   aec_id: aec_processor     # Link to AEC component
+  broker:                   # Optional: enables ESP↔ESP calls via HA
+    host: "192.168.1.10"
+    port: 6060
 
 # ==============================================================================
 # VOLUME & GAIN CONTROL
@@ -206,6 +209,17 @@ switch:
     turn_off_action:
       - lambda: 'id(intercom).set_aec_enabled(false);'
 
+  - platform: template
+    id: auto_answer_switch
+    name: "Auto Answer"
+    icon: "mdi:phone-incoming"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: 'id(intercom).set_auto_answer(true);'
+    turn_off_action:
+      - lambda: 'id(intercom).set_auto_answer(false);'
+
 # ==============================================================================
 # STATUS LED (WS2812 RGB on GPIO21)
 # ==============================================================================
@@ -223,17 +237,60 @@ light:
           name: "Streaming"
           min_brightness: 20%
           max_brightness: 100%
+      - strobe:
+          name: "Ringing"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 250ms
+            - state: false
+              duration: 250ms
 
 # ==============================================================================
 # TEXT SENSORS (status)
 # ==============================================================================
 text_sensor:
-  - platform: template
+  - platform: intercom_api
     id: intercom_state
     name: "Intercom State"
-    icon: "mdi:phone-settings"
-    lambda: 'return std::string(id(intercom).get_state_str());'
-    update_interval: 1s
+    intercom_api_id: intercom
+    on_value:
+      then:
+        - if:
+            condition:
+              text_sensor.state:
+                id: intercom_state
+                state: "Ringing"
+            then:
+              - light.turn_on:
+                  id: status_led
+                  effect: "Ringing"
+                  red: 100%
+                  green: 0%
+                  blue: 0%
+        - if:
+            condition:
+              text_sensor.state:
+                id: intercom_state
+                state: "Streaming"
+            then:
+              - light.turn_on:
+                  id: status_led
+                  effect: "None"
+                  red: 0%
+                  green: 100%
+                  blue: 0%
+        - if:
+            condition:
+              text_sensor.state:
+                id: intercom_state
+                state: "Idle"
+            then:
+              - light.turn_off:
+                  id: status_led
 
 # ==============================================================================
 # DIAGNOSTICS

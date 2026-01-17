@@ -18,7 +18,7 @@
 ## Overview
 
 Sistema intercom bidirezionale full-duplex che usa TCP invece di UDP/WebRTC.
-**Versione: 1.0.1** - Stabile e funzionante con controllo mic gain.
+**Versione: 1.1.0** - AEC (Echo Cancellation) funzionante.
 
 ## Repository
 
@@ -187,13 +187,69 @@ if (this->client_.streaming.load()) {
 
 ## TODO - Prossime Feature
 
-Vedi `PLAN-ESP-PHONE-SYSTEM.md` per il piano completo.
+Vedi `PLAN-BROKER.md` per il piano completo del broker.
 
-- [ ] **Fase 1**: Echo Cancellation (esp_aec)
-- [ ] **Fase 2**: ESP↔ESP con HA broker
-- [ ] **Fase 3**: HA Automations per signaling
-- [ ] **Fase 4**: Lista contatti dinamica
-- [ ] **Fase 5**: Card unificata
+- [x] **Fase 1**: Echo Cancellation (esp_aec) ✅ v1.1.0
+- [x] **Fase 2A**: HA Broker Server ✅ v1.2.0-wip
+- [x] **Fase 2B**: ESP Broker Client ✅ v1.2.0-wip
+- [ ] **Fase 3**: Card refactor (device picker, dropdown contatti)
+
+## Fase 2: HA Broker (IMPLEMENTATO)
+
+**Architettura:** ESP si connette a HA (outbound), HA fa da relay audio.
+- Funziona attraverso NAT/firewall (ESP fa solo connessioni uscenti)
+- Broker opzionale: senza config broker = sistema attuale (1 ESP)
+- Con broker: supporto multi-ESP, ESP remoti, chiamate ESP↔ESP
+
+**Protocollo Broker (porta 6060):**
+```
+Header: 12 bytes (type, flags, length, call_id, seq)
+Messaggi: REGISTER, INVITE, RING, ANSWER, DECLINE, HANGUP, BYE, AUDIO, CONTACTS, ERROR
+```
+
+**File implementati:**
+- `homeassistant/custom_components/intercom_native/broker.py` - HA Broker Server
+- `homeassistant/custom_components/intercom_native/const.py` - Broker constants
+- `esphome/components/intercom_api/intercom_protocol.h` - Broker protocol
+- `esphome/components/intercom_api/intercom_api.cpp` - Broker client task
+- `esphome/components/intercom_api/__init__.py` - Broker YAML config
+
+**Config YAML:**
+```yaml
+intercom_api:
+  id: intercom
+  microphone: mic_component
+  speaker: spk_component
+  broker:              # Opzionale - senza questa sezione funziona come prima
+    host: "192.168.1.10"
+    port: 6060
+    device_name: "Intercom Cucina"  # Opzionale, usa nome ESPHome se omesso
+```
+
+**API ESP (broker mode):**
+```cpp
+// Chiamare un altro ESP
+id(intercom).broker_call("intercom-mini-2");
+
+// Rispondere a chiamata in arrivo
+id(intercom).broker_answer();
+
+// Rifiutare chiamata
+id(intercom).broker_decline();
+
+// Terminare chiamata
+id(intercom).broker_hangup();
+
+// Stato chiamata
+id(intercom).get_call_state_str();  // "Idle", "Calling", "Ringing", "In Call"
+
+// Lista contatti
+size_t n = id(intercom).get_contact_count();
+const char* name = id(intercom).get_contact_name(0);
+bool busy = id(intercom).is_contact_busy(0);
+```
+
+**Drop policy:** Queue 10 frame (~160ms), drop oldest se piena.
 
 ## TODO - Priorità Bassa
 

@@ -19,6 +19,8 @@ enum class MessageType : uint8_t {
   PING = 0x04,    // Keep-alive ping
   PONG = 0x05,    // Keep-alive response
   ERROR = 0x06,   // Error response
+  RING = 0x07,    // ESP→HA: auto_answer OFF, waiting for local answer
+  ANSWER = 0x08,  // ESP→HA: call answered locally, start stream
 };
 
 // Message flags
@@ -64,6 +66,70 @@ static constexpr size_t SOCKET_BUFFER_SIZE = 4096;
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;
 static constexpr uint32_t PING_INTERVAL_MS = 5000;
 static constexpr uint32_t PING_TIMEOUT_MS = 10000;
+
+// ============================================================================
+// Broker Protocol (ESP↔ESP via HA relay) - Port 6060
+// ============================================================================
+
+static constexpr uint16_t BROKER_PORT = 6060;
+
+// Broker message types (0x10-0x1F range)
+enum class BrokerMsgType : uint8_t {
+  REGISTER = 0x10,     // ESP→HA: device registration
+  INVITE = 0x11,       // ESP→HA: initiate call to target
+  RING = 0x12,         // HA→ESP: incoming call notification
+  ANSWER = 0x13,       // ESP→HA: accept incoming call
+  DECLINE = 0x14,      // ESP→HA: reject incoming call
+  HANGUP = 0x15,       // Both: end call
+  BYE = 0x16,          // HA→ESP: call ended by peer
+  AUDIO = 0x17,        // Both: audio data during call
+  CONTACTS = 0x18,     // HA→ESP: list of available devices
+  PING = 0x19,         // Both: keepalive
+  PONG = 0x1A,         // Both: keepalive response
+  ERROR = 0x1B,        // HA→ESP: error notification
+};
+
+// Broker error codes
+enum class BrokerError : uint8_t {
+  NOT_FOUND = 0x01,    // Target device not connected
+  BUSY = 0x02,         // Target device already in call
+  TIMEOUT = 0x03,      // Call timeout (no answer)
+  PROTOCOL = 0x04,     // Protocol error
+};
+
+// Decline reasons
+enum class DeclineReason : uint8_t {
+  BUSY = 0x00,
+  REJECT = 0x01,
+};
+
+// Call states
+enum class CallState : uint8_t {
+  IDLE = 0,
+  CALLING = 1,         // Outgoing call waiting for answer
+  RINGING = 2,         // Incoming call waiting for user
+  IN_CALL = 3,         // Active bidirectional audio
+};
+
+// Broker header (12 bytes)
+struct __attribute__((packed)) BrokerHeader {
+  uint8_t type;        // BrokerMsgType
+  uint8_t flags;       // Reserved
+  uint16_t length;     // Payload length (little-endian)
+  uint32_t call_id;    // Call identifier (little-endian)
+  uint32_t seq;        // Sequence number for audio (little-endian)
+};
+
+static constexpr size_t BROKER_HEADER_SIZE = sizeof(BrokerHeader);
+
+// Broker timeouts
+static constexpr uint32_t BROKER_CALL_TIMEOUT_MS = 30000;
+static constexpr uint32_t BROKER_RECONNECT_MS = 5000;
+static constexpr uint32_t BROKER_PING_INTERVAL_MS = 10000;
+
+// Max contacts
+static constexpr size_t MAX_CONTACTS = 16;
+static constexpr size_t MAX_DEVICE_ID_LEN = 32;
 
 }  // namespace intercom_api
 }  // namespace esphome

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 
 namespace esphome {
 namespace intercom_api {
@@ -151,7 +152,30 @@ void IntercomApi::setup() {
     return;
   }
 
-  ESP_LOGI(TAG, "Intercom API ready on port %d (3 tasks)", INTERCOM_PORT);
+#ifdef USE_INTERCOM_BROKER
+  // Create broker task if broker is configured
+  if (!this->broker_host_.empty()) {
+    ok = xTaskCreatePinnedToCore(
+        IntercomApi::broker_task,
+        "intercom_brk",
+        8192,
+        this,
+        5,  // Medium priority
+        &this->broker_task_handle_,
+        0  // Core 0
+    );
+
+    if (ok != pdPASS) {
+      ESP_LOGE(TAG, "Failed to create broker task");
+      // Not fatal - broker is optional
+    } else {
+      ESP_LOGI(TAG, "Broker task created for %s:%d",
+               this->broker_host_.c_str(), this->broker_port_);
+    }
+  }
+#endif
+
+  ESP_LOGI(TAG, "Intercom API ready on port %d", INTERCOM_PORT);
 }
 
 void IntercomApi::loop() {
@@ -173,6 +197,15 @@ void IntercomApi::dump_config() {
     ESP_LOGCONFIG(TAG, "  AEC: configured (frame_size=%d samples)", this->aec_frame_samples_);
   } else {
     ESP_LOGCONFIG(TAG, "  AEC: none");
+  }
+#endif
+#ifdef USE_INTERCOM_BROKER
+  if (!this->broker_host_.empty()) {
+    ESP_LOGCONFIG(TAG, "  Broker: %s:%d", this->broker_host_.c_str(), this->broker_port_);
+    ESP_LOGCONFIG(TAG, "  Device name: %s",
+                  this->device_name_.empty() ? "(auto)" : this->device_name_.c_str());
+  } else {
+    ESP_LOGCONFIG(TAG, "  Broker: none");
   }
 #endif
 }
@@ -209,6 +242,46 @@ void IntercomApi::stop() {
   if (this->speaker_buffer_) this->speaker_buffer_->reset();
 
   this->state_ = ConnectionState::DISCONNECTED;
+  this->publish_state_();
+}
+
+void IntercomApi::answer_call() {
+  // Answer incoming call when auto_answer is OFF
+  if (!this->is_ringing()) {
+    ESP_LOGW(TAG, "answer_call() called but not ringing");
+    return;
+  }
+
+  int sock = this->client_.socket.load();
+  if (sock < 0) {
+    ESP_LOGW(TAG, "answer_call() but no client connected");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Answering call manually");
+  this->send_message_(sock, MessageType::ANSWER);
+  this->set_active_(true);
+  this->set_streaming_(true);
+}
+
+void IntercomApi::decline_call() {
+  // Decline incoming call when auto_answer is OFF
+  if (!this->is_ringing()) {
+    ESP_LOGW(TAG, "decline_call() called but not ringing");
+    return;
+  }
+
+  int sock = this->client_.socket.load();
+  if (sock < 0) {
+    return;
+  }
+
+  ESP_LOGI(TAG, "Declining call");
+  uint8_t reason = static_cast<uint8_t>(ErrorCode::BUSY);
+  this->send_message_(sock, MessageType::ERROR, MessageFlags::NONE, &reason, 1);
+  this->close_client_socket_();
+  this->state_ = ConnectionState::DISCONNECTED;
+  this->publish_state_();
 }
 
 void IntercomApi::set_volume(float volume) {
@@ -218,6 +291,11 @@ void IntercomApi::set_volume(float volume) {
     this->speaker_->set_volume(this->volume_);
   }
 #endif
+}
+
+void IntercomApi::set_auto_answer(bool enabled) {
+  this->auto_answer_ = enabled;
+  ESP_LOGI(TAG, "Auto-answer set to %s", enabled ? "ON" : "OFF");
 }
 
 void IntercomApi::set_mic_gain_db(float db) {
@@ -262,12 +340,22 @@ void IntercomApi::disconnect() {
 }
 
 const char *IntercomApi::get_state_str() const {
+  // Check for ringing state (connected but waiting for answer)
+  if (this->is_ringing()) {
+    return "Ringing";
+  }
   switch (this->state_) {
     case ConnectionState::DISCONNECTED: return "Idle";
     case ConnectionState::CONNECTING: return "Connecting";
     case ConnectionState::CONNECTED: return "Connected";
     case ConnectionState::STREAMING: return "Streaming";
     default: return "Unknown";
+  }
+}
+
+void IntercomApi::publish_state_() {
+  if (this->state_sensor_ != nullptr) {
+    this->state_sensor_->publish_state(this->get_state_str());
   }
 }
 
@@ -294,6 +382,7 @@ void IntercomApi::set_active_(bool on) {
 void IntercomApi::set_streaming_(bool on) {
   this->client_.streaming.store(on, std::memory_order_release);
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
+  this->publish_state_();
 }
 
 // === Server Task ===
@@ -431,6 +520,7 @@ void IntercomApi::server_task_() {
           this->close_client_socket_();
           this->set_active_(false);
           this->state_ = ConnectionState::DISCONNECTED;
+          this->publish_state_();
           this->disconnect_trigger_.trigger();
         }
       }
@@ -824,16 +914,27 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       break;
 
     case MessageType::START:
-      ESP_LOGI(TAG, "Received START from client");
-      this->set_active_(true);
-      this->set_streaming_(true);
-      this->send_message_(this->client_.socket.load(), MessageType::PONG);
+      ESP_LOGI(TAG, "Received START from client (auto_answer=%s)", this->auto_answer_ ? "ON" : "OFF");
+      if (this->auto_answer_) {
+        // Auto-answer ON: start streaming immediately
+        this->set_active_(true);
+        this->set_streaming_(true);
+        this->send_message_(this->client_.socket.load(), MessageType::PONG);
+      } else {
+        // Auto-answer OFF: go to ringing state, wait for local answer
+        this->state_ = ConnectionState::CONNECTED;  // Stay connected but not streaming
+        this->send_message_(this->client_.socket.load(), MessageType::RING);
+        ESP_LOGI(TAG, "Auto-answer OFF - sending RING, waiting for local answer");
+        this->publish_state_();  // Publish "Ringing" state
+        this->ringing_trigger_.trigger();
+      }
       break;
 
     case MessageType::STOP:
       ESP_LOGI(TAG, "Received STOP from client");
       this->set_streaming_(false);
       this->set_active_(false);
+      this->call_end_trigger_.trigger();
       break;
 
     case MessageType::PING:
@@ -1061,6 +1162,433 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
     }
   }
 }
+
+// ============================================================================
+// Broker Implementation (ESP↔ESP via HA relay)
+// ============================================================================
+
+#ifdef USE_INTERCOM_BROKER
+
+void IntercomApi::broker_task(void *param) {
+  static_cast<IntercomApi *>(param)->broker_task_();
+}
+
+void IntercomApi::broker_task_() {
+  ESP_LOGI(TAG, "Broker task started");
+
+  // Allocate buffers for broker protocol
+  this->broker_rx_buffer_ = (uint8_t *)heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL);
+  this->broker_tx_buffer_ = (uint8_t *)heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL);
+
+  if (!this->broker_rx_buffer_ || !this->broker_tx_buffer_) {
+    ESP_LOGE(TAG, "Failed to allocate broker buffers");
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  while (true) {
+    // Connect to broker if not connected
+    if (this->broker_socket_ < 0) {
+      ESP_LOGI(TAG, "Connecting to broker %s:%d...", this->broker_host_.c_str(), this->broker_port_);
+
+      int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (sock < 0) {
+        ESP_LOGE(TAG, "Failed to create broker socket: %d", errno);
+        vTaskDelay(pdMS_TO_TICKS(BROKER_RECONNECT_MS));
+        continue;
+      }
+
+      struct sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(this->broker_port_);
+
+      if (inet_pton(AF_INET, this->broker_host_.c_str(), &addr.sin_addr) <= 0) {
+        // Try hostname resolution
+        struct hostent *he = gethostbyname(this->broker_host_.c_str());
+        if (he == nullptr) {
+          ESP_LOGE(TAG, "Failed to resolve broker host: %s", this->broker_host_.c_str());
+          close(sock);
+          vTaskDelay(pdMS_TO_TICKS(BROKER_RECONNECT_MS));
+          continue;
+        }
+        memcpy(&addr.sin_addr, he->h_addr, sizeof(addr.sin_addr));
+      }
+
+      // Set socket timeout for connect
+      struct timeval tv;
+      tv.tv_sec = 5;
+      tv.tv_usec = 0;
+      setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+      if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        ESP_LOGE(TAG, "Failed to connect to broker: %d", errno);
+        close(sock);
+        vTaskDelay(pdMS_TO_TICKS(BROKER_RECONNECT_MS));
+        continue;
+      }
+
+      // Enable TCP_NODELAY for low latency
+      int opt = 1;
+      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
+      // Set non-blocking after connect
+      int flags = fcntl(sock, F_GETFL, 0);
+      fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+
+      this->broker_socket_ = sock;
+      this->broker_connected_.store(true);
+      ESP_LOGI(TAG, "Connected to broker");
+
+      // Send REGISTER message
+      std::string device_id = this->device_name_.empty() ?
+          App.get_name() : this->device_name_;
+      this->send_broker_message_(BrokerMsgType::REGISTER, 0, 0,
+          (const uint8_t *)device_id.c_str(), device_id.length() + 1);
+    }
+
+    // Handle broker communication
+    if (this->broker_socket_ >= 0) {
+      fd_set read_fds;
+      FD_ZERO(&read_fds);
+      FD_SET(this->broker_socket_, &read_fds);
+      struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};  // 10ms
+
+      int ret = select(this->broker_socket_ + 1, &read_fds, nullptr, nullptr, &tv);
+
+      if (ret > 0 && FD_ISSET(this->broker_socket_, &read_fds)) {
+        // Read header
+        BrokerHeader header;
+        ssize_t received = recv(this->broker_socket_, &header, BROKER_HEADER_SIZE, MSG_WAITALL);
+
+        if (received == BROKER_HEADER_SIZE) {
+          // Read payload
+          uint8_t *payload = this->broker_rx_buffer_;
+          if (header.length > 0) {
+            if (header.length > MAX_MESSAGE_SIZE) {
+              ESP_LOGE(TAG, "Broker message too large: %d", header.length);
+              close(this->broker_socket_);
+              this->broker_socket_ = -1;
+              this->broker_connected_.store(false);
+              continue;
+            }
+            received = recv(this->broker_socket_, payload, header.length, MSG_WAITALL);
+            if (received != header.length) {
+              ESP_LOGW(TAG, "Broker payload incomplete");
+              continue;
+            }
+          }
+          this->handle_broker_message_(header, payload);
+
+        } else if (received == 0) {
+          ESP_LOGI(TAG, "Broker disconnected");
+          close(this->broker_socket_);
+          this->broker_socket_ = -1;
+          this->broker_connected_.store(false);
+          this->call_state_ = CallState::IDLE;
+          this->current_call_id_ = 0;
+
+        } else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+          ESP_LOGE(TAG, "Broker recv error: %d", errno);
+          close(this->broker_socket_);
+          this->broker_socket_ = -1;
+          this->broker_connected_.store(false);
+        }
+      }
+
+      // Send audio if in call
+      if (this->call_state_ == CallState::IN_CALL && this->current_call_id_ != 0) {
+        // Check for mic data to send
+        if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+          size_t avail = this->mic_buffer_->available();
+          if (avail >= AUDIO_CHUNK_SIZE) {
+            uint8_t audio[AUDIO_CHUNK_SIZE];
+            this->mic_buffer_->read(audio, AUDIO_CHUNK_SIZE, 0);
+            xSemaphoreGive(this->mic_mutex_);
+
+            this->broker_audio_seq_++;
+            this->send_broker_message_(BrokerMsgType::AUDIO, this->current_call_id_,
+                this->broker_audio_seq_, audio, AUDIO_CHUNK_SIZE);
+          } else {
+            xSemaphoreGive(this->mic_mutex_);
+          }
+        }
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+bool IntercomApi::send_broker_message_(BrokerMsgType type, uint32_t call_id, uint32_t seq,
+                                        const uint8_t *data, size_t len) {
+  if (this->broker_socket_ < 0) return false;
+
+  BrokerHeader header;
+  header.type = static_cast<uint8_t>(type);
+  header.flags = 0;
+  header.length = static_cast<uint16_t>(len);
+  header.call_id = call_id;
+  header.seq = seq;
+
+  memcpy(this->broker_tx_buffer_, &header, BROKER_HEADER_SIZE);
+  if (data && len > 0) {
+    memcpy(this->broker_tx_buffer_ + BROKER_HEADER_SIZE, data, len);
+  }
+
+  size_t total = BROKER_HEADER_SIZE + len;
+  ssize_t sent = send(this->broker_socket_, this->broker_tx_buffer_, total, MSG_DONTWAIT);
+
+  if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+    ESP_LOGW(TAG, "Broker send error: %d", errno);
+    return false;
+  }
+
+  return sent == (ssize_t)total;
+}
+
+void IntercomApi::handle_broker_message_(const BrokerHeader &header, const uint8_t *data) {
+  BrokerMsgType type = static_cast<BrokerMsgType>(header.type);
+
+  switch (type) {
+    case BrokerMsgType::RING: {
+      // Incoming call
+      if (this->call_state_ != CallState::IDLE) {
+        // Already in call - decline with BUSY
+        this->send_broker_message_(BrokerMsgType::DECLINE, header.call_id, 0,
+            (const uint8_t *)"\x00", 1);  // DECLINE_BUSY
+        break;
+      }
+      this->caller_name_ = std::string((const char *)data);
+      this->current_call_id_ = header.call_id;
+
+      if (this->auto_answer_) {
+        // Auto-answer enabled: immediately accept the call
+        this->call_state_ = CallState::IN_CALL;
+        this->broker_audio_seq_ = 0;
+        this->send_broker_message_(BrokerMsgType::ANSWER, header.call_id, 0);
+        this->set_active_(true);
+        ESP_LOGI(TAG, "Auto-answered call from %s (call_id=%lu)",
+                 this->caller_name_.c_str(), (unsigned long)header.call_id);
+      } else {
+        // Manual answer: go to RINGING state
+        this->call_state_ = CallState::RINGING;
+        ESP_LOGI(TAG, "Incoming call from %s (call_id=%lu) - waiting for answer",
+                 this->caller_name_.c_str(), (unsigned long)header.call_id);
+        this->ringing_trigger_.trigger();
+      }
+      break;
+    }
+
+    case BrokerMsgType::ANSWER: {
+      // Our call was answered
+      if (this->call_state_ == CallState::CALLING &&
+          this->current_call_id_ == header.call_id) {
+        this->call_state_ = CallState::IN_CALL;
+        this->broker_audio_seq_ = 0;
+        // Start mic/speaker
+        this->set_active_(true);
+        ESP_LOGI(TAG, "Call answered by %s", this->target_name_.c_str());
+      }
+      break;
+    }
+
+    case BrokerMsgType::DECLINE: {
+      // Our call was declined
+      if (this->call_state_ == CallState::CALLING &&
+          this->current_call_id_ == header.call_id) {
+        ESP_LOGI(TAG, "Call declined by %s (reason=%d)",
+                 this->target_name_.c_str(), data[0]);
+        this->call_state_ = CallState::IDLE;
+        this->current_call_id_ = 0;
+        this->target_name_.clear();
+      }
+      break;
+    }
+
+    case BrokerMsgType::BYE: {
+      // Call ended by peer
+      if (this->current_call_id_ == header.call_id) {
+        ESP_LOGI(TAG, "Call ended by peer");
+        this->set_active_(false);
+        this->call_state_ = CallState::IDLE;
+        this->current_call_id_ = 0;
+        this->caller_name_.clear();
+        this->target_name_.clear();
+      }
+      break;
+    }
+
+    case BrokerMsgType::AUDIO: {
+      // Audio from peer
+      if (this->call_state_ == CallState::IN_CALL &&
+          this->current_call_id_ == header.call_id) {
+        // Write to speaker buffer
+        if (xSemaphoreTake(this->speaker_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+          this->speaker_buffer_->write((void *)data, header.length);
+          xSemaphoreGive(this->speaker_mutex_);
+        }
+      }
+      break;
+    }
+
+    case BrokerMsgType::CONTACTS: {
+      // Contact list from broker (JSON)
+      // Parse simple JSON array: [{"id":"dev1","name":"Dev 1","busy":false},...]
+      std::string json((const char *)data, header.length);
+      ESP_LOGD(TAG, "Contacts: %s", json.c_str());
+
+      // Simple JSON parsing (no external library)
+      this->contact_count_ = 0;
+      const char *p = json.c_str();
+      while (*p && this->contact_count_ < MAX_CONTACTS) {
+        // Find "id":"
+        const char *id_start = strstr(p, "\"id\":\"");
+        if (!id_start) break;
+        id_start += 6;
+        const char *id_end = strchr(id_start, '"');
+        if (!id_end) break;
+
+        // Copy id
+        size_t id_len = std::min((size_t)(id_end - id_start), MAX_DEVICE_ID_LEN - 1);
+        strncpy(this->contacts_[this->contact_count_].name, id_start, id_len);
+        this->contacts_[this->contact_count_].name[id_len] = '\0';
+
+        // Find "busy":
+        const char *busy = strstr(id_end, "\"busy\":");
+        if (busy) {
+          busy += 7;
+          this->contacts_[this->contact_count_].busy = (*busy == 't');
+        } else {
+          this->contacts_[this->contact_count_].busy = false;
+        }
+
+        this->contact_count_++;
+        p = id_end + 1;
+      }
+
+      ESP_LOGI(TAG, "Received %zu contacts", this->contact_count_);
+      break;
+    }
+
+    case BrokerMsgType::ERROR: {
+      BrokerError error = static_cast<BrokerError>(data[0]);
+      const char *err_str = "Unknown";
+      switch (error) {
+        case BrokerError::NOT_FOUND: err_str = "Not found"; break;
+        case BrokerError::BUSY: err_str = "Busy"; break;
+        case BrokerError::TIMEOUT: err_str = "Timeout"; break;
+        case BrokerError::PROTOCOL: err_str = "Protocol error"; break;
+      }
+      ESP_LOGW(TAG, "Broker error: %s", err_str);
+
+      // Reset call state on error
+      if (this->call_state_ == CallState::CALLING) {
+        this->call_state_ = CallState::IDLE;
+        this->current_call_id_ = 0;
+        this->target_name_.clear();
+      }
+      break;
+    }
+
+    case BrokerMsgType::PONG:
+      // Keepalive response
+      break;
+
+    default:
+      ESP_LOGW(TAG, "Unknown broker message: 0x%02X", header.type);
+      break;
+  }
+}
+
+void IntercomApi::broker_call(const std::string &target_device) {
+  if (this->call_state_ != CallState::IDLE) {
+    ESP_LOGW(TAG, "Cannot call: not idle");
+    return;
+  }
+  if (!this->broker_connected_.load()) {
+    ESP_LOGW(TAG, "Cannot call: not connected to broker");
+    return;
+  }
+
+  this->target_name_ = target_device;
+  this->call_state_ = CallState::CALLING;
+
+  this->send_broker_message_(BrokerMsgType::INVITE, 0, 0,
+      (const uint8_t *)target_device.c_str(), target_device.length() + 1);
+
+  ESP_LOGI(TAG, "Calling %s...", target_device.c_str());
+}
+
+void IntercomApi::broker_answer() {
+  if (this->call_state_ != CallState::RINGING) {
+    ESP_LOGW(TAG, "Cannot answer: not ringing");
+    return;
+  }
+
+  this->send_broker_message_(BrokerMsgType::ANSWER, this->current_call_id_, 0);
+  this->call_state_ = CallState::IN_CALL;
+  this->broker_audio_seq_ = 0;
+
+  // Start mic/speaker
+  this->set_active_(true);
+
+  ESP_LOGI(TAG, "Answered call from %s", this->caller_name_.c_str());
+}
+
+void IntercomApi::broker_decline() {
+  if (this->call_state_ != CallState::RINGING) {
+    ESP_LOGW(TAG, "Cannot decline: not ringing");
+    return;
+  }
+
+  this->send_broker_message_(BrokerMsgType::DECLINE, this->current_call_id_, 0,
+      (const uint8_t *)"\x01", 1);  // DECLINE_REJECT
+
+  this->call_state_ = CallState::IDLE;
+  this->current_call_id_ = 0;
+  this->caller_name_.clear();
+
+  ESP_LOGI(TAG, "Declined incoming call");
+}
+
+void IntercomApi::broker_hangup() {
+  if (this->call_state_ != CallState::IN_CALL && this->call_state_ != CallState::CALLING) {
+    return;
+  }
+
+  this->send_broker_message_(BrokerMsgType::HANGUP, this->current_call_id_, 0);
+
+  this->set_active_(false);
+  this->call_state_ = CallState::IDLE;
+  this->current_call_id_ = 0;
+  this->caller_name_.clear();
+  this->target_name_.clear();
+
+  ESP_LOGI(TAG, "Hung up call");
+}
+
+const char *IntercomApi::get_call_state_str() const {
+  switch (this->call_state_) {
+    case CallState::IDLE: return "Idle";
+    case CallState::CALLING: return "Calling";
+    case CallState::RINGING: return "Ringing";
+    case CallState::IN_CALL: return "In Call";
+    default: return "Unknown";
+  }
+}
+
+const char *IntercomApi::get_contact_name(size_t index) const {
+  if (index >= this->contact_count_) return "";
+  return this->contacts_[index].name;
+}
+
+bool IntercomApi::is_contact_busy(size_t index) const {
+  if (index >= this->contact_count_) return false;
+  return this->contacts_[index].busy;
+}
+
+#endif  // USE_INTERCOM_BROKER
 
 }  // namespace intercom_api
 }  // namespace esphome
