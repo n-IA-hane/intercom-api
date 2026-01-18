@@ -363,8 +363,18 @@ def websocket_list_devices(
     if broker:
         broker_devices = broker.get_connected_devices()
         for dev_id in broker_devices:
-            # Check if already in list
-            if not any(d.get("esphome_id") == dev_id or d.get("name") == dev_id for d in devices):
+            # Normalize names for comparison (handle "Intercom Mini" vs "intercom-mini")
+            def normalize(s):
+                return (s or "").lower().replace(" ", "-").replace("_", "-")
+
+            dev_id_norm = normalize(dev_id)
+            already_exists = any(
+                normalize(d.get("esphome_id")) == dev_id_norm or
+                normalize(d.get("name")) == dev_id_norm
+                for d in devices
+            )
+
+            if not already_exists:
                 # Broker device - we don't have direct IP, but can be used for ESP↔ESP
                 devices.append({
                     "device_id": dev_id,

@@ -1,0 +1,38 @@
+#pragma once
+
+#ifdef USE_ESP32
+
+#include "esphome/core/component.h"
+#include "esphome/core/helpers.h"
+#include "esphome/components/speaker/speaker.h"
+#include "../i2s_audio_duplex.h"
+
+namespace esphome {
+namespace i2s_audio_duplex {
+
+class I2SAudioDuplexSpeaker : public speaker::Speaker,
+                               public Component,
+                               public Parented<I2SAudioDuplex> {
+ public:
+  void setup() override;
+  void dump_config() override;
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  // speaker::Speaker interface
+  void start() override;
+  void stop() override;
+  void finish() override;
+
+  size_t play(const uint8_t *data, size_t length) override;
+  size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) override;
+
+  bool has_buffered_data() const override;
+
+  void set_volume(float volume) override;
+  void set_mute_state(bool mute_state) override;
+};
+
+}  // namespace i2s_audio_duplex
+}  // namespace esphome
+
+#endif  // USE_ESP32

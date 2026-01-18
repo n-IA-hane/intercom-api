@@ -7,18 +7,20 @@
 - **Test Card**: `/lovelace/test`
 - **Home Assistant**: `root@192.168.1.10` (LXC container, HA installed via pip)
 - **ESPHome**: venv in `/home/daniele/cc/claude/intercom-api/` on THIS PC
-- **ESP32 IP**: 192.168.1.18
+- **Intercom Mini IP**: 192.168.1.18 (separate I2S: INMP441 + MAX98357A)
+- **Xiaozhi Ball V3 IP**: 192.168.1.31 (duplex I2S: ES8311, USB /dev/ttyACM0)
 - **HA Config Path**: `/home/homeassistant/.homeassistant/`
 - **Deploy HA files**: `scp -r homeassistant/custom_components/intercom_native root@192.168.1.10:/home/homeassistant/.homeassistant/custom_components/`
 - **Deploy frontend**: `scp frontend/www/*.js root@192.168.1.10:/home/homeassistant/.homeassistant/www/`
 - **Restart HA**: `ssh root@192.168.1.10 'systemctl restart homeassistant'`
 - **HA Logs**: `ssh root@192.168.1.10 'journalctl -u homeassistant -f'`
-- **Compile & Upload ESP**: `source venv/bin/activate && esphome compile intercom-mini.yaml && esphome upload intercom-mini.yaml --device 192.168.1.18`
+- **Compile & Upload Mini**: `source venv/bin/activate && esphome compile intercom-mini.yaml && esphome upload intercom-mini.yaml --device 192.168.1.18`
+- **Compile & Upload Xiaozhi**: `source venv/bin/activate && esphome compile intercom-xiaozhi.yaml && esphome upload intercom-xiaozhi.yaml --device /dev/ttyACM0`
 
 ## Overview
 
 Sistema intercom bidirezionale full-duplex che usa TCP invece di UDP/WebRTC.
-**Versione: 1.1.0** - AEC (Echo Cancellation) funzionante.
+**Versione: 1.4.0** - Broker + AEC + i2s_audio_duplex (single I2S bus support).
 
 ## Repository
 
@@ -106,30 +108,50 @@ Sistema intercom bidirezionale full-duplex che usa TCP invece di UDP/WebRTC.
 intercom-api/
 ├── esphome/
 │   └── components/
-│       └── intercom_api/
-│           ├── __init__.py           # ESPHome component config
-│           ├── intercom_api.h        # Header + class definition
-│           ├── intercom_api.cpp      # TCP server + audio handling
-│           ├── intercom_protocol.h   # Protocol constants
-│           ├── switch.py             # Switch entity
-│           └── number.py             # Volume entity (ENTITY_CATEGORY_CONFIG)
+│       ├── intercom_api/
+│       │   ├── __init__.py           # ESPHome component config
+│       │   ├── intercom_api.h        # Header + class definition
+│       │   ├── intercom_api.cpp      # TCP server + audio handling
+│       │   ├── intercom_protocol.h   # Protocol constants
+│       │   ├── switch.py             # Switch entity
+│       │   └── number.py             # Volume entity (ENTITY_CATEGORY_CONFIG)
+│       │
+│       ├── i2s_audio_duplex/         # Full-duplex I2S for single-bus codecs (ES8311)
+│       │   ├── __init__.py           # Component registration
+│       │   ├── i2s_audio_duplex.h    # Main duplex class
+│       │   ├── i2s_audio_duplex.cpp  # I2S driver implementation
+│       │   ├── microphone/           # Standard ESPHome microphone platform
+│       │   │   ├── __init__.py
+│       │   │   ├── duplex_microphone.h
+│       │   │   └── duplex_microphone.cpp
+│       │   └── speaker/              # Standard ESPHome speaker platform
+│       │       ├── __init__.py
+│       │       ├── duplex_speaker.h
+│       │       └── duplex_speaker.cpp
+│       │
+│       └── esp_aec/                  # Acoustic Echo Cancellation
+│           ├── __init__.py
+│           ├── esp_aec.h
+│           └── esp_aec.cpp
 │
 ├── homeassistant/
 │   └── custom_components/
 │       └── intercom_native/
 │           ├── __init__.py           # Integration setup
-│           ├── manifest.json         # HA manifest (v1.0.0)
+│           ├── manifest.json         # HA manifest
 │           ├── config_flow.py        # Config UI
 │           ├── websocket_api.py      # WS commands + session manager
 │           ├── tcp_client.py         # Async TCP client
+│           ├── broker.py             # HA Broker Server (port 6060)
 │           └── const.py              # Constants
 │
 ├── frontend/
 │   └── www/
-│       ├── intercom-card.js          # Lovelace card (v1.0.0)
+│       ├── intercom-card.js          # Lovelace card
 │       └── intercom-processor.js     # AudioWorklet
 │
-├── intercom-mini.yaml                # ESP32-S3 config
+├── intercom-mini.yaml                # ESP32-S3 Mini config (separate I2S)
+├── intercom-xiaozhi.yaml             # Xiaozhi Ball V3 config (duplex I2S)
 ├── CLAUDE.md                         # This file
 └── README.md                         # User documentation
 ```
@@ -187,12 +209,12 @@ if (this->client_.streaming.load()) {
 
 ## TODO - Prossime Feature
 
-Vedi `PLAN-BROKER.md` per il piano completo del broker.
-
 - [x] **Fase 1**: Echo Cancellation (esp_aec) ✅ v1.1.0
-- [x] **Fase 2A**: HA Broker Server ✅ v1.2.0-wip
-- [x] **Fase 2B**: ESP Broker Client ✅ v1.2.0-wip
+- [x] **Fase 2A**: HA Broker Server ✅ v1.3.0
+- [x] **Fase 2B**: ESP Broker Client ✅ v1.3.0
+- [x] **Fase 2C**: i2s_audio_duplex (single I2S bus) ✅ v1.4.0
 - [ ] **Fase 3**: Card refactor (device picker, dropdown contatti)
+- [ ] **Fase 4**: Contact list improvements
 
 ## Fase 2: HA Broker (IMPLEMENTATO)
 
@@ -250,6 +272,51 @@ bool busy = id(intercom).is_contact_busy(0);
 ```
 
 **Drop policy:** Queue 10 frame (~160ms), drop oldest se piena.
+
+## i2s_audio_duplex Component (v1.4.0)
+
+**Problema:** ESPHome non supporta full-duplex su singolo bus I2S. Codec come ES8311 (usato in Xiaozhi Ball V3) richiedono un singolo bus per mic+speaker.
+
+**Soluzione:** Componente `i2s_audio_duplex` che:
+- Gestisce I2S in full-duplex su singolo bus
+- Espone platform standard `microphone` e `speaker` (compatibile con Voice Assistant)
+- Supporta AEC (echo cancellation)
+
+**Config YAML (Xiaozhi Ball V3):**
+```yaml
+external_components:
+  - source:
+      type: local
+      path: esphome/components
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
+
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_bclk_pin: GPIO45
+  i2s_lrclk_pin: GPIO46
+  i2s_din_pin: GPIO44    # Mic data in
+  i2s_dout_pin: GPIO16   # Speaker data out
+  sample_rate: 16000
+
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_component
+    i2s_audio_duplex_id: i2s_duplex
+
+speaker:
+  - platform: i2s_audio_duplex
+    id: spk_component
+    i2s_audio_duplex_id: i2s_duplex
+
+intercom_api:
+  id: intercom
+  microphone: mic_component
+  speaker: spk_component
+```
+
+**Devices supportati:**
+- **intercom-mini.yaml**: ESP32-S3 Mini con I2S separati (INMP441 + MAX98357A)
+- **intercom-xiaozhi.yaml**: Xiaozhi Ball V3 con ES8311 (singolo I2S duplex)
 
 ## TODO - Priorità Bassa
 
