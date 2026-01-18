@@ -459,4 +459,4 @@ Contributions are welcome! Please open an issue or pull request on GitHub.
 
 ## Credits
 
-Developed with the help of the ESPHome and Home Assistant communities.
+Developed with the help of the ESPHome and Home Assistant communities, and [Claude Code](https://claude.ai/code) as AI pair programming assistant.
