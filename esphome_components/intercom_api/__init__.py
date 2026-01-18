@@ -20,9 +20,6 @@ CONF_AUTO_ANSWER = "auto_answer"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_MIC_BITS = "mic_bits"
 CONF_AEC_ID = "aec_id"
-CONF_BROKER = "broker"
-CONF_HOST = "host"
-CONF_DEVICE_NAME = "device_name"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_CALL_END = "on_call_end"
 
@@ -41,16 +38,6 @@ def _aec_schema(value):
     return cv.use_id(esp_aec.EspAec)(value)
 
 
-# Broker config schema (optional)
-BROKER_SCHEMA = cv.Schema(
-    {
-        cv.Required(CONF_HOST): cv.string,
-        cv.Optional(CONF_PORT, default=6060): cv.port,
-        cv.Optional(CONF_DEVICE_NAME): cv.string,
-    }
-)
-
-
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(IntercomApi),
@@ -62,8 +49,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
         cv.Optional(CONF_AEC_ID): _aec_schema,
-        # Optional broker for ESP↔ESP communication
-        cv.Optional(CONF_BROKER): BROKER_SCHEMA,
         # Trigger when incoming call (auto_answer OFF)
         cv.Optional(CONF_ON_RINGING): automation.validate_automation(single=True),
         # Trigger when call ends (hangup, decline, or answered)
@@ -90,16 +75,6 @@ async def to_code(config):
     if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
         aec = await cg.get_variable(config[CONF_AEC_ID])
         cg.add(var.set_aec(aec))
-
-    # Broker configuration (optional)
-    if CONF_BROKER in config:
-        broker_conf = config[CONF_BROKER]
-        cg.add(var.set_broker_host(broker_conf[CONF_HOST]))
-        cg.add(var.set_broker_port(broker_conf[CONF_PORT]))
-        # Use device_name if specified, otherwise use ESPHome device name
-        if CONF_DEVICE_NAME in broker_conf:
-            cg.add(var.set_device_name(broker_conf[CONF_DEVICE_NAME]))
-        cg.add_define("USE_INTERCOM_BROKER")
 
     # on_ringing automation
     if CONF_ON_RINGING in config:

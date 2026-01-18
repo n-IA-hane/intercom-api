@@ -1,6 +1,20 @@
-# Gitignore settings for ESPHome
-# This is an example and may include too much for your use-case.
-# You can modify this file to suit your needs.
+# ESPHome build files
 /.esphome/
-/secrets.yaml
-esphome/components/intercom_api/__pycache__/
+
+# Python virtual environment
+/venv/
+
+# Secrets (contains WiFi passwords, etc.)
+secrets.yaml
+
+# Claude Code project file (internal notes)
+CLAUDE.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db

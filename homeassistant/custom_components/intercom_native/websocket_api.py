@@ -26,7 +26,6 @@ WS_TYPE_START = f"{DOMAIN}/start"
 WS_TYPE_STOP = f"{DOMAIN}/stop"
 WS_TYPE_AUDIO = f"{DOMAIN}/audio"
 WS_TYPE_LIST = f"{DOMAIN}/list_devices"
-WS_TYPE_LIST_TARGETS = f"{DOMAIN}/list_targets"
 
 # Active sessions: device_id -> IntercomSession
 _sessions: Dict[str, "IntercomSession"] = {}
@@ -184,7 +183,6 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_stop)
     websocket_api.async_register_command(hass, websocket_audio)
     websocket_api.async_register_command(hass, websocket_list_devices)
-    websocket_api.async_register_command(hass, websocket_list_targets)
 
 
 @websocket_api.websocket_command(
@@ -303,28 +301,20 @@ def websocket_list_devices(
     device_registry = dr.async_get(hass)
 
     # Find devices that have intercom_state sensor (indicates intercom_api component)
-    # Note: ESPHome text_sensor maps to HA sensor domain
     intercom_device_ids = set()
     for entity in entity_registry.entities.values():
         if "intercom_state" in entity.entity_id:
             intercom_device_ids.add(entity.device_id)
-            _LOGGER.debug("Found intercom entity: %s -> device %s", entity.entity_id, entity.device_id)
 
     # Get device info and IP for each intercom device
     for device_id in intercom_device_ids:
         device = device_registry.async_get(device_id)
         if not device:
-            _LOGGER.debug("Device not found in registry: %s", device_id)
             continue
-
-        _LOGGER.debug("Device %s: connections=%s, identifiers=%s, config_entries=%s",
-                     device_id, device.connections, device.identifiers, device.config_entries)
 
         # Get IP from connections (ESPHome devices have IP in connections)
         ip_address = None
         for conn_type, conn_value in device.connections:
-            _LOGGER.debug("  Connection: type=%s value=%s", conn_type, conn_value)
-            # ESPHome stores IP as ('network_ip', 'x.x.x.x') or similar
             if 'ip' in conn_type.lower() or conn_type == 'network_ip':
                 ip_address = conn_value
                 break
@@ -340,91 +330,17 @@ def websocket_list_devices(
         if not ip_address and device.config_entries:
             for entry_id in device.config_entries:
                 entry = hass.config_entries.async_get_entry(entry_id)
-                _LOGGER.debug("  Config entry %s: domain=%s data=%s",
-                             entry_id, entry.domain if entry else None, entry.data if entry else None)
                 if entry and entry.domain == "esphome":
-                    # ESPHome stores host in entry data
                     ip_address = entry.data.get("host")
                     break
 
-        _LOGGER.debug("Device %s: esphome_id=%s, ip_address=%s", device_id, esphome_id, ip_address)
-
-        # Always add the device, even without IP (for debugging)
-        devices.append({
-            "device_id": device_id,
-            "name": device.name or esphome_id or device_id,
-            "host": ip_address,
-            "esphome_id": esphome_id,
-        })
-
-    # Also add devices from broker if available
-    from .broker import get_broker
-    broker = get_broker()
-    if broker:
-        broker_devices = broker.get_connected_devices()
-        for dev_id in broker_devices:
-            # Normalize names for comparison (handle "Intercom Mini" vs "intercom-mini")
-            def normalize(s):
-                return (s or "").lower().replace(" ", "-").replace("_", "-")
-
-            dev_id_norm = normalize(dev_id)
-            already_exists = any(
-                normalize(d.get("esphome_id")) == dev_id_norm or
-                normalize(d.get("name")) == dev_id_norm
-                for d in devices
-            )
-
-            if not already_exists:
-                # Broker device - we don't have direct IP, but can be used for ESP↔ESP
-                devices.append({
-                    "device_id": dev_id,
-                    "name": dev_id,
-                    "host": None,  # No direct host - uses broker
-                    "broker": True,
-                })
+        # Only add devices with valid IP
+        if ip_address:
+            devices.append({
+                "device_id": device_id,
+                "name": device.name or esphome_id or device_id,
+                "host": ip_address,
+                "esphome_id": esphome_id,
+            })
 
     connection.send_result(msg["id"], {"devices": devices})
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): WS_TYPE_LIST_TARGETS,
-        vol.Required("device_id"): str,
-    }
-)
-@callback
-def websocket_list_targets(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: Dict[str, Any],
-) -> None:
-    """List available call targets for a device.
-
-    Returns:
-    - Home Assistant (browser↔ESP communication)
-    - Other ESPs connected to broker (for ESP↔ESP calls)
-    """
-    device_id = msg["device_id"]
-    targets = []
-
-    # Always include Home Assistant as a target (browser↔ESP)
-    targets.append({
-        "id": "home_assistant",
-        "name": "Home Assistant",
-        "type": "browser",
-    })
-
-    # Add other ESPs from broker (excluding self)
-    from .broker import get_broker
-    broker = get_broker()
-    if broker:
-        for other_id in broker.get_connected_devices():
-            if other_id != device_id:
-                targets.append({
-                    "id": other_id,
-                    "name": other_id,
-                    "type": "esp",
-                    "busy": broker.is_device_in_call(other_id),
-                })
-
-    connection.send_result(msg["id"], {"targets": targets})

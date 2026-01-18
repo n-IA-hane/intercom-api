@@ -65,16 +65,15 @@ psram:
 # CONNECTIVITY
 # ==============================================================================
 api:
-  id: api_server
 
 ota:
   - platform: esphome
 
 logger:
   hardware_uart: UART0
-  level: DEBUG
+  level: INFO
   logs:
-    intercom_api: DEBUG
+    intercom_api: INFO
     component: INFO
 
 wifi:
@@ -90,7 +89,7 @@ wifi:
 external_components:
   - source:
       type: local
-      path: esphome/components
+      path: esphome_components
     components: [intercom_api, esp_aec]
 
 # ==============================================================================
@@ -155,9 +154,6 @@ intercom_api:
   mic_bits: 32              # SPH0645 is 32-bit I2S mic
   dc_offset_removal: true   # Required for SPH0645 (has DC bias)
   aec_id: aec_processor     # Link to AEC component
-  broker:                   # Optional: enables ESP↔ESP calls via HA
-    host: "192.168.1.10"
-    port: 6060
 
 # ==============================================================================
 # VOLUME & GAIN CONTROL
@@ -201,7 +197,7 @@ switch:
   - platform: template
     id: aec_switch
     name: "Echo Cancellation"
-    icon: "mdi:microphone-off"
+    icon: "mdi:ear-hearing"
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     turn_on_action:
@@ -309,6 +305,30 @@ sensor:
     update_interval: 60s
 
 button:
+  # Call/Answer/Hangup button (P2P mode - calls Home Assistant)
+  - platform: template
+    id: call_button
+    name: "Call"
+    icon: "mdi:phone"
+    on_press:
+      - lambda: |-
+          std::string state = id(intercom_state).state;
+
+          // If ringing (incoming call), answer it
+          if (state == "Ringing") {
+            id(intercom).answer_call();
+            return;
+          }
+
+          // If in call or streaming, hang up
+          if (state == "Streaming" || state == "Calling") {
+            id(intercom).stop();
+            return;
+          }
+
+          // IDLE: Start call to Home Assistant
+          id(intercom).start();
+
   - platform: restart
     name: "Restart"
     icon: "mdi:restart"

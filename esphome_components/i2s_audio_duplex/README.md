@@ -14,13 +14,51 @@ With i2s_audio_duplex:
   Single I2S controller handles both directions → True full-duplex
 ```
 
+## Key Feature: Standard Platform Classes
+
+This component exposes **standard ESPHome `microphone` and `speaker` platform classes**:
+
+```yaml
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_component
+    i2s_audio_duplex_id: i2s_duplex
+
+speaker:
+  - platform: i2s_audio_duplex
+    id: spk_component
+    i2s_audio_duplex_id: i2s_duplex
+```
+
+This means:
+- **Compatible with intercom_api** - Works seamlessly with the intercom system
+- **Standard interfaces** - Exposes the same classes used by Voice Assistant and other ESPHome audio components
+- **Simultaneous operation** - Both platforms share the same I2S bus without conflicts
+
+### Future: Voice Assistant Coexistence
+
+Since both platforms follow ESPHome standards, this opens the door to future testing of running Voice Assistant and Intercom on the same device:
+
+```yaml
+# Theoretical - untested, may require state management
+voice_assistant:
+  microphone: mic_component
+  speaker: spk_component
+
+intercom_api:
+  microphone: mic_component
+  speaker: spk_component
+```
+
+> **Note**: This is a future development goal, not a currently tested feature. Simultaneous operation would require proper state management between components.
+
 ## Features
 
 - **True Full-Duplex**: Simultaneous mic input and speaker output
+- **Standard Platforms**: Exposes `microphone` and `speaker` platform classes
 - **Single I2S Bus**: Efficient use of hardware resources
 - **AEC Integration**: Built-in support for echo cancellation
 - **Volume Control**: Software gain for mic and speaker
-- **Callback System**: Stream mic data to multiple consumers
 - **Hardware Optimized**: Uses ESP-IDF native I2S drivers
 
 ## Use Cases
@@ -29,7 +67,6 @@ With i2s_audio_duplex:
 - **Intercom Systems**: Full-duplex conversation
 - **Voice Assistants**: Listen while providing audio feedback
 - **Video Conferencing**: Simultaneous talk and listen
-- **Recording Studio Monitors**: Record while playing backing track
 
 ## Requirements
 
@@ -43,13 +80,15 @@ With i2s_audio_duplex:
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
+      url: https://github.com/n-IA-hane/intercom-api
       ref: main
-      path: components
     components: [i2s_audio_duplex]
+    path: esphome_components
 ```
 
 ## Configuration
+
+### Basic Setup
 
 ```yaml
 i2s_audio_duplex:
@@ -61,9 +100,21 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8        # Data Out (from ESP → codec DAC speaker)
   sample_rate: 16000
   aec_id: aec_component      # Optional: link to esp_aec
+
+# Standard microphone platform
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_component
+    i2s_audio_duplex_id: i2s_duplex
+
+# Standard speaker platform
+speaker:
+  - platform: i2s_audio_duplex
+    id: spk_component
+    i2s_audio_duplex_id: i2s_duplex
 ```
 
-## Configuration Options
+### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -111,99 +162,16 @@ i2s_audio_duplex:
   sample_rate: 16000
 ```
 
-## Built-in Controls
-
-### AEC Switch
-```yaml
-switch:
-  - platform: i2s_audio_duplex
-    i2s_audio_duplex_id: i2s_duplex
-    aec:
-      name: "Echo Cancellation"
-```
-
-### Volume Controls
-```yaml
-number:
-  - platform: i2s_audio_duplex
-    i2s_audio_duplex_id: i2s_duplex
-    mic_gain:
-      name: "Mic Gain"
-    speaker_volume:
-      name: "Speaker Volume"
-```
-
-## Lambda Access
-
-```cpp
-// Start full duplex operation
-id(i2s_duplex).start();
-
-// Stop all audio
-id(i2s_duplex).stop();
-
-// Control mic/speaker independently
-id(i2s_duplex).start_mic();
-id(i2s_duplex).stop_mic();
-id(i2s_duplex).start_speaker();
-id(i2s_duplex).stop_speaker();
-
-// Play audio to speaker
-const uint8_t* pcm_data = ...;
-size_t bytes = ...;
-id(i2s_duplex).play(pcm_data, bytes);
-
-// Check state
-bool running = id(i2s_duplex).is_running();
-bool mic_active = id(i2s_duplex).is_mic_running();
-bool speaker_active = id(i2s_duplex).is_speaker_running();
-
-// Volume control
-id(i2s_duplex).set_mic_gain(1.5f);      // 0.0 - 2.0
-id(i2s_duplex).set_speaker_volume(0.8f); // 0.0 - 1.0
-
-// AEC control
-id(i2s_duplex).set_aec_enabled(true);
-bool aec_on = id(i2s_duplex).is_aec_enabled();
-```
-
-## Integration with intercom_audio
-
-For intercom applications, link this component:
-
-```yaml
-esp_aec:
-  id: aec
-  sample_rate: 16000
-  filter_length: 4
-
-i2s_audio_duplex:
-  id: i2s_duplex
-  i2s_lrclk_pin: GPIO45
-  i2s_bclk_pin: GPIO9
-  i2s_mclk_pin: GPIO16
-  i2s_din_pin: GPIO10
-  i2s_dout_pin: GPIO8
-  sample_rate: 16000
-  aec_id: aec
-
-intercom_audio:
-  id: intercom
-  duplex_id: i2s_duplex    # Uses i2s_audio_duplex for audio
-  listen_port: 12346
-  remote_ip: "192.168.1.100"
-```
-
-## Complete Example: Voice Assistant with Codec
+## Complete Example with Intercom
 
 ```yaml
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
+      url: https://github.com/n-IA-hane/intercom-api
       ref: main
-      path: components
-    components: [i2s_audio_duplex, esp_aec]
+    components: [i2s_audio_duplex, intercom_api, esp_aec]
+    path: esphome_components
 
 i2c:
   sda: GPIO15
@@ -230,25 +198,21 @@ i2s_audio_duplex:
   sample_rate: 16000
   aec_id: aec
 
-switch:
+microphone:
   - platform: i2s_audio_duplex
+    id: mic_component
     i2s_audio_duplex_id: i2s_duplex
-    aec:
-      name: "Echo Cancellation"
 
-number:
+speaker:
   - platform: i2s_audio_duplex
+    id: spk_component
     i2s_audio_duplex_id: i2s_duplex
-    mic_gain:
-      name: "Microphone Gain"
-      min_value: 0
-      max_value: 200
-      step: 10
-    speaker_volume:
-      name: "Speaker Volume"
-      min_value: 0
-      max_value: 100
-      step: 5
+
+intercom_api:
+  id: intercom
+  microphone: mic_component
+  speaker: spk_component
+  aec_id: aec
 ```
 
 ## When to Use This vs Standard i2s_audio
@@ -258,8 +222,7 @@ number:
 | ES8311/ES8388/WM8960 codec | Yes | No (won't work properly) |
 | Separate INMP441 + MAX98357A | No | Yes (two I2S buses) |
 | PDM microphone + I2S speaker | No | Yes (different protocols) |
-| Need true full-duplex | Yes | Limited |
-| USB audio | No | No (use different component) |
+| Need true full-duplex on single bus | Yes | Limited |
 
 ## Technical Notes
 
@@ -290,14 +253,15 @@ number:
 2. Verify codec ADC is configured via I2C
 3. Try increasing mic_gain
 
-## Compared to Standard ESPHome
+## Comparison with Standard ESPHome
 
 | Feature | i2s_audio_duplex | Standard i2s_audio |
 |---------|-----------------|-------------------|
 | Single-bus codecs | Full support | Half-duplex only |
+| Standard mic/speaker class | Yes | Yes |
 | AEC integration | Built-in | Requires custom code |
 | Simultaneous I/O | Native | Shared bus conflicts |
-| Memory usage | ~8KB buffers | ~4KB per direction |
+| Voice Assistant compatible | Yes | Yes (separate buses only) |
 
 ## License
 

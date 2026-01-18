@@ -112,31 +112,6 @@ class IntercomApi : public Component {
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
   void publish_state_();
 
-#ifdef USE_INTERCOM_BROKER
-  // Broker configuration
-  void set_broker_host(const std::string &host) { this->broker_host_ = host; }
-  void set_broker_port(uint16_t port) { this->broker_port_ = port; }
-  void set_device_name(const std::string &name) { this->device_name_ = name; }
-
-  // Broker call control
-  void broker_call(const std::string &target_device);
-  void broker_answer();
-  void broker_decline();
-  void broker_hangup();
-
-  // Broker state
-  CallState get_call_state() const { return this->call_state_; }
-  const char *get_call_state_str() const;
-  const std::string &get_caller_name() const { return this->caller_name_; }
-  const std::string &get_target_name() const { return this->target_name_; }
-  bool is_broker_connected() const { return this->broker_connected_.load(); }
-
-  // Contact list
-  size_t get_contact_count() const { return this->contact_count_; }
-  const char *get_contact_name(size_t index) const;
-  bool is_contact_busy(size_t index) const;
-#endif
-
   // Triggers
   Trigger<> *get_connect_trigger() { return &this->connect_trigger_; }
   Trigger<> *get_disconnect_trigger() { return &this->disconnect_trigger_; }
@@ -257,44 +232,6 @@ class IntercomApi : public Component {
   Trigger<> stop_trigger_;
   Trigger<> ringing_trigger_;
   Trigger<> call_end_trigger_;  // Fires when call ends (hangup, decline, or connection lost)
-
-#ifdef USE_INTERCOM_BROKER
-  // Broker task
-  static void broker_task(void *param);
-  void broker_task_();
-
-  // Broker protocol handling
-  bool send_broker_message_(BrokerMsgType type, uint32_t call_id, uint32_t seq,
-                            const uint8_t *data = nullptr, size_t len = 0);
-  void handle_broker_message_(const BrokerHeader &header, const uint8_t *data);
-
-  // Broker config
-  std::string broker_host_;
-  uint16_t broker_port_{BROKER_PORT};
-  std::string device_name_;
-
-  // Broker connection
-  std::atomic<bool> broker_connected_{false};
-  int broker_socket_{-1};
-  TaskHandle_t broker_task_handle_{nullptr};
-  uint8_t *broker_rx_buffer_{nullptr};
-  uint8_t *broker_tx_buffer_{nullptr};
-
-  // Call state
-  CallState call_state_{CallState::IDLE};
-  uint32_t current_call_id_{0};
-  std::string caller_name_;      // Who's calling us (when RINGING)
-  std::string target_name_;      // Who we're calling (when CALLING)
-  uint32_t broker_audio_seq_{0}; // Sequence number for outgoing audio
-
-  // Contact list (received from broker)
-  struct Contact {
-    char name[MAX_DEVICE_ID_LEN];
-    bool busy;
-  };
-  Contact contacts_[MAX_CONTACTS];
-  size_t contact_count_{0};
-#endif
 };
 
 // Switch for on/off control

@@ -59,7 +59,6 @@ psram:
 # CONNECTIVITY
 # ==============================================================================
 api:
-  id: api_server
 
 ota:
   - platform: esphome
@@ -69,9 +68,9 @@ web_server:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
   logs:
-    intercom_api: DEBUG
+    intercom_api: INFO
     i2s_duplex: INFO
     component: INFO
 
@@ -87,7 +86,7 @@ wifi:
 external_components:
   - source:
       type: local
-      path: esphome/components
+      path: esphome_components
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # ==============================================================================
@@ -156,33 +155,16 @@ output:
     inverted: true
 
 # ==============================================================================
-# INTERCOM API (TCP-based with HA Broker)
+# INTERCOM API (TCP-based, port 6054)
 # ==============================================================================
 intercom_api:
   id: intercom
   microphone: mic_component
   speaker: spk_component
   aec_id: aec_component
-  broker:
-    host: "192.168.1.10"
-    port: 6060
 
 # ==============================================================================
 # GLOBALS
-# ==============================================================================
-globals:
-  # Currently selected contact index (0 = Home Assistant, 1+ = broker contacts)
-  - id: selected_idx
-    type: int
-    restore_value: yes
-    initial_value: '0'
-
-  # Cached selected contact name for display
-  - id: selected_name_cache
-    type: std::string
-    restore_value: no
-    initial_value: '"Home Assistant"'
-
 # ==============================================================================
 # SCRIPTS
 # ==============================================================================
@@ -201,37 +183,6 @@ script:
             id(main_display).show_page(id(page_ringing_out));
           } else if (state == "Streaming") {
             id(main_display).show_page(id(page_in_call));
-          }
-      - component.update: main_display
-
-  # Resolve selected contact from broker list
-  - id: resolve_selected_contact
-    mode: restart
-    then:
-      - lambda: |-
-          size_t broker_count = id(intercom).get_contact_count();
-          size_t total = 1 + broker_count;  // +1 for Home Assistant
-
-          if (total == 0) {
-            id(selected_name_cache) = "(no contacts)";
-            return;
-          }
-
-          // Normalize index
-          int idx = id(selected_idx) % total;
-          id(selected_idx) = idx;
-
-          if (idx == 0) {
-            // Home Assistant (browser call via TCP 6054)
-            id(selected_name_cache) = "Home Assistant";
-          } else {
-            // Broker contact (ESP-to-ESP via broker)
-            const char* name = id(intercom).get_contact_name(idx - 1);
-            if (name) {
-              id(selected_name_cache) = name;
-            } else {
-              id(selected_name_cache) = "(unknown)";
-            }
           }
       - component.update: main_display
 
@@ -354,16 +305,7 @@ switch:
 # BUTTONS
 # ==============================================================================
 button:
-  # Next contact - cycles through broker contacts
-  - platform: template
-    id: next_contact_button
-    name: "Next Contact"
-    icon: "mdi:account-arrow-right"
-    on_press:
-      - lambda: 'id(selected_idx)++;'
-      - script.execute: resolve_selected_contact
-
-  # Call/Answer/Hangup button
+  # Call/Answer/Hangup button (P2P mode - calls Home Assistant only)
   - platform: template
     id: call_button
     name: "Call"
@@ -386,22 +328,12 @@ button:
             return;
           }
 
-          // IDLE: initiate call
-          if (id(selected_idx) == 0) {
-            // Call Home Assistant - fire doorbell event + start streaming
-            // First fire the doorbell event
-          } else {
-            // Call another ESP via broker
-            const char* target = id(intercom).get_contact_name(id(selected_idx) - 1);
-            if (target) {
-              id(intercom).broker_call(target);
-            }
-          }
+          // IDLE: Call Home Assistant
           id(speaker_enable).turn_on();
-      # Fire doorbell event if calling Home Assistant
+      # Fire doorbell event when calling Home Assistant
       - if:
           condition:
-            lambda: 'return id(selected_idx) == 0 && id(intercom_state).state == "Idle";'
+            lambda: 'return id(intercom_state).state == "Idle";'
           then:
             - homeassistant.event:
                 event: esphome.doorbell_ring
@@ -422,7 +354,8 @@ binary_sensor:
     id: node_status
     name: "Status"
 
-  # Main button - short press: call/answer/hangup, long press (>1s): next contact
+  # Main button - short press: call/answer/hangup
+  # NOTE: Long press for next contact disabled in P2P mode (no broker)
   - platform: gpio
     pin:
       number: GPIO0
@@ -431,18 +364,8 @@ binary_sensor:
     id: main_button
     name: "Main Button"
     icon: "mdi:gesture-tap-button"
-    on_multi_click:
-      # Short press: call/answer/hangup
-      - timing:
-          - ON for at most 1s
-          - OFF for at least 50ms
-        then:
-          - button.press: call_button
-      # Long press (>1s): next contact
-      - timing:
-          - ON for at least 1s
-        then:
-          - button.press: next_contact_button
+    on_press:
+      - button.press: call_button
 
   # Display touch input
   - platform: gpio
@@ -627,11 +550,8 @@ display:
           it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
           it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
           it.print(cx, 100, id(font_state), id(color_green), TextAlign::CENTER, "IDLE");
-          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Selected contact:");
-          std::string contact = id(selected_name_cache);
-          if (!contact.empty()) {
-            it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, contact.c_str());
-          }
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Target:");
+          it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, "Home Assistant");
           char buf[32];
           snprintf(buf, sizeof(buf), "WiFi: %.0f%%", id(wifi_pct).state);
           it.print(cx, h - 35, id(font_debug), id(color_white), TextAlign::CENTER, buf);
@@ -648,11 +568,8 @@ display:
           it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
           it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
           it.print(cx, 100, id(font_state), id(color_yellow), TextAlign::CENTER, "RINGING");
-          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Incoming call:");
-          // Show caller name (from intercom_api)
-          std::string caller = id(intercom).get_caller_name();
-          if (caller.empty()) caller = "Home Assistant";
-          it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, caller.c_str());
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Incoming call from:");
+          it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, "Home Assistant");
           it.print(cx, 200, id(font_debug), id(color_yellow), TextAlign::CENTER, "Press button to answer");
 
       # ----------------------------------------------------------------------
@@ -666,10 +583,7 @@ display:
           it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
           it.print(cx, 100, id(font_state), id(color_black), TextAlign::CENTER, "CALLING");
           it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Calling:");
-          std::string contact = id(selected_name_cache);
-          if (!contact.empty()) {
-            it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, contact.c_str());
-          }
+          it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, "Home Assistant");
           it.print(cx, 200, id(font_debug), id(color_white), TextAlign::CENTER, "Waiting for answer...");
 
       # ----------------------------------------------------------------------
@@ -684,8 +598,5 @@ display:
           it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
           it.print(cx, 100, id(font_state), id(color_blue), TextAlign::CENTER, "IN CALL");
           it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Connected to:");
-          std::string contact = id(selected_name_cache);
-          if (!contact.empty()) {
-            it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, contact.c_str());
-          }
+          it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, "Home Assistant");
           it.print(cx, h - 15, id(font_debug), id(color_white), TextAlign::CENTER, "Press button to hang up");

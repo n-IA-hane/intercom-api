@@ -1,13 +1,12 @@
 /**
- * Intercom Card v2.1.0 - Lovelace custom card for intercom_native integration
+ * Intercom Card v1.0.0 - Lovelace custom card for intercom_native integration
  *
- * Features:
- * - Card editor: select which intercom device this card represents (source)
- * - Runtime: select target to call (Home Assistant or other ESPs via broker)
- * - Call/Hangup buttons
+ * P2P Mode: Single ESP device streaming to Home Assistant browser
+ * - Card editor: select which intercom device this card represents
+ * - Runtime: Call/Hangup button for bidirectional audio
  */
 
-const INTERCOM_CARD_VERSION = "2.2.0";
+const INTERCOM_CARD_VERSION = "1.0.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -29,14 +28,10 @@ class IntercomCard extends HTMLElement {
     this._unsubscribeState = null;
     this._chunksSent = 0;
     this._chunksReceived = 0;
-    this._targets = [];  // Available call targets
-    this._selectedTarget = null;
-    this._targetsLoaded = false;
     this._activeDeviceInfo = null;  // Device info during active call
   }
 
   setConfig(config) {
-    // Support both old (device_id) and new (entity_id) config formats
     if (!config.entity_id && !config.device_id) {
       // Allow unconfigured card in editor
       this.config = config;
@@ -48,52 +43,11 @@ class IntercomCard extends HTMLElement {
   }
 
   _getConfigDeviceId() {
-    // Get device identifier from config (supports old and new formats)
     return this.config?.entity_id || this.config?.device_id;
   }
 
   set hass(hass) {
-    const hadHass = !!this._hass;
     this._hass = hass;
-
-    // Load targets once hass is available and we have a configured device
-    if (!hadHass && hass && this._getConfigDeviceId() && !this._targetsLoaded) {
-      this._loadTargets();
-    }
-  }
-
-  async _loadTargets() {
-    const deviceId = this._getConfigDeviceId();
-    if (!this._hass || !deviceId || this._targetsLoaded) return;
-
-    try {
-      const result = await this._hass.connection.sendMessagePromise({
-        type: "intercom_native/list_targets",
-        device_id: deviceId,
-      });
-
-      if (result && result.targets) {
-        this._targets = result.targets;
-        this._targetsLoaded = true;
-
-        // Auto-select "Home Assistant" if available
-        const haTarget = this._targets.find(t => t.id === "home_assistant");
-        if (haTarget) {
-          this._selectedTarget = haTarget;
-        } else if (this._targets.length > 0) {
-          this._selectedTarget = this._targets[0];
-        }
-
-        this._render();
-      }
-    } catch (err) {
-      console.error("Failed to load intercom targets:", err);
-      // Fallback: just show Home Assistant option
-      this._targets = [{ id: "home_assistant", name: "Home Assistant", type: "browser" }];
-      this._selectedTarget = this._targets[0];
-      this._targetsLoaded = true;
-      this._render();
-    }
   }
 
   _render() {
@@ -138,15 +92,6 @@ class IntercomCard extends HTMLElement {
                         this._ringing ? "ringing" :
                         this._active ? "connected" : "disconnected";
 
-    const targetOptions = this._targets.map(t =>
-      `<option value="${t.id}" ${this._selectedTarget?.id === t.id ? 'selected' : ''}>
-        ${t.name}${t.type === 'esp' ? ' (ESP)' : ''}
-      </option>`
-    ).join('');
-
-    const hasTargets = this._targets.length > 0;
-    const canCall = this._selectedTarget && !this._active;
-
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -157,28 +102,6 @@ class IntercomCard extends HTMLElement {
           padding: 16px;
         }
         .header { font-size: 1.2em; font-weight: 500; margin-bottom: 16px; color: var(--primary-text-color); }
-
-        .target-select {
-          width: 100%;
-          padding: 10px;
-          margin-bottom: 16px;
-          border: 1px solid var(--divider-color, #ccc);
-          border-radius: 8px;
-          background: var(--card-background-color, white);
-          color: var(--primary-text-color);
-          font-size: 1em;
-        }
-        .target-select:focus {
-          outline: none;
-          border-color: var(--primary-color, #03a9f4);
-        }
-
-        .no-targets {
-          text-align: center;
-          color: var(--secondary-text-color);
-          padding: 20px;
-          font-style: italic;
-        }
 
         .button-container { display: flex; justify-content: center; margin-bottom: 16px; }
         .intercom-button {
@@ -212,26 +135,15 @@ class IntercomCard extends HTMLElement {
       </style>
       <div class="card">
         <div class="header">${name}</div>
-
-        ${hasTargets ? `
-          <select class="target-select" id="target-select" ${this._active ? 'disabled' : ''}>
-            ${targetOptions}
-          </select>
-        ` : `
-          <div class="no-targets">
-            ${this._targetsLoaded ? 'No targets available' : 'Loading...'}
-          </div>
-        `}
-
         <div class="button-container">
           <button class="intercom-button ${this._active ? "hangup" : this._ringing ? "ringing" : "call"}" id="btn"
-                  ${this._starting || this._stopping || (!this._active && !this._ringing && !canCall) ? "disabled" : ""}>
+                  ${this._starting || this._stopping ? "disabled" : ""}>
             ${this._stopping ? "..." : this._active || this._ringing ? "Hangup" : "Call"}
           </button>
         </div>
         <div class="status">
           <span class="status-indicator ${statusClass}"></span>
-          ${statusText}${this._selectedTarget && this._active ? ` - ${this._selectedTarget.name}` : ''}
+          ${statusText}
         </div>
         <div class="stats" id="stats">Sent: 0 | Recv: 0</div>
         <div class="error" id="err"></div>
@@ -239,18 +151,8 @@ class IntercomCard extends HTMLElement {
       </div>
     `;
 
-    // Event listeners
     const btn = this.shadowRoot.getElementById("btn");
     if (btn) btn.onclick = () => this._toggle();
-
-    const select = this.shadowRoot.getElementById("target-select");
-    if (select) {
-      select.onchange = (e) => {
-        const targetId = e.target.value;
-        this._selectedTarget = this._targets.find(t => t.id === targetId);
-        this._render();
-      };
-    }
   }
 
   _updateStats() {
@@ -269,17 +171,6 @@ class IntercomCard extends HTMLElement {
   }
 
   async _call() {
-    if (!this._selectedTarget) {
-      this._showError("No target selected");
-      return;
-    }
-
-    // For now, only Home Assistant (browser↔ESP) calls are supported
-    if (this._selectedTarget.type === "esp") {
-      this._showError("ESP↔ESP calls: coming soon");
-      return;
-    }
-
     // Get device info for the configured entity
     const deviceInfo = await this._getDeviceInfo();
     if (!deviceInfo || !deviceInfo.host) {
@@ -353,13 +244,11 @@ class IntercomCard extends HTMLElement {
   }
 
   async _getDeviceInfo() {
-    // Get device info from list_devices
     try {
       const result = await this._hass.connection.sendMessagePromise({
         type: "intercom_native/list_devices",
       });
       if (result && result.devices) {
-        // Find device matching our config (support both old and new config formats)
         const configId = this.config.entity_id || this.config.device_id;
         return result.devices.find(d =>
           d.device_id === configId ||
@@ -428,20 +317,16 @@ class IntercomCard extends HTMLElement {
     if (event.data.device_id !== this._activeDeviceInfo.device_id) return;
 
     const state = event.data.state;
-    console.log("[intercom-card] State event:", state);
 
     if (state === "streaming") {
-      // ESP answered the call, start streaming
       this._ringing = false;
       this._active = true;
       this._render();
     } else if (state === "ringing") {
-      // ESP is ringing (should already be handled by start response)
       this._ringing = true;
       this._active = false;
       this._render();
     } else if (state === "disconnected") {
-      // Connection lost
       this._hangup();
     }
   }
@@ -483,7 +368,7 @@ class IntercomCard extends HTMLElement {
     } catch (err) {}
   }
 
-  getCardSize() { return 4; }
+  getCardSize() { return 3; }
 
   static getConfigElement() {
     return document.createElement("intercom-card-editor");
@@ -573,6 +458,21 @@ class IntercomCardEditor extends HTMLElement {
           font-size: 0.85em;
           margin-top: 8px;
         }
+        .mode-info {
+          background: var(--secondary-background-color, #f5f5f5);
+          border-radius: 8px;
+          padding: 12px;
+          margin-top: 16px;
+        }
+        .mode-info h4 {
+          margin: 0 0 8px 0;
+          color: var(--primary-text-color);
+        }
+        .mode-info p {
+          margin: 0;
+          color: var(--secondary-text-color);
+          font-size: 0.9em;
+        }
       </style>
       <div style="padding: 16px;">
         <div class="form-group">
@@ -583,7 +483,7 @@ class IntercomCardEditor extends HTMLElement {
           </select>
           <div class="info">
             ${this._devicesLoaded
-              ? (this._devices.length === 0 ? 'No intercom devices found' : 'Select the intercom device this card represents')
+              ? (this._devices.length === 0 ? 'No intercom devices found' : 'Select the intercom device for this card')
               : 'Loading devices...'}
           </div>
         </div>
@@ -591,10 +491,14 @@ class IntercomCardEditor extends HTMLElement {
           <label>Card Name (optional)</label>
           <input type="text" id="name-input" value="${this._config.name || ''}" placeholder="Intercom">
         </div>
+        <div class="mode-info">
+          <h4>P2P Mode</h4>
+          <p>Direct audio streaming between this browser and the selected ESP device.</p>
+          <p style="margin-top: 8px; font-style: italic; color: #888;">PTMP mode (multi-device) coming soon!</p>
+        </div>
       </div>
     `;
 
-    // Event listeners
     const entitySelect = this.querySelector('#entity-select');
     if (entitySelect) {
       entitySelect.onchange = (e) => this._valueChanged('entity_id', e.target.value);
@@ -630,6 +534,6 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "intercom-card",
   name: "Intercom Card",
-  description: "Bidirectional audio intercom with ESP32 - select device in config",
+  description: "Bidirectional audio intercom with ESP32 (P2P mode)",
   preview: true,
 });
