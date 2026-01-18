@@ -200,6 +200,12 @@ void IntercomApi::stop() {
 
   ESP_LOGI(TAG, "Stopping intercom");
 
+  // Send STOP message to client (HA) before closing
+  if (this->client_.socket.load() >= 0) {
+    this->send_message_(this->client_.socket.load(), MessageType::STOP);
+    ESP_LOGD(TAG, "Sent STOP to client");
+  }
+
   // set_active_(false) handles synchronization: waits for tasks, then stops hardware
   this->set_active_(false);
 
@@ -367,6 +373,9 @@ void IntercomApi::set_active_(bool on) {
 void IntercomApi::set_streaming_(bool on) {
   this->client_.streaming.store(on, std::memory_order_release);
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
+  if (on) {
+    this->pending_incoming_call_ = false;  // Call answered, no longer pending
+  }
   this->publish_state_();
 }
 
@@ -438,7 +447,7 @@ void IntercomApi::server_task_() {
         FD_SET(sock, &write_fds);
         struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
 
-        ret = select(sock + 1, nullptr, &write_fds, nullptr, &tv);
+        ret = ::select(sock + 1, nullptr, &write_fds, nullptr, &tv);
         if (ret <= 0) {
           ESP_LOGE(TAG, "Connect timeout");
           close(sock);
@@ -494,7 +503,7 @@ void IntercomApi::server_task_() {
       FD_SET(this->client_.socket.load(), &read_fds);
       struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};  // 10ms
 
-      int ret = select(this->client_.socket.load() + 1, &read_fds, nullptr, nullptr, &tv);
+      int ret = ::select(this->client_.socket.load() + 1, &read_fds, nullptr, nullptr, &tv);
       if (ret > 0 && FD_ISSET(this->client_.socket.load(), &read_fds)) {
         MessageHeader header;
         if (this->receive_message_(this->client_.socket.load(), header, this->rx_buffer_, MAX_MESSAGE_SIZE)) {
@@ -908,6 +917,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       } else {
         // Auto-answer OFF: go to ringing state, wait for local answer
         this->state_ = ConnectionState::CONNECTED;  // Stay connected but not streaming
+        this->pending_incoming_call_ = true;  // Mark as incoming call waiting for answer
         this->send_message_(this->client_.socket.load(), MessageType::RING);
         ESP_LOGI(TAG, "Auto-answer OFF - sending RING, waiting for local answer");
         this->publish_state_();  // Publish "Ringing" state
@@ -917,6 +927,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
 
     case MessageType::STOP:
       ESP_LOGI(TAG, "Received STOP from client");
+      this->pending_incoming_call_ = false;  // Clear incoming call flag
       this->set_streaming_(false);
       this->set_active_(false);
       this->call_end_trigger_.trigger();

@@ -94,7 +94,8 @@ class IntercomApi : public Component {
   void decline_call();
   bool is_ringing() const { return this->state_ == ConnectionState::CONNECTED &&
                                    this->client_.socket.load() >= 0 &&
-                                   !this->client_.streaming.load(); }
+                                   !this->client_.streaming.load() &&
+                                   this->pending_incoming_call_; }
 
   // Mic gain control (dB scale: -20 to +20)
   void set_mic_gain_db(float db);
@@ -198,6 +199,9 @@ class IntercomApi : public Component {
 
   // Auto-answer (default true for backward compatibility)
   bool auto_answer_{true};
+
+  // Pending incoming call (waiting for local answer, NOT just stopped streaming)
+  bool pending_incoming_call_{false};
 
   // Mic gain (applied before sending to network)
   float mic_gain_{1.0f};

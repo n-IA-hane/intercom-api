@@ -264,6 +264,32 @@ class BridgeSession:
             _LOGGER.debug("Bridge dest answered: %s", bridge.bridge_id)
             bridge._check_both_connected()
 
+        def on_source_stop() -> None:
+            _LOGGER.info("Bridge source sent STOP (hangup): %s", bridge.bridge_id)
+            asyncio.create_task(bridge.stop())
+            bridge.hass.bus.async_fire(
+                "intercom_bridge_state",
+                {
+                    "bridge_id": bridge.bridge_id,
+                    "source_device_id": bridge.source_device_id,
+                    "dest_device_id": bridge.dest_device_id,
+                    "state": "disconnected",
+                }
+            )
+
+        def on_dest_stop() -> None:
+            _LOGGER.info("Bridge dest sent STOP (hangup): %s", bridge.bridge_id)
+            asyncio.create_task(bridge.stop())
+            bridge.hass.bus.async_fire(
+                "intercom_bridge_state",
+                {
+                    "bridge_id": bridge.bridge_id,
+                    "source_device_id": bridge.source_device_id,
+                    "dest_device_id": bridge.dest_device_id,
+                    "state": "disconnected",
+                }
+            )
+
         # Create TCP clients for both ESPs
         self._source_client = IntercomTcpClient(
             host=self.source_host,
@@ -272,6 +298,7 @@ class BridgeSession:
             on_disconnected=on_source_disconnected,
             on_ringing=lambda: None,
             on_answered=on_source_answered,
+            on_stop_received=on_source_stop,
         )
 
         self._dest_client = IntercomTcpClient(
@@ -281,6 +308,7 @@ class BridgeSession:
             on_disconnected=on_dest_disconnected,
             on_ringing=lambda: None,
             on_answered=on_dest_answered,
+            on_stop_received=on_dest_stop,
         )
 
         # Connect to both ESPs
@@ -454,13 +482,23 @@ def websocket_audio(
         vol.Required("type"): WS_TYPE_LIST,
     }
 )
-@callback
-def websocket_list_devices(
+@websocket_api.async_response
+async def websocket_list_devices(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
     msg: Dict[str, Any],
 ) -> None:
     """List ESPHome devices with intercom capability."""
+    devices = await _get_intercom_devices(hass)
+
+    # Automatically sync contacts to all ESP devices
+    await _sync_contacts_to_all_devices(hass, devices)
+
+    connection.send_result(msg["id"], {"devices": devices})
+
+
+async def _get_intercom_devices(hass: HomeAssistant) -> list:
+    """Get all intercom devices with their info."""
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers import device_registry as dr
 
@@ -511,7 +549,47 @@ def websocket_list_devices(
                 "esphome_id": esphome_id,
             })
 
-    connection.send_result(msg["id"], {"devices": devices})
+    return devices
+
+
+async def _sync_contacts_to_all_devices(hass: HomeAssistant, devices: list) -> None:
+    """Sync contacts list to all intercom ESP devices."""
+    from homeassistant.helpers import entity_registry as er
+
+    entity_registry = er.async_get(hass)
+
+    for device in devices:
+        device_id = device["device_id"]
+        device_name = device["name"]
+
+        # Build contacts list for this device: "Home Assistant" + all other devices
+        contacts = ["Home Assistant"]
+        for other_device in devices:
+            if other_device["device_id"] != device_id:
+                contacts.append(other_device["name"])
+
+        contacts_str = ",".join(contacts)
+
+        # Find contacts_data text entity for this device
+        for entity in entity_registry.entities.values():
+            if entity.device_id == device_id and "contacts" in entity.entity_id.lower():
+                try:
+                    # Check current value to avoid unnecessary updates
+                    current_state = hass.states.get(entity.entity_id)
+                    if current_state and current_state.state == contacts_str:
+                        _LOGGER.debug("Contacts already synced for %s", device_name)
+                        continue
+
+                    await hass.services.async_call(
+                        "text",
+                        "set_value",
+                        {"entity_id": entity.entity_id, "value": contacts_str},
+                        blocking=True,
+                    )
+                    _LOGGER.info("Synced contacts to %s: %s", device_name, contacts_str)
+                except Exception as err:
+                    _LOGGER.warning("Failed to sync contacts to %s: %s", device_name, err)
+                break
 
 
 @websocket_api.websocket_command(
@@ -519,8 +597,10 @@ def websocket_list_devices(
         vol.Required("type"): WS_TYPE_BRIDGE,
         vol.Required("source_device_id"): str,
         vol.Required("source_host"): str,
+        vol.Optional("source_name"): str,
         vol.Required("dest_device_id"): str,
         vol.Required("dest_host"): str,
+        vol.Optional("dest_name"): str,
     }
 )
 @websocket_api.async_response
@@ -532,8 +612,10 @@ async def websocket_bridge(
     """Start bridge between two ESP devices (PTMP mode)."""
     source_device_id = msg["source_device_id"]
     source_host = msg["source_host"]
+    source_name = msg.get("source_name", "Intercom")
     dest_device_id = msg["dest_device_id"]
     dest_host = msg["dest_host"]
+    dest_name = msg.get("dest_name", "Intercom")
     msg_id = msg["id"]
 
     # Create unique bridge ID
@@ -541,8 +623,8 @@ async def websocket_bridge(
 
     _LOGGER.info(
         "Bridge request: %s (%s) <-> %s (%s)",
-        source_device_id, source_host,
-        dest_device_id, dest_host
+        source_name, source_host,
+        dest_name, dest_host
     )
 
     try:
@@ -556,6 +638,9 @@ async def websocket_bridge(
             if device_id in _sessions:
                 old_session = _sessions.pop(device_id)
                 await old_session.stop()
+
+        # Set incoming_caller only on destination (callee) - source is the caller
+        await _set_incoming_caller(hass, dest_device_id, source_name)
 
         bridge = BridgeSession(
             hass=hass,
@@ -577,6 +662,28 @@ async def websocket_bridge(
     except Exception as err:
         _LOGGER.exception("Bridge exception: %s", err)
         connection.send_error(msg_id, "exception", str(err))
+
+
+async def _set_incoming_caller(hass: HomeAssistant, device_id: str, caller_name: str) -> None:
+    """Set the incoming_caller text entity on an ESP device."""
+    from homeassistant.helpers import entity_registry as er
+
+    entity_registry = er.async_get(hass)
+
+    # Find the incoming_caller text entity for this device
+    for entity in entity_registry.entities.values():
+        if entity.device_id == device_id and "incoming_caller" in entity.entity_id:
+            try:
+                await hass.services.async_call(
+                    "text",
+                    "set_value",
+                    {"entity_id": entity.entity_id, "value": caller_name},
+                    blocking=True,  # Wait for ESP to receive the value
+                )
+                _LOGGER.info("Set incoming_caller on %s to %s", entity.entity_id, caller_name)
+            except Exception as err:
+                _LOGGER.warning("Failed to set incoming_caller: %s", err)
+            break
 
 
 @websocket_api.websocket_command(

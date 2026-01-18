@@ -41,6 +41,7 @@ class IntercomTcpClient:
         on_disconnected: Optional[Callable[[], None]] = None,
         on_ringing: Optional[Callable[[], None]] = None,
         on_answered: Optional[Callable[[], None]] = None,
+        on_stop_received: Optional[Callable[[], None]] = None,
     ):
         IntercomTcpClient._instance_counter += 1
         self._instance_id = IntercomTcpClient._instance_counter
@@ -52,6 +53,7 @@ class IntercomTcpClient:
         self._on_disconnected = on_disconnected
         self._on_ringing = on_ringing
         self._on_answered = on_answered
+        self._on_stop_received = on_stop_received
 
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -290,9 +292,11 @@ class IntercomTcpClient:
                 self._on_answered()
 
         elif msg_type == MSG_STOP:
-            _LOGGER.debug("[TCP#%d] STOP received", self._instance_id)
+            _LOGGER.debug("[TCP#%d] STOP received from ESP", self._instance_id)
             self._streaming = False
             self._ringing = False
+            if self._on_stop_received:
+                self._on_stop_received()
 
         elif msg_type == MSG_PING:
             _LOGGER.debug("[TCP#%d] PING -> PONG", self._instance_id)

@@ -11,7 +11,7 @@
  * - Audio bridged through HA between two ESP devices
  */
 
-const INTERCOM_CARD_VERSION = "2.0.0";
+const INTERCOM_CARD_VERSION = "3.0.3";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -19,6 +19,7 @@ class IntercomCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._active = false;
     this._ringing = false;  // ESP is ringing, waiting for local answer
+    this._calling = false;  // Outgoing call, waiting for remote answer
     this._stopping = false;
     this._starting = false;
     this._audioContext = null;
@@ -35,8 +36,17 @@ class IntercomCard extends HTMLElement {
     this._chunksReceived = 0;
     this._activeDeviceInfo = null;  // Device info during active call
     // PTMP mode
-    this._availableDevices = [];    // List of all intercom devices for destination select
-    this._selectedDestination = null;  // Selected destination device in PTMP mode
+    this._availableDevices = [];    // List of all intercom devices (for IP lookup)
+    this._activeBridgeId = null;    // Bridge ID for PTMP hangup
+    this._callTargetName = null;    // Name of call target for status display
+    // Entity IDs for monitoring ESP state
+    this._intercomStateEntityId = null;
+    this._incomingCallerEntityId = null;
+    this._destinationSensorEntityId = null;   // Text sensor showing current destination
+    this._previousButtonEntityId = null;       // Previous contact button
+    this._nextButtonEntityId = null;           // Next contact button
+    this._lastEspState = null;
+    this._lastStopTime = null;                 // Debounce state changes after stop
   }
 
   setConfig(config) {
@@ -59,23 +69,122 @@ class IntercomCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const oldHass = this._hass;
     this._hass = hass;
+
     // Load available devices for PTMP destination selector
     if (hass && this._isPtmpMode() && this._availableDevices.length === 0) {
       this._loadAvailableDevices();
     }
+
+    // Find entity IDs for monitoring ESP state (once)
+    if (hass && !this._intercomStateEntityId) {
+      this._findEntityIds();
+    }
+
+    // Monitor ESP intercom_state for incoming calls
+    if (hass && this._intercomStateEntityId) {
+      const stateEntity = hass.states[this._intercomStateEntityId];
+      const newState = stateEntity?.state;
+
+      // Only react if state changed and we're not already in a call we initiated
+      // Also ignore state changes within 1 second of stopping (debounce)
+      const now = Date.now();
+      const recentlyStopped = this._lastStopTime && (now - this._lastStopTime) < 1000;
+      if (newState !== this._lastEspState && !this._starting && !this._stopping && !recentlyStopped) {
+        this._lastEspState = newState;
+
+        // If ESP goes to Ringing and we're not calling, it's an incoming call
+        if (newState === "Ringing" && !this._calling && !this._active) {
+          // Try to get caller name from incoming_caller entity
+          let callerName = "Unknown";
+          if (this._incomingCallerEntityId) {
+            const callerEntity = hass.states[this._incomingCallerEntityId];
+            if (callerEntity?.state && callerEntity.state !== "" && callerEntity.state !== "unknown") {
+              callerName = callerEntity.state;
+            }
+          }
+          this._callTargetName = callerName;
+          this._ringing = true;
+          this._render();
+        }
+        // If ESP goes to Streaming and we're ringing, the call was answered
+        else if (newState === "Streaming" && this._ringing) {
+          this._ringing = false;
+          this._active = true;
+          this._render();
+        }
+        // If ESP goes to Idle and we were in a call/ringing, it ended
+        else if (newState === "Idle" && (this._ringing || this._active || this._calling)) {
+          this._ringing = false;
+          this._active = false;
+          this._calling = false;
+          this._callTargetName = null;
+          this._render();
+        }
+      }
+    }
+  }
+
+  async _findEntityIds() {
+    if (!this._hass) return;
+    const deviceId = this._getConfigDeviceId();
+    if (!deviceId) return;
+
+    const deviceInfo = await this._getDeviceInfo();
+    if (!deviceInfo?.name) return;
+
+    // Try multiple name formats (e.g., "Intercom Mini" -> "intercom_mini", "intercom-mini")
+    const deviceNameVariants = [
+      deviceInfo.name.toLowerCase().replace(/\s+/g, '_'),
+      deviceInfo.name.toLowerCase().replace(/\s+/g, '-'),
+      deviceInfo.name.toLowerCase().replace(/\s+/g, ''),
+    ];
+
+    // Search for entities belonging to this device
+    for (const [entityId] of Object.entries(this._hass.states)) {
+      const entityIdLower = entityId.toLowerCase();
+
+      for (const nameVariant of deviceNameVariants) {
+        if (entityIdLower.includes("intercom_state") && entityIdLower.includes(nameVariant)) {
+          this._intercomStateEntityId = entityId;
+        }
+        if (entityIdLower.includes("incoming_caller") && entityIdLower.includes(nameVariant)) {
+          this._incomingCallerEntityId = entityId;
+        }
+        // Find the destination text sensor
+        if (entityIdLower.startsWith("sensor.") && entityIdLower.includes("destination") && entityIdLower.includes(nameVariant)) {
+          this._destinationSensorEntityId = entityId;
+        }
+        // Find previous/next contact buttons
+        if (entityIdLower.startsWith("button.") && entityIdLower.includes("previous") && entityIdLower.includes(nameVariant)) {
+          this._previousButtonEntityId = entityId;
+        }
+        if (entityIdLower.startsWith("button.") && entityIdLower.includes("next") && entityIdLower.includes(nameVariant)) {
+          this._nextButtonEntityId = entityId;
+        }
+      }
+    }
+
+    console.log("Found entity IDs:", {
+      state: this._intercomStateEntityId,
+      caller: this._incomingCallerEntityId,
+      destination: this._destinationSensorEntityId,
+      prevBtn: this._previousButtonEntityId,
+      nextBtn: this._nextButtonEntityId
+    });
   }
 
   async _loadAvailableDevices() {
     if (!this._hass) return;
     try {
+      // This call also triggers HA to sync contacts to all ESP devices
       const result = await this._hass.connection.sendMessagePromise({
         type: "intercom_native/list_devices",
       });
       if (result && result.devices) {
-        // Exclude the current device from destinations
-        const currentDeviceId = this._getConfigDeviceId();
-        this._availableDevices = result.devices.filter(d => d.device_id !== currentDeviceId);
+        // Store all devices for IP lookup when bridging
+        this._availableDevices = result.devices;
         this._render();
       }
     } catch (err) {
@@ -119,19 +228,23 @@ class IntercomCard extends HTMLElement {
 
     const statusText = this._starting ? "Connecting..." :
                        this._stopping ? "Ending call..." :
-                       this._ringing ? "Ringing..." :
+                       this._ringing ? `Incoming: ${this._callTargetName || 'Unknown'}` :
+                       this._calling ? `Calling ${this._callTargetName || ''}...` :
                        this._active ? "In Call" : "Ready";
     const statusClass = this._starting || this._stopping ? "transitioning" :
                         this._ringing ? "ringing" :
+                        this._calling ? "transitioning" :
                         this._active ? "connected" : "disconnected";
 
-    // Build destination options for PTMP mode
+    // Get current destination from ESP text sensor
     const isPtmp = this._isPtmpMode();
-    const destinationOptions = isPtmp
-      ? this._availableDevices.map(d =>
-          `<option value="${d.device_id}" ${this._selectedDestination === d.device_id ? 'selected' : ''}>${d.name}</option>`
-        ).join('')
-      : '';
+    let currentDestination = 'Home Assistant';
+    if (isPtmp && this._destinationSensorEntityId && this._hass) {
+      const destEntity = this._hass.states[this._destinationSensorEntityId];
+      if (destEntity && destEntity.state) {
+        currentDestination = destEntity.state;
+      }
+    }
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -144,23 +257,42 @@ class IntercomCard extends HTMLElement {
         }
         .header { font-size: 1.2em; font-weight: 500; margin-bottom: 16px; color: var(--primary-text-color); }
 
-        .destination-selector {
+        .destination-row {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
           margin-bottom: 16px;
         }
-        .destination-selector label {
-          display: block;
-          font-size: 0.85em;
-          color: var(--secondary-text-color);
-          margin-bottom: 4px;
-        }
-        .destination-selector select {
-          width: 100%;
-          padding: 8px 12px;
+        .destination-row .nav-btn {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
           border: 1px solid var(--divider-color, #ccc);
-          border-radius: 8px;
           background: var(--card-background-color, white);
           color: var(--primary-text-color);
-          font-size: 1em;
+          cursor: pointer;
+          font-size: 1.2em;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .destination-row .nav-btn:hover {
+          background: var(--secondary-background-color, #f5f5f5);
+        }
+        .destination-row .destination-value {
+          flex: 1;
+          text-align: center;
+          font-size: 1.1em;
+          font-weight: 500;
+          color: var(--primary-text-color);
+          padding: 8px 0;
+        }
+        .destination-row .destination-label {
+          font-size: 0.75em;
+          color: var(--secondary-text-color);
+          display: block;
+          margin-bottom: 2px;
         }
         .mode-badge {
           display: inline-block;
@@ -209,18 +341,19 @@ class IntercomCard extends HTMLElement {
           <span class="mode-badge ${isPtmp ? 'ptmp' : 'p2p'}">${isPtmp ? 'PTMP' : 'P2P'}</span>
         </div>
         ${isPtmp ? `
-        <div class="destination-selector">
-          <label>Destination</label>
-          <select id="destination-select">
-            <option value="">-- Select destination --</option>
-            ${destinationOptions}
-          </select>
+        <div class="destination-row">
+          <button class="nav-btn" id="prev-btn" title="Previous">&lt;</button>
+          <div class="destination-value">
+            <span class="destination-label">Destination</span>
+            ${currentDestination}
+          </div>
+          <button class="nav-btn" id="next-btn" title="Next">&gt;</button>
         </div>
         ` : ''}
         <div class="button-container">
-          <button class="intercom-button ${this._active ? "hangup" : this._ringing ? "ringing" : "call"}" id="btn"
-                  ${this._starting || this._stopping || (isPtmp && !this._selectedDestination && !this._active) ? "disabled" : ""}>
-            ${this._stopping ? "..." : this._active || this._ringing ? "Hangup" : isPtmp ? "Bridge" : "Call"}
+          <button class="intercom-button ${this._active || this._calling ? "hangup" : this._ringing ? "ringing" : "call"}" id="btn"
+                  ${this._starting || this._stopping || (isPtmp && !currentDestination && !this._active && !this._calling && !this._ringing) ? "disabled" : ""}>
+            ${this._stopping ? "..." : this._ringing ? "Answer" : this._active || this._calling ? "Hangup" : "Call"}
           </button>
         </div>
         <div class="status">
@@ -236,12 +369,25 @@ class IntercomCard extends HTMLElement {
     const btn = this.shadowRoot.getElementById("btn");
     if (btn) btn.onclick = () => this._toggle();
 
-    // PTMP destination selector
-    const destSelect = this.shadowRoot.getElementById("destination-select");
-    if (destSelect) {
-      destSelect.onchange = (e) => {
-        this._selectedDestination = e.target.value || null;
-        this._render();
+    // PTMP prev/next buttons - press ESP buttons to cycle contacts
+    const prevBtn = this.shadowRoot.getElementById("prev-btn");
+    const nextBtn = this.shadowRoot.getElementById("next-btn");
+    if (prevBtn) {
+      prevBtn.onclick = async () => {
+        if (this._previousButtonEntityId) {
+          await this._hass.callService("button", "press", { entity_id: this._previousButtonEntityId });
+          // Re-render after short delay to show updated destination
+          setTimeout(() => this._render(), 300);
+        }
+      };
+    }
+    if (nextBtn) {
+      nextBtn.onclick = async () => {
+        if (this._nextButtonEntityId) {
+          await this._hass.callService("button", "press", { entity_id: this._nextButtonEntityId });
+          // Re-render after short delay to show updated destination
+          setTimeout(() => this._render(), 300);
+        }
       };
     }
   }
@@ -258,12 +404,71 @@ class IntercomCard extends HTMLElement {
 
   async _toggle() {
     if (this._starting || this._stopping) return;
-    if (this._active || this._ringing) {
+
+    // If ringing (incoming call), answer it
+    if (this._ringing) {
+      await this._answerIncoming();
+      return;
+    }
+
+    // If in call or calling, hang up
+    if (this._active || this._calling) {
       await this._hangup();
-    } else if (this._isPtmpMode()) {
-      await this._bridge();
+      return;
+    }
+
+    // Start new call
+    if (this._isPtmpMode()) {
+      // Get current destination from ESP text sensor
+      const destEntity = this._hass?.states[this._destinationSensorEntityId];
+      const currentDestination = destEntity?.state || "Home Assistant";
+
+      // Check if destination is Home Assistant (use P2P) or another ESP (use bridge)
+      if (currentDestination === "Home Assistant") {
+        await this._call();
+      } else {
+        await this._bridge(currentDestination);
+      }
     } else {
       await this._call();
+    }
+  }
+
+  async _answerIncoming() {
+    // Answer an incoming call detected via ESP state monitoring
+    // The ESP is already in Ringing state, we need to answer via ESPHome button
+    const deviceInfo = await this._getDeviceInfo();
+    if (!deviceInfo) {
+      this._showError("Device not found");
+      return;
+    }
+
+    this._activeDeviceInfo = deviceInfo;
+    this._starting = true;
+    this._render();
+
+    try {
+      // Call the ESP's call button to answer (acts as toggle)
+      // Find the call button entity
+      for (const [entityId, state] of Object.entries(this._hass.states)) {
+        if (entityId.startsWith("button.") && entityId.includes("call") &&
+            entityId.toLowerCase().includes(deviceInfo.name?.toLowerCase().replace(/\s+/g, '_'))) {
+          await this._hass.callService("button", "press", { entity_id: entityId });
+          break;
+        }
+      }
+
+      // Wait a moment for ESP to process
+      await new Promise(r => setTimeout(r, 500));
+
+      this._ringing = false;
+      this._active = true;
+      this._starting = false;
+      this._render();
+    } catch (err) {
+      this._showError(err.message || String(err));
+      this._starting = false;
+      this._render();
     }
   }
 
@@ -275,8 +480,10 @@ class IntercomCard extends HTMLElement {
       return;
     }
     this._activeDeviceInfo = deviceInfo;
+    this._callTargetName = deviceInfo.name || "ESP";
 
     this._starting = true;
+    this._calling = true;  // Outgoing call
     this._render();
     this._showError("");
     this._chunksSent = 0;
@@ -321,13 +528,13 @@ class IntercomCard extends HTMLElement {
 
       // Handle initial state based on response
       if (result.state === "ringing") {
-        // ESP has auto_answer OFF, waiting for local answer
-        this._ringing = true;
+        // ESP has auto_answer OFF, waiting for remote answer
+        this._calling = true;
         this._active = false;
       } else {
-        // Streaming started immediately
+        // Streaming started immediately (auto_answer ON)
         this._active = true;
-        this._ringing = false;
+        this._calling = false;
       }
 
       this._starting = false;
@@ -336,6 +543,7 @@ class IntercomCard extends HTMLElement {
       this._showError(err.message || String(err));
       await this._cleanup();
       this._starting = false;
+      this._calling = false;
       this._render();
     }
   }
@@ -360,7 +568,7 @@ class IntercomCard extends HTMLElement {
     return null;
   }
 
-  async _bridge() {
+  async _bridge(destinationName) {
     // PTMP mode: bridge audio between source ESP and destination ESP
     const sourceDeviceInfo = await this._getDeviceInfo();
     if (!sourceDeviceInfo || !sourceDeviceInfo.host) {
@@ -368,14 +576,17 @@ class IntercomCard extends HTMLElement {
       return;
     }
 
-    const destDevice = this._availableDevices.find(d => d.device_id === this._selectedDestination);
+    // Find destination device by name
+    const destDevice = this._availableDevices.find(d => d.name === destinationName);
     if (!destDevice || !destDevice.host) {
-      this._showError("Destination device not selected or IP not available");
+      this._showError(`Destination "${destinationName}" not found or IP not available`);
       return;
     }
 
     this._activeDeviceInfo = sourceDeviceInfo;
+    this._callTargetName = destinationName;
     this._starting = true;
+    this._calling = true;  // Outgoing call
     this._render();
     this._showError("");
 
@@ -384,11 +595,16 @@ class IntercomCard extends HTMLElement {
         type: "intercom_native/bridge",
         source_device_id: sourceDeviceInfo.device_id,
         source_host: sourceDeviceInfo.host,
+        source_name: sourceDeviceInfo.name || "Intercom",
         dest_device_id: destDevice.device_id,
         dest_host: destDevice.host,
+        dest_name: destDevice.name || "Intercom",
       });
 
       if (!result.success) throw new Error(result.error || "Bridge failed");
+
+      // Store bridge ID for hangup
+      this._activeBridgeId = result.bridge_id;
 
       // Subscribe to state events for bridge status
       this._unsubscribeState = await this._hass.connection.subscribeEvents(
@@ -396,20 +612,21 @@ class IntercomCard extends HTMLElement {
       );
 
       this._active = true;
+      this._calling = false;
       this._starting = false;
       this._render();
     } catch (err) {
       this._showError(err.message || String(err));
       this._starting = false;
+      this._calling = false;
       this._render();
     }
   }
 
   _handleBridgeStateEvent(event) {
-    if (!event.data || !this._activeDeviceInfo) return;
+    if (!event.data || !this._activeBridgeId) return;
     // Check if this event is for our bridge session
-    if (event.data.source_device_id !== this._activeDeviceInfo.device_id &&
-        event.data.dest_device_id !== this._selectedDestination) return;
+    if (event.data.bridge_id !== this._activeBridgeId) return;
 
     const state = event.data.state;
     if (state === "connected") {
@@ -424,18 +641,30 @@ class IntercomCard extends HTMLElement {
     this._stopping = true;
     this._render();
     try {
-      if (this._activeDeviceInfo) {
+      // If we have an active bridge (PTMP mode), stop it
+      if (this._activeBridgeId) {
+        await this._hass.connection.sendMessagePromise({
+          type: "intercom_native/bridge_stop",
+          bridge_id: this._activeBridgeId,
+        });
+      } else if (this._activeDeviceInfo) {
+        // P2P mode - stop the session
         await this._hass.connection.sendMessagePromise({
           type: "intercom_native/stop",
           device_id: this._activeDeviceInfo.device_id,
         });
       }
-    } catch (err) {}
+    } catch (err) {
+      console.error("Hangup error:", err);
+    }
     await this._cleanup();
     this._active = false;
+    this._calling = false;
     this._ringing = false;
     this._stopping = false;
     this._activeDeviceInfo = null;
+    this._activeBridgeId = null;
+    this._callTargetName = null;
     this._render();
   }
 
@@ -451,10 +680,12 @@ class IntercomCard extends HTMLElement {
     this._nextPlayTime = 0;
     this._chunksDropped = 0;
     this._ringing = false;
+    this._calling = false;
+    this._lastStopTime = Date.now();  // Debounce state changes after stop
   }
 
   _sendAudio(int16Array) {
-    if (!this._active || !this._activeDeviceInfo) return;
+    if ((!this._active && !this._calling) || !this._activeDeviceInfo) return;
     const bytes = new Uint8Array(int16Array.buffer);
     let binary = "";
     for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -477,10 +708,12 @@ class IntercomCard extends HTMLElement {
 
     if (state === "streaming") {
       this._ringing = false;
+      this._calling = false;
       this._active = true;
       this._render();
     } else if (state === "ringing") {
-      this._ringing = true;
+      // ESP is ringing, we're calling
+      this._calling = true;
       this._active = false;
       this._render();
     } else if (state === "disconnected") {

@@ -223,6 +223,22 @@ script:
           id(contact_index) = (id(contact_index) + 1) % id(contacts).size();
           id(peer_name) = id(contacts)[id(contact_index)];
           ESP_LOGI("intercom", "Selected contact: %s", id(peer_name).c_str());
+      - component.update: destination_sensor
+      - script.execute: update_display_page
+
+  # Cycle to previous contact
+  - id: previous_contact
+    then:
+      - lambda: |-
+          if (id(contacts).empty()) {
+            ESP_LOGW("intercom", "No contacts available");
+            return;
+          }
+          int size = id(contacts).size();
+          id(contact_index) = (id(contact_index) - 1 + size) % size;
+          id(peer_name) = id(contacts)[id(contact_index)];
+          ESP_LOGI("intercom", "Selected contact: %s", id(peer_name).c_str());
+      - component.update: destination_sensor
       - script.execute: update_display_page
 
   # Update display page based on intercom state
@@ -308,16 +324,37 @@ text_sensor:
               - script.execute: stop_ringing_timeout
 
   # Peer name for display (set by HA when bridging)
+  # Currently selected destination (from contacts array)
   - platform: template
-    id: call_peer
-    name: "Call Peer"
-    lambda: 'return id(peer_name);'
-    update_interval: 1s
+    id: destination_sensor
+    name: "Destination"
+    icon: "mdi:phone-forward"
+    update_interval: never
+    lambda: |-
+      if (id(contacts).empty()) return std::string("Home Assistant");
+      int idx = id(contact_index) % id(contacts).size();
+      return id(contacts)[idx];
 
 # ==============================================================================
-# CONTACTS (received from HA)
+# CONTACTS & CALLER INFO (received from HA)
 # ==============================================================================
 text:
+  - platform: template
+    id: incoming_caller
+    name: "Incoming Caller"
+    mode: text
+    entity_category: config
+    optimistic: true
+    on_value:
+      then:
+        - lambda: |-
+            // Set by HA when someone is calling this device
+            if (!x.empty()) {
+              id(peer_name) = x;
+              ESP_LOGI("intercom", "Incoming call from: %s", x.c_str());
+            }
+        - script.execute: update_display_page
+
   - platform: template
     id: contacts_data
     name: "Contacts"
@@ -344,11 +381,12 @@ text:
                 data.erase(0, pos + 1);
               }
             }
-            // Reset index and select first contact
+            // Reset to first contact and update display
             id(contact_index) = 0;
             if (!id(contacts).empty()) {
               id(peer_name) = id(contacts)[0];
             }
+            id(destination_sensor).update();
             ESP_LOGI("intercom", "Loaded %d contacts", id(contacts).size());
         - script.execute: update_display_page
 
@@ -455,6 +493,13 @@ button:
                 data:
                   device: "${name}"
             - lambda: 'id(intercom).start();'
+
+  - platform: template
+    id: previous_contact_button
+    name: "Previous Contact"
+    icon: "mdi:account-arrow-left"
+    on_press:
+      - script.execute: previous_contact
 
   - platform: template
     id: next_contact_button
