@@ -5,6 +5,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 #include <esp_heap_caps.h>
+#include <algorithm>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
@@ -430,22 +431,27 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
   // PTMP only - in P2P mode, contacts are not used
   if (!this->ptmp_mode_) return;
 
+  // Save current selection to preserve it if possible
+  const std::string previous = this->get_current_destination();
+
   // Parse CSV: "Home Assistant,Intercom Mini,Intercom Xiaozhi"
   // Exclude this device's own name from contacts
   this->contacts_.clear();
+  this->contacts_.reserve(16);
 
   if (contacts_csv.empty()) {
     this->contacts_.push_back("Home Assistant");
   } else {
-    std::string data = contacts_csv;
-    size_t pos;
-    while (!data.empty()) {
-      pos = data.find(',');
-      std::string name = (pos != std::string::npos) ? data.substr(0, pos) : data;
+    size_t start = 0;
+    while (start <= contacts_csv.size()) {
+      size_t pos = contacts_csv.find(',', start);
+      size_t end = (pos == std::string::npos) ? contacts_csv.size() : pos;
+
+      std::string name = contacts_csv.substr(start, end - start);
 
       // Trim whitespace
-      while (!name.empty() && name[0] == ' ') name.erase(0, 1);
-      while (!name.empty() && name[name.size() - 1] == ' ') name.erase(name.size() - 1);
+      while (!name.empty() && name.front() == ' ') name.erase(0, 1);
+      while (!name.empty() && name.back() == ' ') name.pop_back();
 
       // Add if not empty and not this device
       if (!name.empty() && name != this->device_name_) {
@@ -453,7 +459,7 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
       }
 
       if (pos == std::string::npos) break;
-      data.erase(0, pos + 1);
+      start = pos + 1;
     }
   }
 
@@ -462,8 +468,12 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
     this->contacts_.push_back("Home Assistant");
   }
 
-  // Reset to first contact
-  this->contact_index_ = 0;
+  // Preserve selection if contact still exists, otherwise reset to 0
+  auto it = std::find(this->contacts_.begin(), this->contacts_.end(), previous);
+  this->contact_index_ = (it != this->contacts_.end())
+      ? static_cast<size_t>(std::distance(this->contacts_.begin(), it))
+      : 0;
+
   this->publish_destination_();
   this->publish_contacts_();  // Publish updated contacts list
 

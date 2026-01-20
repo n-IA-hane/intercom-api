@@ -152,6 +152,7 @@ class IntercomApi : public Component {
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
+  std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
   std::string get_contacts_csv() const;
 
   // Triggers

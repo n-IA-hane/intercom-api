@@ -59,6 +59,8 @@ psram:
 # CONNECTIVITY
 # ==============================================================================
 api:
+  on_client_connected:
+    - lambda: 'id(intercom).publish_entity_states();'
 
 ota:
   - platform: esphome
@@ -175,7 +177,7 @@ intercom_api:
     - light.turn_on:
         id: status_led
         effect: "Ringing"
-    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    - lambda: 'id(peer_name) = id(intercom).get_caller();'
     - script.execute: update_display_page
 
   on_streaming:
@@ -296,7 +298,6 @@ number:
     mic_gain:
       id: mic_gain
       name: "Mic Gain"
-      restore_value: true
 
   # Speaker volume with ES8311 hardware control (different from intercom_api volume)
   - platform: template
@@ -337,7 +338,10 @@ binary_sensor:
     id: node_status
     name: "Status"
 
-  # Main button - short press: call/answer/hangup, long press: next contact
+  # Main button:
+  #   - Short press (50-500ms): call/answer/hangup
+  #   - Long press (1-3s): next contact
+  #   - Very long press (5s+): refresh contacts
   - platform: gpio
     pin:
       number: GPIO0
@@ -346,19 +350,25 @@ binary_sensor:
     id: main_button
     name: "Main Button"
     icon: "mdi:gesture-tap-button"
-    on_click:
-      min_length: 50ms
-      max_length: 500ms
-      then:
-        - button.press: call_button
     on_multi_click:
+      # Short press: call/answer/hangup
       - timing:
-          - ON for at least 0.8s
+          - ON for at most 500ms
+        then:
+          - button.press: call_button
+      # Long press (1-3s): next contact
+      - timing:
+          - ON for 1s to 3s
         then:
           - intercom_api.next_contact:
               id: intercom
           - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
           - script.execute: update_display_page
+      # Very long press (5s+): refresh contacts
+      - timing:
+          - ON for at least 5s
+        then:
+          - button.press: refresh_contacts_button
 
   - platform: gpio
     pin:

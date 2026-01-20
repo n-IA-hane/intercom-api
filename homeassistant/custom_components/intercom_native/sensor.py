@@ -82,7 +82,7 @@ class IntercomActiveDevicesSensor(SensorEntity):
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
 
-        active_devices = ["Home Assistant"]  # Always include HA
+        names: set[str] = set()  # Use set for deduplication
 
         # Find all intercom_state entities and check if they're available
         for entity in entity_registry.entities.values():
@@ -98,7 +98,10 @@ class IntercomActiveDevicesSensor(SensorEntity):
             if entity.device_id:
                 device = device_registry.async_get(entity.device_id)
                 if device and device.name:
-                    active_devices.append(device.name)
+                    names.add(device.name.strip())
+
+        # Sort for stable order, prepend Home Assistant
+        active_devices = ["Home Assistant"] + sorted(names, key=str.casefold)
 
         # Update sensor value
         new_value = ",".join(active_devices)

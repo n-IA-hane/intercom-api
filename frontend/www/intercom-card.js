@@ -11,7 +11,7 @@
  * - Audio bridged through HA between two ESP devices
  */
 
-const INTERCOM_CARD_VERSION = "3.3.2";
+const INTERCOM_CARD_VERSION = "3.3.3";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -112,6 +112,20 @@ class IntercomCard extends HTMLElement {
         // If ESP goes to Streaming and we're ringing, the call was answered
         else if (newState === "Streaming" && this._ringing) {
           this._ringing = false;
+          this._active = true;
+          this._render();
+        }
+        // If ESP goes to Streaming externally (bridge call), show hangup
+        else if (newState === "Streaming" && !this._calling && !this._active) {
+          // External call - get peer name from caller sensor
+          let peerName = "";
+          if (this._incomingCallerEntityId) {
+            const callerEntity = hass.states[this._incomingCallerEntityId];
+            if (callerEntity?.state && callerEntity.state !== "" && callerEntity.state !== "unknown") {
+              peerName = callerEntity.state;
+            }
+          }
+          this._callTargetName = peerName || "In Call";
           this._active = true;
           this._render();
         }

@@ -210,7 +210,7 @@ button:
                         - homeassistant.event:
                             event: esphome.doorbell_ring
                             data:
-                              device: "${name}"
+                              device: "${friendly_name}"
                       else:
                         - intercom_api.start:
                             id: intercom

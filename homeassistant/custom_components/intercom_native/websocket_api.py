@@ -387,8 +387,8 @@ class BridgeSession:
 
         # Start streaming on both
         # Source (caller) uses NO_RING flag - should never ring, always start streaming
-        # Dest (callee) may ring if auto_answer is OFF, receives caller name via TCP protocol
-        source_result = await self._source_client.start_stream(flags=FLAG_NO_RING)
+        # Both receive the other's name so they know who they're talking to
+        source_result = await self._source_client.start_stream(flags=FLAG_NO_RING, caller_name=self.dest_name)
         dest_result = await self._dest_client.start_stream(caller_name=self.source_name)
 
         if source_result == "error" or dest_result == "error":
