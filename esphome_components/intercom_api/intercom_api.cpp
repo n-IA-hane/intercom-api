@@ -6,6 +6,7 @@
 #include "esphome/core/application.h"
 #include <esp_heap_caps.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
@@ -161,42 +162,13 @@ void IntercomApi::setup() {
     return;
   }
 
+  // Load persisted settings from flash (volume, mic gain, auto-answer, AEC)
+  this->load_settings_();
+
   // Deferred publish of initial sensor values (wait for sensors to be fully ready)
   this->set_timeout(250, [this]() {
     this->publish_state_();
     this->publish_destination_();
-  });
-
-  // Sync state from registered entities AFTER ESPHome has restored them
-  // This ensures the parent component has the correct state from boot
-  // NOTE: Don't use has_state() here - it's false at boot even if state is valid from flash
-  this->set_timeout(0, [this]() {
-    // Sync auto_answer from switch (state is valid even if has_state() is false)
-    if (this->auto_answer_switch_ != nullptr) {
-      this->auto_answer_ = this->auto_answer_switch_->state;
-      ESP_LOGD(TAG, "Synced auto_answer from switch: %s", this->auto_answer_ ? "ON" : "OFF");
-    }
-
-    // Sync volume from number
-    if (this->volume_number_ != nullptr) {
-      this->volume_ = this->volume_number_->state / 100.0f;
-      ESP_LOGD(TAG, "Synced volume from number: %.0f%%", this->volume_number_->state);
-    }
-
-    // Sync mic gain from number
-    if (this->mic_gain_number_ != nullptr) {
-      float db = this->mic_gain_number_->state;
-      this->mic_gain_ = powf(10.0f, db / 20.0f);
-      ESP_LOGD(TAG, "Synced mic_gain from number: %.1fdB", db);
-    }
-
-#ifdef USE_ESP_AEC
-    // Sync AEC from switch
-    if (this->aec_switch_ != nullptr) {
-      this->aec_enabled_ = this->aec_switch_->state;
-      ESP_LOGD(TAG, "Synced AEC from switch: %s", this->aec_enabled_ ? "ON" : "OFF");
-    }
-#endif
   });
 
   ESP_LOGI(TAG, "Intercom API ready on port %d", INTERCOM_PORT);
@@ -234,16 +206,18 @@ void IntercomApi::dump_config() {
 }
 
 void IntercomApi::publish_entity_states() {
-  // Publish restored entity states to HA
+  // Publish REAL internal values to HA (not entity states which may be stale)
   // Call this from YAML: api: on_client_connected: - lambda: 'id(intercom).publish_entity_states();'
-  // This ensures HA sees values on boot, reconnect, and HA restart
-  ESP_LOGI(TAG, "Publishing entity states to HA");
+  // This ensures HA sees correct values on boot, reconnect, and HA restart
+  ESP_LOGI(TAG, "Publishing entity states to HA (vol=%.0f%%, mic=%.1fdB, auto=%s, aec=%s)",
+           this->volume_ * 100.0f, this->mic_gain_db_,
+           this->auto_answer_ ? "ON" : "OFF", this->aec_enabled_ ? "ON" : "OFF");
 
   if (this->volume_number_ != nullptr) {
-    this->volume_number_->publish_state(this->volume_number_->state);
+    this->volume_number_->publish_state(this->volume_ * 100.0f);
   }
   if (this->mic_gain_number_ != nullptr) {
-    this->mic_gain_number_->publish_state(this->mic_gain_number_->state);
+    this->mic_gain_number_->publish_state(this->mic_gain_db_);
   }
   if (this->auto_answer_switch_ != nullptr) {
     this->auto_answer_switch_->publish_state(this->auto_answer_);
@@ -253,6 +227,77 @@ void IntercomApi::publish_entity_states() {
     this->aec_switch_->publish_state(this->aec_enabled_);
   }
 #endif
+}
+
+// === Settings persistence ===
+
+void IntercomApi::load_settings_() {
+  // Use a fixed hash for the preference key (component doesn't have get_object_id_hash)
+  this->settings_pref_ = global_preferences->make_preference<StoredSettings>(fnv1_hash("intercom_api_settings"));
+
+  StoredSettings stored;
+  if (this->settings_pref_.load(&stored) && stored.version == SETTINGS_VERSION) {
+    this->suppress_save_ = true;  // Don't save while loading
+
+    // Apply volume
+    this->volume_ = stored.volume_pct / 100.0f;
+    ESP_LOGI(TAG, "Loaded volume: %d%%", stored.volume_pct);
+
+    // Apply mic gain
+    this->mic_gain_db_ = stored.mic_gain_db;
+    this->mic_gain_ = std::pow(10.0f, this->mic_gain_db_ / 20.0f);
+    ESP_LOGI(TAG, "Loaded mic_gain: %.1fdB", this->mic_gain_db_);
+
+    // Apply auto_answer
+    this->auto_answer_ = (stored.flags & FLAG_AUTO_ANSWER) != 0;
+    ESP_LOGI(TAG, "Loaded auto_answer: %s", this->auto_answer_ ? "ON" : "OFF");
+
+#ifdef USE_ESP_AEC
+    // Apply AEC (only if AEC is initialized)
+    bool aec_requested = (stored.flags & FLAG_AEC) != 0;
+    if (aec_requested && this->aec_ != nullptr && this->aec_->is_initialized()) {
+      this->aec_enabled_ = true;
+      ESP_LOGI(TAG, "Loaded AEC: ON");
+    } else {
+      this->aec_enabled_ = false;
+      ESP_LOGI(TAG, "Loaded AEC: OFF (requested=%s, available=%s)",
+               aec_requested ? "yes" : "no",
+               (this->aec_ != nullptr && this->aec_->is_initialized()) ? "yes" : "no");
+    }
+#endif
+
+    this->suppress_save_ = false;
+  } else {
+    ESP_LOGI(TAG, "No saved settings, using defaults (vol=100%%, mic=0dB, auto=ON, aec=OFF)");
+  }
+}
+
+void IntercomApi::schedule_save_settings_() {
+  if (this->suppress_save_ || this->save_scheduled_) {
+    return;
+  }
+  this->save_scheduled_ = true;
+  // Debounce: save after 250ms to avoid rapid writes when slider moves
+  this->set_timeout(250, [this]() {
+    this->save_scheduled_ = false;
+    this->save_settings_();
+  });
+}
+
+void IntercomApi::save_settings_() {
+  StoredSettings stored;
+  stored.version = SETTINGS_VERSION;
+  stored.volume_pct = static_cast<uint8_t>(std::lround(this->volume_ * 100.0f));
+  stored.mic_gain_db = static_cast<int8_t>(std::lround(this->mic_gain_db_));
+  stored.flags = 0;
+  if (this->auto_answer_) stored.flags |= FLAG_AUTO_ANSWER;
+#ifdef USE_ESP_AEC
+  if (this->aec_enabled_) stored.flags |= FLAG_AEC;
+#endif
+
+  this->settings_pref_.save(&stored);
+  ESP_LOGD(TAG, "Saved settings: vol=%d%%, mic=%ddB, flags=0x%02X",
+           stored.volume_pct, stored.mic_gain_db, stored.flags);
 }
 
 void IntercomApi::start() {
@@ -357,30 +402,39 @@ void IntercomApi::set_volume(float volume) {
     this->speaker_->set_volume(this->volume_);
   }
 #endif
+  this->schedule_save_settings_();
 }
 
 void IntercomApi::set_auto_answer(bool enabled) {
   this->auto_answer_ = enabled;
   ESP_LOGI(TAG, "Auto-answer set to %s", enabled ? "ON" : "OFF");
+  this->schedule_save_settings_();
 }
 
 void IntercomApi::set_mic_gain_db(float db) {
   // Convert dB to linear gain: gain = 10^(dB/20)
   // Range: -20dB (0.1x) to +20dB (10x)
   db = std::max(-20.0f, std::min(20.0f, db));
-  this->mic_gain_ = powf(10.0f, db / 20.0f);
+  this->mic_gain_db_ = db;
+  this->mic_gain_ = std::pow(10.0f, db / 20.0f);
   ESP_LOGD(TAG, "Mic gain set to %.1f dB (%.2fx)", db, this->mic_gain_);
+  this->schedule_save_settings_();
 }
 
 #ifdef USE_ESP_AEC
 void IntercomApi::set_aec_enabled(bool enabled) {
-  if (this->aec_ == nullptr || !this->aec_->is_initialized()) {
-    ESP_LOGW(TAG, "Cannot enable AEC: not initialized");
-    return;
-  }
-  if (this->aec_mic_ == nullptr) {
-    ESP_LOGW(TAG, "Cannot enable AEC: buffers not allocated");
-    return;
+  if (enabled) {
+    // Only allow enabling if AEC is properly initialized
+    if (this->aec_ == nullptr || !this->aec_->is_initialized()) {
+      ESP_LOGW(TAG, "Cannot enable AEC: not initialized");
+      this->aec_enabled_ = false;
+      return;
+    }
+    if (this->aec_mic_ == nullptr) {
+      ESP_LOGW(TAG, "Cannot enable AEC: buffers not allocated");
+      this->aec_enabled_ = false;
+      return;
+    }
   }
   this->aec_enabled_ = enabled;
   // Reset fill levels when toggling
@@ -390,6 +444,7 @@ void IntercomApi::set_aec_enabled(bool enabled) {
     this->spk_ref_buffer_->reset();
   }
   ESP_LOGI(TAG, "AEC %s", enabled ? "enabled" : "disabled");
+  this->schedule_save_settings_();
 }
 #endif
 
@@ -820,10 +875,16 @@ void IntercomApi::tx_task_() {
           } else {
             // Not enough reference - use silence (still process to reduce latency)
             memset(this->aec_ref_, 0, ref_bytes_needed);
+            static uint32_t last_warn = 0;
+            if (millis() - last_warn > 5000) {
+              ESP_LOGW(TAG, "AEC: ref buffer low (%d/%d bytes)", ref_avail, ref_bytes_needed);
+              last_warn = millis();
+            }
           }
           xSemaphoreGive(this->spk_ref_mutex_);
         } else {
           memset(this->aec_ref_, 0, ref_bytes_needed);
+          ESP_LOGW(TAG, "AEC: mutex timeout");
         }
 
         // Process AEC

@@ -124,6 +124,7 @@ async def to_code(config):
     if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
         aec = await cg.get_variable(config[CONF_AEC_ID])
         cg.add(var.set_aec(aec))
+        cg.add_define("USE_ESP_AEC")
 
     # Ringing timeout (auto-decline if not answered)
     if CONF_RINGING_TIMEOUT in config:

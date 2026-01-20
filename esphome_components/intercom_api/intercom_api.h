@@ -277,6 +277,27 @@ class IntercomApi : public Component {
 
   // Mic gain (applied before sending to network)
   float mic_gain_{1.0f};
+  float mic_gain_db_{0.0f};  // UI-friendly value (dB) for persistence
+
+  // === Settings persistence (local flash) ===
+  static constexpr uint8_t SETTINGS_VERSION = 1;
+  static constexpr uint8_t FLAG_AUTO_ANSWER = 1 << 0;
+  static constexpr uint8_t FLAG_AEC = 1 << 1;
+
+  struct StoredSettings {
+    uint8_t version{SETTINGS_VERSION};
+    uint8_t volume_pct{100};   // 0..100
+    int8_t mic_gain_db{0};     // -20..+20
+    uint8_t flags{FLAG_AUTO_ANSWER};  // bit0=auto_answer (default ON), bit1=aec
+  };
+
+  ESPPreferenceObject settings_pref_{};
+  bool suppress_save_{false};
+  bool save_scheduled_{false};
+
+  void load_settings_();
+  void schedule_save_settings_();
+  void save_settings_();
 
   // Mic configuration
   int mic_bits_{16};              // 16 or 32 bit mic
@@ -457,7 +478,8 @@ class IntercomAecSwitch : public switch_::Switch, public Parented<IntercomApi> {
  public:
   void write_state(bool state) override {
     this->parent_->set_aec_enabled(state);
-    this->publish_state(state);
+    // Publish ACTUAL state (set_aec_enabled may refuse if AEC not initialized)
+    this->publish_state(this->parent_->is_aec_enabled());
   }
 };
 #endif
