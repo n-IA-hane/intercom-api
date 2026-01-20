@@ -341,7 +341,7 @@ class IntercomCard extends HTMLElement {
         .intercom-button.small { width: 80px; height: 80px; font-size: 0.9em; }
         .intercom-button.call { background: #4caf50; color: white; }
         .intercom-button.answer { background: #4caf50; color: white; animation: ring-pulse 1s infinite; }
-        .intercom-button.decline { background: #f44336; color: white; }
+        .intercom-button.decline { background: #f44336; color: white; animation: ring-pulse 1s infinite; }
         .intercom-button.hangup { background: #f44336; color: white; animation: ring-pulse 1s infinite; }
         .intercom-button.ringing { background: #ff9800; color: white; animation: ring-pulse 1s infinite; }
         .intercom-button:disabled { opacity: 0.5; cursor: not-allowed; animation: none; }
