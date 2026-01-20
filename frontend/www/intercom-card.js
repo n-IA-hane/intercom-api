@@ -11,7 +11,7 @@
  * - Audio bridged through HA between two ESP devices
  */
 
-const INTERCOM_CARD_VERSION = "3.2.0";
+const INTERCOM_CARD_VERSION = "3.3.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -561,7 +561,16 @@ class IntercomCard extends HTMLElement {
       this._mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
-      this._audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+
+      // Read actual sample rate from mic track to avoid mismatch errors on some devices
+      // (Chrome/Android, WebView, BT headsets may return 48kHz or 44.1kHz)
+      const track = this._mediaStream.getAudioTracks()[0];
+      const trackSampleRate = track?.getSettings?.().sampleRate;
+      // Create AudioContext with mic's sample rate (worklet will downsample to 16kHz)
+      this._audioContext = new (window.AudioContext || window.webkitAudioContext)(
+        trackSampleRate ? { sampleRate: trackSampleRate } : undefined
+      );
+      console.log(`AudioContext sample rate: ${this._audioContext.sampleRate}Hz (mic: ${trackSampleRate || 'unknown'}Hz)`);
       if (this._audioContext.state === "suspended") await this._audioContext.resume();
 
       await this._audioContext.audioWorklet.addModule(`/local/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);

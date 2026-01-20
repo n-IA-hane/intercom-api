@@ -1182,6 +1182,8 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       }
       this->set_streaming_(false);
       this->set_active_(false);
+      this->publish_state_();  // Update text sensor to "Idle"
+      this->idle_trigger_.trigger();  // Fire on_idle automation
       this->call_end_trigger_.trigger();
       break;
 

@@ -1,30 +1,37 @@
 /**
  * Intercom AudioWorklet Processor
  * Based on Home Assistant's recorder-worklet.js
- * VERSION: 2.2.0 - Larger chunks (1024 samples = 64ms) to reduce WS flood
+ * VERSION: 2.3.0 - Proper resampling for any input sample rate (44.1kHz, 48kHz, etc)
  *
  * This processor runs in a separate audio thread and converts
- * Float32 audio samples to Int16 PCM format.
+ * Float32 audio samples to Int16 PCM format at 16kHz.
  */
+
+const TARGET_SAMPLE_RATE = 16000;
 
 class RecorderProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this._buffer = [];
-    this._targetSamples = 1024; // 64ms chunks @ 16kHz = ~15 msg/sec (was 256 = 62 msg/sec)
+    this._targetSamples = 1024; // 64ms chunks @ 16kHz = ~15 msg/sec
     this._frameCount = 0;
     this._chunksSent = 0;
     this._totalSamplesProcessed = 0;
 
+    // Resampling state - works for any input rate (44.1kHz, 48kHz, etc)
+    this._resampleRatio = sampleRate / TARGET_SAMPLE_RATE;
+    this._resampleAccum = 0;
+
     // Log initialization
-    console.log("[IntercomProcessor] === INITIALIZED v2.1.0 ===");
-    console.log("[IntercomProcessor] sampleRate:", sampleRate);
+    console.log("[IntercomProcessor] === INITIALIZED v2.3.0 ===");
+    console.log("[IntercomProcessor] sampleRate:", sampleRate, "-> target:", TARGET_SAMPLE_RATE);
+    console.log("[IntercomProcessor] resampleRatio:", this._resampleRatio.toFixed(4));
     console.log("[IntercomProcessor] targetSamples:", this._targetSamples);
 
     // Send init message to main thread
     this.port.postMessage({
       type: "debug",
-      message: `Worklet initialized: sampleRate=${sampleRate}, target=${this._targetSamples}`
+      message: `Worklet v2.3.0: ${sampleRate}Hz -> ${TARGET_SAMPLE_RATE}Hz (ratio: ${this._resampleRatio.toFixed(2)})`
     });
   }
 
@@ -62,13 +69,14 @@ class RecorderProcessor extends AudioWorkletProcessor {
                   "chunksSent:", this._chunksSent);
     }
 
-    // Downsample if needed (48kHz -> 16kHz = take every 3rd sample)
-    // sampleRate is a global in AudioWorklet scope
-    const downsampleFactor = sampleRate > 40000 ? 3 : 1;
-
-    // Accumulate samples
-    for (let i = 0; i < float32Data.length; i += downsampleFactor) {
-      this._buffer.push(float32Data[i]);
+    // Resample to 16kHz using fractional accumulator
+    // Works correctly for any input rate (44.1kHz, 48kHz, etc)
+    for (let i = 0; i < float32Data.length; i++) {
+      this._resampleAccum += 1;
+      if (this._resampleAccum >= this._resampleRatio) {
+        this._buffer.push(float32Data[i]);
+        this._resampleAccum -= this._resampleRatio;
+      }
     }
     this._totalSamplesProcessed += float32Data.length;
 
