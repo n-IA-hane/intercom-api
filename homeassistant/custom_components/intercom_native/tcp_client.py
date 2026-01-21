@@ -43,6 +43,7 @@ class IntercomTcpClient:
         on_ringing: Optional[Callable[[], None]] = None,
         on_answered: Optional[Callable[[], None]] = None,
         on_stop_received: Optional[Callable[[], None]] = None,
+        on_error_received: Optional[Callable[[int], None]] = None,
     ):
         IntercomTcpClient._instance_counter += 1
         self._instance_id = IntercomTcpClient._instance_counter
@@ -55,6 +56,7 @@ class IntercomTcpClient:
         self._on_ringing = on_ringing
         self._on_answered = on_answered
         self._on_stop_received = on_stop_received
+        self._on_error_received = on_error_received
 
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -305,8 +307,14 @@ class IntercomTcpClient:
 
         elif msg_type == MSG_PONG:
             _LOGGER.debug("[TCP#%d] PONG - stream accepted", self._instance_id)
-            # PONG after START means ESP accepted (auto_answer ON)
-            if not self._streaming and not self._ringing:
+            if self._ringing:
+                # PONG after we sent ANSWER - ESP confirmed, start streaming
+                self._ringing = False
+                self._streaming = True
+                if self._on_answered:
+                    self._on_answered()
+            elif not self._streaming:
+                # PONG after START means ESP accepted (auto_answer ON)
                 self._streaming = True
 
         elif msg_type == MSG_RING:
@@ -334,7 +342,12 @@ class IntercomTcpClient:
             await self._send_message(MSG_PONG)
 
         elif msg_type == MSG_ERROR:
-            _LOGGER.error("[TCP#%d] ERROR from ESP", self._instance_id)
+            error_code = payload[0] if payload else 0
+            _LOGGER.error("[TCP#%d] ERROR from ESP: code=%d", self._instance_id, error_code)
+            self._streaming = False
+            self._ringing = False
+            if self._on_error_received:
+                self._on_error_received(error_code)
 
     async def _ping_loop(self) -> None:
         try:

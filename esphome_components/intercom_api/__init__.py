@@ -34,6 +34,12 @@ CONF_ON_RINGING = "on_ringing"
 CONF_ON_STREAMING = "on_streaming"
 CONF_ON_IDLE = "on_idle"
 CONF_ON_CALL_END = "on_call_end"
+# New FSM triggers
+CONF_ON_INCOMING_CALL = "on_incoming_call"
+CONF_ON_OUTGOING_CALL = "on_outgoing_call"
+CONF_ON_ANSWERED = "on_answered"
+CONF_ON_HANGUP = "on_hangup"
+CONF_ON_CALL_FAILED = "on_call_failed"
 
 # Mode constants
 MODE_P2P = "p2p"      # Simple: ring → HA notification → answer
@@ -93,6 +99,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_IDLE): automation.validate_automation(single=True),
         # Trigger when call ends (hangup, decline, or connection lost)
         cv.Optional(CONF_ON_CALL_END): automation.validate_automation(single=True),
+        # New FSM triggers
+        cv.Optional(CONF_ON_INCOMING_CALL): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_OUTGOING_CALL): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_ANSWERED): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_HANGUP): automation.validate_automation(single=True),
+        cv.Optional(CONF_ON_CALL_FAILED): automation.validate_automation(single=True),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -152,6 +164,34 @@ async def to_code(config):
     if CONF_ON_CALL_END in config:
         await automation.build_automation(
             var.get_call_end_trigger(), [], config[CONF_ON_CALL_END]
+        )
+
+    # === New FSM triggers ===
+    if CONF_ON_INCOMING_CALL in config:
+        await automation.build_automation(
+            var.get_incoming_call_trigger(), [], config[CONF_ON_INCOMING_CALL]
+        )
+
+    if CONF_ON_OUTGOING_CALL in config:
+        await automation.build_automation(
+            var.get_outgoing_call_trigger(), [], config[CONF_ON_OUTGOING_CALL]
+        )
+
+    if CONF_ON_ANSWERED in config:
+        await automation.build_automation(
+            var.get_answered_trigger(), [], config[CONF_ON_ANSWERED]
+        )
+
+    # on_hangup with reason string argument
+    if CONF_ON_HANGUP in config:
+        await automation.build_automation(
+            var.get_hangup_trigger(), [(cg.std_string, "reason")], config[CONF_ON_HANGUP]
+        )
+
+    # on_call_failed with reason string argument
+    if CONF_ON_CALL_FAILED in config:
+        await automation.build_automation(
+            var.get_call_failed_trigger(), [(cg.std_string, "reason")], config[CONF_ON_CALL_FAILED]
         )
 
     # === Auto-create sensors ===

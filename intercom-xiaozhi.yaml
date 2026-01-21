@@ -173,12 +173,27 @@ intercom_api:
   aec_id: aec_component
   ringing_timeout: 30s
 
+  # === New FSM triggers for clean page switching ===
+  on_incoming_call:
+    - lambda: 'id(peer_name) = id(intercom).get_caller();'
+    - display.page.show: page_ringing_in
+    - component.update: main_display
+
+  on_outgoing_call:
+    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    - light.turn_on:
+        id: status_led
+        effect: "Calling"
+    - display.page.show: page_ringing_out
+    - component.update: main_display
+
   on_ringing:
     - light.turn_on:
         id: status_led
         effect: "Ringing"
-    - lambda: 'id(peer_name) = id(intercom).get_caller();'
-    - script.execute: update_display_page
+
+  on_answered:
+    - logger.log: "Call answered"
 
   on_streaming:
     - light.turn_on:
@@ -188,16 +203,25 @@ intercom_api:
         blue: 31%
         effect: none
     - output.turn_on: speaker_enable
-    - script.execute: update_display_page
+    - display.page.show: page_in_call
+    - component.update: main_display
 
   on_idle:
     - light.turn_off: status_led
     - output.turn_off: speaker_enable
     - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-    - script.execute: update_display_page
+    - display.page.show: page_idle
+    - component.update: main_display
 
-  on_call_end:
-    - logger.log: "Call ended"
+  on_hangup:
+    - logger.log:
+        format: "Hangup: %s"
+        args: ['reason.c_str()']
+
+  on_call_failed:
+    - logger.log:
+        format: "Call failed: %s"
+        args: ['reason.c_str()']
 
 # ==============================================================================
 # GLOBALS (only peer_name for display)
@@ -216,14 +240,15 @@ script:
     mode: restart
     then:
       - lambda: |-
-          const char* state = id(intercom).get_state_str();
-          if (strcmp(state, "Idle") == 0) {
+          // Use new FSM states for page switching
+          const char* state = id(intercom).get_call_state_str();
+          if (strcmp(state, "idle") == 0) {
             id(main_display).show_page(id(page_idle));
-          } else if (strcmp(state, "Ringing") == 0) {
+          } else if (strcmp(state, "ringing") == 0 || strcmp(state, "incoming") == 0) {
             id(main_display).show_page(id(page_ringing_in));
-          } else if (strcmp(state, "Streaming") == 0) {
+          } else if (strcmp(state, "streaming") == 0 || strcmp(state, "answering") == 0) {
             id(main_display).show_page(id(page_in_call));
-          } else {
+          } else if (strcmp(state, "outgoing") == 0) {
             id(main_display).show_page(id(page_ringing_out));
           }
       - component.update: main_display
@@ -237,27 +262,50 @@ interval:
       - component.update: main_display
 
 # ==============================================================================
-# BUTTONS (native platform)
+# BUTTONS (all template - no hardcoded platform)
 # ==============================================================================
 button:
-  - platform: intercom_api
-    intercom_api_id: intercom
-    call:
-      id: call_button
-      name: "Call"
-    next_contact:
-      id: next_contact_button
-      name: "Next Contact"
-      on_press:
-        - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-        - script.execute: update_display_page
-    prev_contact:
-      id: prev_contact_button
-      name: "Previous Contact"
-      on_press:
-        - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-        - script.execute: update_display_page
+  # Smart Call button: idle→call, ringing→answer, streaming→hangup
+  - platform: template
+    id: call_button
+    name: "Call"
+    icon: "mdi:phone"
+    on_press:
+      - intercom_api.call_toggle:
+          id: intercom
 
+  # Next contact (PTMP)
+  - platform: template
+    id: next_contact_button
+    name: "Next Contact"
+    icon: "mdi:arrow-right"
+    on_press:
+      - intercom_api.next_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: update_display_page
+
+  # Previous contact (PTMP)
+  - platform: template
+    id: prev_contact_button
+    name: "Previous Contact"
+    icon: "mdi:arrow-left"
+    on_press:
+      - intercom_api.prev_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: update_display_page
+
+  # Decline incoming call
+  - platform: template
+    id: decline_button
+    name: "Decline"
+    icon: "mdi:phone-hangup"
+    on_press:
+      - intercom_api.decline_call:
+          id: intercom
+
+  # Refresh contacts from HA
   - platform: template
     id: refresh_contacts_button
     name: "Refresh Contacts"
@@ -339,9 +387,9 @@ binary_sensor:
     name: "Status"
 
   # Main button:
-  #   - Short press (50-500ms): call/answer/hangup
-  #   - Long press (1-3s): next contact
-  #   - Very long press (5s+): refresh contacts
+  #   - Single click: call/answer/hangup (smart button)
+  #   - Double click: decline incoming call
+  #   - Long press (2s+): refresh contacts
   - platform: gpio
     pin:
       number: GPIO0
@@ -351,22 +399,21 @@ binary_sensor:
     name: "Main Button"
     icon: "mdi:gesture-tap-button"
     on_multi_click:
-      # Short press: call/answer/hangup
+      # Double click: decline
       - timing:
-          - ON for at most 500ms
+          - ON for at most 300ms
+          - OFF for at most 300ms
+          - ON for at most 300ms
+        then:
+          - button.press: decline_button
+      # Single click: call/answer/hangup
+      - timing:
+          - ON for at most 300ms
         then:
           - button.press: call_button
-      # Long press (1-3s): next contact
+      # Long press (2s+): refresh contacts
       - timing:
-          - ON for 1s to 3s
-        then:
-          - intercom_api.next_contact:
-              id: intercom
-          - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-          - script.execute: update_display_page
-      # Very long press (5s+): refresh contacts
-      - timing:
-          - ON for at least 5s
+          - ON for at least 2s
         then:
           - button.press: refresh_contacts_button
 

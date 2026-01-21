@@ -156,6 +156,19 @@ intercom_api:
   aec_id: aec_processor
   ringing_timeout: 30s        # Auto-decline if not answered
 
+  # === New FSM triggers ===
+  on_incoming_call:
+    - logger.log: "Incoming call"
+
+  on_outgoing_call:
+    - logger.log: "Outgoing call"
+    - light.turn_on:
+        id: status_led
+        effect: "Ringing"
+        red: 100%
+        green: 50%
+        blue: 0%
+
   on_ringing:
     - light.turn_on:
         id: status_led
@@ -163,6 +176,9 @@ intercom_api:
         red: 100%
         green: 0%
         blue: 0%
+
+  on_answered:
+    - logger.log: "Call answered"
 
   on_streaming:
     - light.turn_on:
@@ -175,8 +191,15 @@ intercom_api:
   on_idle:
     - light.turn_off: status_led
 
-  on_call_end:
-    - logger.log: "Call ended"
+  on_hangup:
+    - logger.log:
+        format: "Hangup: %s"
+        args: ['reason.c_str()']
+
+  on_call_failed:
+    - logger.log:
+        format: "Call failed: %s"
+        args: ['reason.c_str()']
 
 # ==============================================================================
 # BUTTONS
@@ -215,14 +238,32 @@ button:
                         - intercom_api.start:
                             id: intercom
 
-  - platform: intercom_api
-    intercom_api_id: intercom
-    next_contact:
-      id: next_contact_button
-      name: "Next Contact"
-    prev_contact:
-      id: prev_contact_button
-      name: "Previous Contact"
+  # Next contact (PTMP)
+  - platform: template
+    id: next_contact_button
+    name: "Next Contact"
+    icon: "mdi:arrow-right"
+    on_press:
+      - intercom_api.next_contact:
+          id: intercom
+
+  # Previous contact (PTMP)
+  - platform: template
+    id: prev_contact_button
+    name: "Previous Contact"
+    icon: "mdi:arrow-left"
+    on_press:
+      - intercom_api.prev_contact:
+          id: intercom
+
+  # Decline incoming call
+  - platform: template
+    id: decline_button
+    name: "Decline"
+    icon: "mdi:phone-hangup"
+    on_press:
+      - intercom_api.decline_call:
+          id: intercom
 
   - platform: template
     id: refresh_contacts_button

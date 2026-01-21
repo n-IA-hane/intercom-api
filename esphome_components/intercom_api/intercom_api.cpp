@@ -181,8 +181,17 @@ void IntercomApi::loop() {
   if (this->ringing_timeout_ms_ > 0 && this->is_ringing()) {
     uint32_t now = millis();
     if (now - this->ringing_start_time_ >= this->ringing_timeout_ms_) {
-      ESP_LOGI(TAG, "Ringing timeout after %u ms - auto-declining", this->ringing_timeout_ms_);
-      this->decline_call();
+      ESP_LOGI(TAG, "Ringing timeout after %u ms", this->ringing_timeout_ms_);
+      // Send error to client
+      int sock = this->client_.socket.load();
+      if (sock >= 0) {
+        uint8_t reason = static_cast<uint8_t>(ErrorCode::BUSY);
+        this->send_message_(sock, MessageType::ERROR, MessageFlags::NONE, &reason, 1);
+      }
+      this->close_client_socket_();
+      this->state_ = ConnectionState::DISCONNECTED;
+      this->pending_incoming_call_ = false;
+      this->end_call_(CallEndReason::TIMEOUT);  // FSM with timeout reason
     }
   }
 }
@@ -316,7 +325,7 @@ void IntercomApi::start() {
 }
 
 void IntercomApi::stop() {
-  if (!this->active_.load(std::memory_order_acquire)) {
+  if (!this->active_.load(std::memory_order_acquire) && this->call_state_ == CallState::IDLE) {
     return;
   }
 
@@ -337,8 +346,7 @@ void IntercomApi::stop() {
   if (this->speaker_buffer_) this->speaker_buffer_->reset();
 
   this->state_ = ConnectionState::DISCONNECTED;
-  this->publish_state_();
-  this->idle_trigger_.trigger();  // Fire on_idle automation
+  this->end_call_(CallEndReason::LOCAL_HANGUP);  // FSM with reason
 }
 
 void IntercomApi::answer_call() {
@@ -356,8 +364,9 @@ void IntercomApi::answer_call() {
 
   ESP_LOGI(TAG, "Answering call manually");
   this->send_message_(sock, MessageType::ANSWER);
+  this->set_call_state_(CallState::ANSWERING);  // FSM
   this->set_active_(true);
-  this->set_streaming_(true);
+  this->set_streaming_(true);  // This will set CallState::STREAMING
 }
 
 void IntercomApi::decline_call() {
@@ -377,8 +386,7 @@ void IntercomApi::decline_call() {
   this->send_message_(sock, MessageType::ERROR, MessageFlags::NONE, &reason, 1);
   this->close_client_socket_();
   this->state_ = ConnectionState::DISCONNECTED;
-  this->publish_state_();
-  this->idle_trigger_.trigger();  // Fire on_idle automation
+  this->end_call_(CallEndReason::DECLINED);  // FSM with reason
 }
 
 void IntercomApi::call_toggle() {
@@ -461,15 +469,14 @@ void IntercomApi::disconnect() {
 }
 
 const char *IntercomApi::get_state_str() const {
-  // Check for ringing state (connected but waiting for answer)
-  if (this->is_ringing()) {
-    return "Ringing";
-  }
-  switch (this->state_) {
-    case ConnectionState::DISCONNECTED: return "Idle";
-    case ConnectionState::CONNECTING: return "Connecting";
-    case ConnectionState::CONNECTED: return "Connected";
-    case ConnectionState::STREAMING: return "Streaming";
+  // Use CallState for human-readable status (capitalizes first letter)
+  switch (this->call_state_) {
+    case CallState::IDLE: return "Idle";
+    case CallState::OUTGOING: return "Outgoing";
+    case CallState::INCOMING: return "Incoming";
+    case CallState::RINGING: return "Ringing";
+    case CallState::ANSWERING: return "Answering";
+    case CallState::STREAMING: return "Streaming";
     default: return "Unknown";
   }
 }
@@ -648,9 +655,66 @@ void IntercomApi::set_streaming_(bool on) {
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
   if (on) {
     this->pending_incoming_call_ = false;  // Call answered, no longer pending
-    this->streaming_trigger_.trigger();  // Fire on_streaming automation
+    this->streaming_trigger_.trigger();  // Fire on_streaming automation (legacy)
+    this->set_call_state_(CallState::STREAMING);  // FSM
   }
   this->publish_state_();
+}
+
+void IntercomApi::set_call_state_(CallState new_state) {
+  if (this->call_state_ == new_state) return;
+
+  CallState old_state = this->call_state_;
+  this->call_state_ = new_state;
+
+  ESP_LOGI(TAG, "Call state: %s -> %s", call_state_to_str(old_state), call_state_to_str(new_state));
+
+  // Fire appropriate trigger
+  switch (new_state) {
+    case CallState::IDLE:
+      this->idle_trigger_.trigger();  // legacy
+      break;
+    case CallState::OUTGOING:
+      this->outgoing_call_trigger_.trigger();
+      break;
+    case CallState::INCOMING:
+      this->incoming_call_trigger_.trigger();
+      break;
+    case CallState::RINGING:
+      this->ringing_trigger_.trigger();  // legacy
+      break;
+    case CallState::ANSWERING:
+      this->answered_trigger_.trigger();
+      break;
+    case CallState::STREAMING:
+      // streaming_trigger_ already fired in set_streaming_()
+      break;
+  }
+
+  this->publish_state_();
+}
+
+void IntercomApi::end_call_(CallEndReason reason) {
+  if (this->call_state_ == CallState::IDLE) return;
+
+  std::string reason_str = call_end_reason_to_str(reason);
+  ESP_LOGI(TAG, "Call ended: %s", reason_str.c_str());
+
+  // Fire appropriate trigger based on reason type
+  if (reason == CallEndReason::UNREACHABLE ||
+      reason == CallEndReason::BUSY ||
+      reason == CallEndReason::PROTOCOL_ERROR ||
+      reason == CallEndReason::BRIDGE_ERROR) {
+    this->call_failed_trigger_.trigger(reason_str);
+  } else {
+    this->hangup_trigger_.trigger(reason_str);
+  }
+
+  // Also fire legacy triggers
+  this->call_end_trigger_.trigger();
+  this->stop_trigger_.trigger();
+
+  this->set_call_state_(CallState::IDLE);
 }
 
 // === Server Task ===
@@ -1202,6 +1266,13 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       if (this->state_ != ConnectionState::STREAMING) {
         this->state_ = ConnectionState::STREAMING;
       }
+      // If we're in OUTGOING state (caller waiting for dest to answer),
+      // receiving audio means dest answered - transition to STREAMING
+      if (this->call_state_ == CallState::OUTGOING) {
+        ESP_LOGI(TAG, "Dest answered - received audio, transitioning to STREAMING");
+        this->streaming_trigger_.trigger();  // Fire on_streaming
+        this->set_call_state_(CallState::STREAMING);
+      }
       break;
 
     case MessageType::START: {
@@ -1225,21 +1296,34 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         this->publish_caller_(caller_name);
       }
 
-      if (this->auto_answer_ || no_ring) {
-        // Auto-answer ON or NO_RING flag: start streaming immediately
+      if (no_ring) {
+        // NO_RING flag: we are the CALLER in a bridge, not the callee
+        // Go to OUTGOING state and wait for audio (dest to answer)
         this->pending_incoming_call_ = false;
+        this->set_call_state_(CallState::OUTGOING);  // FSM: outgoing call
         this->set_active_(true);
-        this->set_streaming_(true);
+        // Enable audio flow, but don't set STREAMING yet - wait for first audio
+        this->client_.streaming.store(true, std::memory_order_release);
+        this->state_ = ConnectionState::STREAMING;
+        this->send_message_(this->client_.socket.load(), MessageType::PONG);
+      } else if (this->auto_answer_) {
+        // Auto-answer ON: start streaming immediately (we are callee)
+        this->set_call_state_(CallState::INCOMING);  // FSM: incoming call
+        this->pending_incoming_call_ = false;
+        this->set_call_state_(CallState::ANSWERING);  // FSM: answering
+        this->set_active_(true);
+        this->set_streaming_(true);  // This will set CallState::STREAMING
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
       } else {
         // Auto-answer OFF: go to ringing state, wait for local answer
+        this->set_call_state_(CallState::INCOMING);  // FSM: incoming call first
         this->state_ = ConnectionState::CONNECTED;  // Stay connected but not streaming
         this->pending_incoming_call_ = true;  // Mark as incoming call waiting for answer
         this->send_message_(this->client_.socket.load(), MessageType::RING);
         ESP_LOGI(TAG, "Auto-answer OFF - sending RING, waiting for local answer");
         this->ringing_start_time_ = millis();  // Start ringing timeout timer
+        this->set_call_state_(CallState::RINGING);  // FSM: then ringing
         this->publish_state_();  // Publish "Ringing" state
-        this->ringing_trigger_.trigger();
       }
       break;
     }
@@ -1253,9 +1337,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       }
       this->set_streaming_(false);
       this->set_active_(false);
-      this->publish_state_();  // Update text sensor to "Idle"
-      this->idle_trigger_.trigger();  // Fire on_idle automation
-      this->call_end_trigger_.trigger();
+      this->end_call_(CallEndReason::REMOTE_HANGUP);  // FSM with reason
       break;
 
     case MessageType::PING:
@@ -1276,8 +1358,9 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       ESP_LOGI(TAG, "Received ANSWER from client - remote answer");
       if (this->pending_incoming_call_) {
         this->pending_incoming_call_ = false;
+        this->set_call_state_(CallState::ANSWERING);  // FSM
         this->set_active_(true);
-        this->set_streaming_(true);
+        this->set_streaming_(true);  // This will set CallState::STREAMING
         // Send PONG as acknowledgment (like local answer)
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
       } else {

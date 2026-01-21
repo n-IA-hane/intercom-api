@@ -119,6 +119,32 @@ class IntercomSession:
                 }
             )
 
+        def on_stop_received() -> None:
+            """ESP sent STOP (hangup from ESP side)."""
+            _LOGGER.info("Session received STOP from ESP: %s", session.device_id)
+            session._active = False
+            session._ringing = False
+            session.hass.bus.async_fire(
+                "intercom_state",
+                {
+                    "device_id": session.device_id,
+                    "state": "idle",
+                }
+            )
+
+        def on_error_received(code: int) -> None:
+            """ESP sent ERROR (decline/busy)."""
+            _LOGGER.info("Session received ERROR from ESP (code=%d): %s", code, session.device_id)
+            session._active = False
+            session._ringing = False
+            session.hass.bus.async_fire(
+                "intercom_state",
+                {
+                    "device_id": session.device_id,
+                    "state": "idle",
+                }
+            )
+
         self._tcp_client = IntercomTcpClient(
             host=self.host,
             port=INTERCOM_PORT,
@@ -126,6 +152,8 @@ class IntercomSession:
             on_disconnected=on_disconnected,
             on_ringing=on_ringing,
             on_answered=on_answered,
+            on_stop_received=on_stop_received,
+            on_error_received=on_error_received,
         )
 
         if not await self._tcp_client.connect():
@@ -236,6 +264,7 @@ class BridgeSession:
         source_name: str,
         dest_device_id: str,
         dest_host: str,
+        dest_name: str,
     ):
         """Initialize bridge session."""
         self.hass = hass
@@ -245,6 +274,7 @@ class BridgeSession:
         self.source_name = source_name  # Caller name (sent to dest via TCP protocol)
         self.dest_device_id = dest_device_id
         self.dest_host = dest_host
+        self.dest_name = dest_name  # Callee name (sent to source via TCP protocol)
 
         self._source_client: Optional[IntercomTcpClient] = None
         self._dest_client: Optional[IntercomTcpClient] = None
@@ -349,6 +379,16 @@ class BridgeSession:
             _LOGGER.info("Bridge dest ringing: %s", bridge.bridge_id)
             bridge._fire_state_event("ringing")
 
+        def on_source_error(code: int) -> None:
+            _LOGGER.info("Bridge source sent ERROR (code=%d): %s", code, bridge.bridge_id)
+            asyncio.create_task(bridge.stop())
+            bridge._fire_state_event("disconnected")
+
+        def on_dest_error(code: int) -> None:
+            _LOGGER.info("Bridge dest sent ERROR/decline (code=%d): %s", code, bridge.bridge_id)
+            asyncio.create_task(bridge.stop())
+            bridge._fire_state_event("disconnected")
+
         # Create TCP clients for both ESPs
         self._source_client = IntercomTcpClient(
             host=self.source_host,
@@ -358,6 +398,7 @@ class BridgeSession:
             on_ringing=lambda: None,  # Source doesn't ring
             on_answered=on_source_answered,
             on_stop_received=on_source_stop,
+            on_error_received=on_source_error,
         )
 
         self._dest_client = IntercomTcpClient(
@@ -368,6 +409,7 @@ class BridgeSession:
             on_ringing=on_dest_ringing,
             on_answered=on_dest_answered,
             on_stop_received=on_dest_stop,
+            on_error_received=on_dest_error,
         )
 
         # Fire "calling" state - bridge is being set up
@@ -492,6 +534,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_list_devices)
     websocket_api.async_register_command(hass, websocket_bridge)
     websocket_api.async_register_command(hass, websocket_bridge_stop)
+    websocket_api.async_register_command(hass, websocket_decline)
 
 
 @websocket_api.websocket_command(
@@ -782,6 +825,7 @@ async def websocket_bridge(
             source_name=source_name,
             dest_device_id=dest_device_id,
             dest_host=dest_host,
+            dest_name=dest_name,
         )
 
         result = await bridge.start()
@@ -846,3 +890,52 @@ async def websocket_bridge_stop(
         _LOGGER.debug("Bridge stopped: %s", bridge_id)
 
     connection.send_result(msg_id, {"success": True})
+
+
+WS_TYPE_DECLINE = f"{DOMAIN}/decline"
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_DECLINE,
+        vol.Required("device_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_decline(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: Dict[str, Any],
+) -> None:
+    """Decline an incoming call for a device.
+
+    Finds any bridge or session where this device is involved and stops it.
+    Works regardless of whether the caller has the bridge_id.
+    """
+    device_id = msg["device_id"]
+    msg_id = msg["id"]
+    stopped = False
+
+    _LOGGER.info("Decline request for device: %s", device_id)
+
+    # Check P2P sessions first
+    session = _sessions.pop(device_id, None)
+    if session:
+        await session.stop()
+        _LOGGER.info("Declined P2P session for device: %s", device_id)
+        stopped = True
+
+    # Check bridges - find any where this device is source or dest
+    bridges_to_stop = []
+    for bridge_id, bridge in list(_bridges.items()):
+        if bridge.source_device_id == device_id or bridge.dest_device_id == device_id:
+            bridges_to_stop.append(bridge_id)
+
+    for bridge_id in bridges_to_stop:
+        bridge = _bridges.pop(bridge_id, None)
+        if bridge:
+            await bridge.stop()
+            _LOGGER.info("Declined bridge %s for device: %s", bridge_id, device_id)
+            stopped = True
+
+    connection.send_result(msg_id, {"success": True, "stopped": stopped})

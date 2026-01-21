@@ -17,7 +17,6 @@
 
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/number/number.h"
-#include "esphome/components/button/button.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 
 #ifdef USE_ESP_AEC
@@ -39,13 +38,63 @@
 namespace esphome {
 namespace intercom_api {
 
-// Connection state
+// TCP connection state (low-level)
 enum class ConnectionState : uint8_t {
   DISCONNECTED,
   CONNECTING,
   CONNECTED,
   STREAMING,
 };
+
+// Call state (high-level FSM for display/triggers)
+enum class CallState : uint8_t {
+  IDLE,        // No call in progress
+  OUTGOING,    // We initiated a call, waiting for remote to answer
+  INCOMING,    // Someone is calling us (before ringing starts)
+  RINGING,     // Actively ringing/notifying user
+  ANSWERING,   // Answer accepted, setting up stream
+  STREAMING,   // Audio active
+};
+
+// Hangup/failure reasons
+enum class CallEndReason : uint8_t {
+  NONE,
+  LOCAL_HANGUP,
+  REMOTE_HANGUP,
+  DECLINED,
+  TIMEOUT,
+  BUSY,
+  UNREACHABLE,
+  PROTOCOL_ERROR,
+  BRIDGE_ERROR,
+};
+
+inline const char *call_state_to_str(CallState state) {
+  switch (state) {
+    case CallState::IDLE: return "idle";
+    case CallState::OUTGOING: return "outgoing";
+    case CallState::INCOMING: return "incoming";
+    case CallState::RINGING: return "ringing";
+    case CallState::ANSWERING: return "answering";
+    case CallState::STREAMING: return "streaming";
+    default: return "unknown";
+  }
+}
+
+inline const char *call_end_reason_to_str(CallEndReason reason) {
+  switch (reason) {
+    case CallEndReason::NONE: return "";
+    case CallEndReason::LOCAL_HANGUP: return "local_hangup";
+    case CallEndReason::REMOTE_HANGUP: return "remote_hangup";
+    case CallEndReason::DECLINED: return "declined";
+    case CallEndReason::TIMEOUT: return "timeout";
+    case CallEndReason::BUSY: return "busy";
+    case CallEndReason::UNREACHABLE: return "unreachable";
+    case CallEndReason::PROTOCOL_ERROR: return "protocol_error";
+    case CallEndReason::BRIDGE_ERROR: return "bridge_error";
+    default: return "unknown";
+  }
+}
 
 // Client info - socket and streaming are atomic for thread safety
 struct ClientInfo {
@@ -155,7 +204,7 @@ class IntercomApi : public Component {
   std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
   std::string get_contacts_csv() const;
 
-  // Triggers
+  // Legacy triggers (backward compatible)
   Trigger<> *get_connect_trigger() { return &this->connect_trigger_; }
   Trigger<> *get_disconnect_trigger() { return &this->disconnect_trigger_; }
   Trigger<> *get_start_trigger() { return &this->start_trigger_; }
@@ -164,6 +213,17 @@ class IntercomApi : public Component {
   Trigger<> *get_streaming_trigger() { return &this->streaming_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
   Trigger<> *get_call_end_trigger() { return &this->call_end_trigger_; }
+
+  // New FSM triggers
+  Trigger<> *get_incoming_call_trigger() { return &this->incoming_call_trigger_; }
+  Trigger<> *get_outgoing_call_trigger() { return &this->outgoing_call_trigger_; }
+  Trigger<> *get_answered_trigger() { return &this->answered_trigger_; }
+  Trigger<std::string> *get_hangup_trigger() { return &this->hangup_trigger_; }
+  Trigger<std::string> *get_call_failed_trigger() { return &this->call_failed_trigger_; }
+
+  // Call state getter
+  CallState get_call_state() const { return this->call_state_; }
+  const char *get_call_state_str() const { return call_state_to_str(this->call_state_); }
 
  protected:
   // Server task - handles incoming connections and receiving data
@@ -197,6 +257,10 @@ class IntercomApi : public Component {
   void set_active_(bool on);
   void set_streaming_(bool on);
 
+  // Call state FSM
+  void set_call_state_(CallState new_state);
+  void end_call_(CallEndReason reason);
+
   // Components
 #ifdef USE_MICROPHONE
   microphone::Microphone *microphone_{nullptr};
@@ -210,6 +274,7 @@ class IntercomApi : public Component {
   std::atomic<bool> active_{false};
   std::atomic<bool> server_running_{false};
   ConnectionState state_{ConnectionState::DISCONNECTED};
+  CallState call_state_{CallState::IDLE};  // High-level FSM state
 
   // Sensors (state is always present, others only in PTMP mode)
   text_sensor::TextSensor *state_sensor_{nullptr};
@@ -322,7 +387,7 @@ class IntercomApi : public Component {
   size_t aec_ref_fill_{0};      // Current fill level in aec_ref_
 #endif
 
-  // Triggers
+  // Legacy triggers (backward compatible)
   Trigger<> connect_trigger_;
   Trigger<> disconnect_trigger_;
   Trigger<> start_trigger_;
@@ -331,6 +396,13 @@ class IntercomApi : public Component {
   Trigger<> streaming_trigger_;
   Trigger<> idle_trigger_;
   Trigger<> call_end_trigger_;  // Fires when call ends (hangup, decline, or connection lost)
+
+  // New FSM triggers
+  Trigger<> incoming_call_trigger_;   // Someone is calling us
+  Trigger<> outgoing_call_trigger_;   // We initiated a call
+  Trigger<> answered_trigger_;        // Call was answered (local or remote)
+  Trigger<std::string> hangup_trigger_;      // Call ended normally (reason string)
+  Trigger<std::string> call_failed_trigger_; // Call failed (reason string)
 };
 
 // Switch for on/off control (simple - ESPHome handles restore)
@@ -448,26 +520,6 @@ template<typename... Ts>
 class CallToggleAction : public Action<Ts...>, public Parented<IntercomApi> {
  public:
   void play(const Ts &...x) override { this->parent_->call_toggle(); }
-};
-
-// === Button platform classes ===
-
-// Smart Call button: ringing → answer, active → hangup, idle → start
-class IntercomCallButton : public button::Button, public Parented<IntercomApi> {
- public:
-  void press_action() override { this->parent_->call_toggle(); }
-};
-
-// Next contact button (PTMP mode)
-class IntercomNextContactButton : public button::Button, public Parented<IntercomApi> {
- public:
-  void press_action() override { this->parent_->next_contact(); }
-};
-
-// Previous contact button (PTMP mode)
-class IntercomPrevContactButton : public button::Button, public Parented<IntercomApi> {
- public:
-  void press_action() override { this->parent_->prev_contact(); }
 };
 
 // === Switch platform classes with restore support ===
