@@ -79,8 +79,9 @@ void IntercomApi::setup() {
       this->aec_enabled_ = false;
     } else {
       // Create speaker reference buffer and mutex
+      // Buffer needs to hold: delay samples + working frames
       this->spk_ref_mutex_ = xSemaphoreCreateMutex();
-      this->spk_ref_buffer_ = RingBuffer::create(RX_BUFFER_SIZE);  // ~256ms of reference
+      this->spk_ref_buffer_ = RingBuffer::create(AEC_REF_DELAY_BYTES + RX_BUFFER_SIZE);
 
       // Allocate AEC frame buffers
       const size_t frame_bytes = (size_t)this->aec_frame_samples_ * sizeof(int16_t);
@@ -472,7 +473,22 @@ void IntercomApi::set_aec_enabled(bool enabled) {
   this->aec_mic_fill_ = 0;
   this->aec_ref_fill_ = 0;
   if (this->spk_ref_buffer_) {
-    this->spk_ref_buffer_->reset();
+    if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      this->spk_ref_buffer_->reset();
+      // Pre-fill reference buffer with silence to create delay
+      // This compensates for I2S DMA latency + acoustic delay
+      // The mic captures echo from audio played ~80ms ago, so we delay the reference
+      if (enabled) {
+        uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
+        if (silence) {
+          this->spk_ref_buffer_->write(silence, AEC_REF_DELAY_BYTES);
+          heap_caps_free(silence);
+          ESP_LOGI(TAG, "AEC reference buffer pre-filled with %ums of silence for delay compensation",
+                   (unsigned)AEC_REF_DELAY_MS);
+        }
+      }
+      xSemaphoreGive(this->spk_ref_mutex_);
+    }
   }
   ESP_LOGI(TAG, "AEC %s", enabled ? "enabled" : "disabled");
   // NOTE: persistence handled by switch restore_mode, not save_settings_()

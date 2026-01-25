@@ -136,7 +136,7 @@ speaker:
 esp_aec:
   id: aec_processor
   sample_rate: 16000
-  filter_length: 4     # 4 = 64ms tail (good balance of quality vs CPU)
+  filter_length: 8     # 8 = 128ms tail (max value, covers most latency scenarios)
   mode: voip_high_perf # High performance AEC for better echo cancellation
 
 # ==============================================================================

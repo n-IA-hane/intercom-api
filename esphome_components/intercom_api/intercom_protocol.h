@@ -63,6 +63,16 @@ static constexpr size_t RX_BUFFER_SIZE = 8192;       // ~256ms - fits 4 browser 
 static constexpr size_t TX_BUFFER_SIZE = 2048;       // ~64ms of audio
 static constexpr size_t SOCKET_BUFFER_SIZE = 4096;
 
+// AEC reference delay: compensate for I2S DMA latency + acoustic path
+// The mic captures echo from audio played ~60-100ms ago, but reference is "fresh".
+// We delay the reference so it aligns with when the echo appears in mic.
+// DMA latency: ~64ms typical (depends on buffer count/size)
+// Acoustic delay: ~5ms (room dependent)
+// Total: ~70ms, we use 80ms for safety margin
+static constexpr size_t AEC_REF_DELAY_MS = 80;
+static constexpr size_t AEC_REF_DELAY_SAMPLES = (SAMPLE_RATE * AEC_REF_DELAY_MS) / 1000;  // 1280 samples
+static constexpr size_t AEC_REF_DELAY_BYTES = AEC_REF_DELAY_SAMPLES * sizeof(int16_t);   // 2560 bytes
+
 // Timeouts
 static constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;
 static constexpr uint32_t PING_INTERVAL_MS = 5000;

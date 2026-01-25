@@ -17,9 +17,18 @@ static const char *const TAG = "i2s_audio_duplex";
 // Audio parameters
 static const size_t DMA_BUFFER_COUNT = 8;
 static const size_t DMA_BUFFER_SIZE = 512;
-static const size_t FRAME_SIZE = 256;  // samples per frame
-static const size_t FRAME_BYTES = FRAME_SIZE * sizeof(int16_t);
+static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame (used when no AEC)
 static const size_t SPEAKER_BUFFER_SIZE = 8192;
+
+// AEC reference delay: compensate for I2S DMA latency + acoustic path
+// The mic captures echo from audio played ~60-100ms ago, but reference is "fresh".
+// We delay the reference so it aligns with when the echo appears in mic.
+// DMA latency: ~64ms (8 buffers * 512 samples / 16kHz = 256ms max, ~2-3 buffers typical)
+// Acoustic delay: ~5ms (room dependent)
+// Total: ~70ms, we use 80ms for safety margin
+static const size_t AEC_REF_DELAY_MS = 80;
+static const size_t AEC_REF_DELAY_SAMPLES = (16000 * AEC_REF_DELAY_MS) / 1000;  // 1280 samples
+static const size_t AEC_REF_DELAY_BYTES = AEC_REF_DELAY_SAMPLES * sizeof(int16_t);  // 2560 bytes
 
 // I2S new driver uses milliseconds directly, NOT FreeRTOS ticks
 static const uint32_t I2S_IO_TIMEOUT_MS = 50;
@@ -46,9 +55,12 @@ void I2SAudioDuplex::set_aec(esp_aec::EspAec *aec) {
   this->aec_enabled_ = (aec != nullptr);
   // Create speaker reference buffer for AEC now (since set_aec is called after setup)
   if (aec != nullptr && !this->speaker_ref_buffer_) {
-    this->speaker_ref_buffer_ = RingBuffer::create(SPEAKER_BUFFER_SIZE);
+    // Buffer needs to hold: delay samples + working frames
+    size_t ref_buffer_size = AEC_REF_DELAY_BYTES + SPEAKER_BUFFER_SIZE;
+    this->speaker_ref_buffer_ = RingBuffer::create(ref_buffer_size);
     if (this->speaker_ref_buffer_) {
-      ESP_LOGI(TAG, "AEC speaker reference buffer created");
+      ESP_LOGI(TAG, "AEC speaker reference buffer created (size=%u, delay=%ums)",
+               (unsigned)ref_buffer_size, (unsigned)AEC_REF_DELAY_MS);
     } else {
       ESP_LOGE(TAG, "Failed to create AEC speaker reference buffer");
     }
@@ -221,6 +233,23 @@ void I2SAudioDuplex::start() {
   // Clear speaker buffer
   this->speaker_buffer_->reset();
 
+#ifdef USE_ESP_AEC
+  // Pre-fill reference buffer with silence to create delay
+  // This compensates for I2S DMA latency + acoustic delay
+  // The mic captures echo from audio played ~80ms ago, so we delay the reference
+  if (this->speaker_ref_buffer_ != nullptr && this->aec_ != nullptr) {
+    this->speaker_ref_buffer_->reset();
+    // Allocate temp buffer for silence
+    uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
+    if (silence) {
+      this->speaker_ref_buffer_->write_without_replacement(silence, AEC_REF_DELAY_BYTES, 0, true);
+      heap_caps_free(silence);
+      ESP_LOGI(TAG, "AEC reference buffer pre-filled with %ums of silence for delay compensation",
+               (unsigned)AEC_REF_DELAY_MS);
+    }
+  }
+#endif
+
   // Create audio task on core 1
   xTaskCreatePinnedToCore(
       audio_task,
@@ -316,10 +345,8 @@ size_t I2SAudioDuplex::play(const uint8_t *data, size_t len, TickType_t ticks_to
     return 0;
   }
 
-  // Store speaker data as reference for AEC (non-blocking, best effort)
-  if (this->speaker_ref_buffer_ != nullptr) {
-    this->speaker_ref_buffer_->write_without_replacement((void *) data, len, 0, true);
-  }
+  // NOTE: AEC reference is captured in audio_task_() AFTER volume is applied,
+  // so the reference matches exactly what goes to the speaker.
 
   // Use write_without_replacement which properly supports timeout
   // This avoids the non-thread-safe free() call in regular write()
@@ -336,16 +363,27 @@ void I2SAudioDuplex::audio_task(void *param) {
 void I2SAudioDuplex::audio_task_() {
   ESP_LOGI(TAG, "Audio task started");
 
+  // Determine frame size: use AEC's required chunk size if available, otherwise default
+  size_t frame_size = DEFAULT_FRAME_SIZE;
+#ifdef USE_ESP_AEC
+  if (this->aec_ != nullptr && this->aec_->is_initialized()) {
+    frame_size = this->aec_->get_frame_size();
+    ESP_LOGI(TAG, "Using AEC frame size: %u samples (%ums at 16kHz)",
+             (unsigned)frame_size, (unsigned)(frame_size * 1000 / 16000));
+  }
+#endif
+  size_t frame_bytes = frame_size * sizeof(int16_t);
+
   // Allocate DMA-capable buffers for I2S operations
-  int16_t *mic_buffer = (int16_t *) heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-  int16_t *spk_buffer = (int16_t *) heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  int16_t *mic_buffer = (int16_t *) heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  int16_t *spk_buffer = (int16_t *) heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
   int16_t *spk_ref_buffer = nullptr;  // Speaker reference for AEC
   int16_t *aec_output = nullptr;      // AEC processed output
 
 #ifdef USE_ESP_AEC
   if (this->aec_ != nullptr) {
-    spk_ref_buffer = (int16_t *) heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
-    aec_output = (int16_t *) heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
+    spk_ref_buffer = (int16_t *) heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL);
+    aec_output = (int16_t *) heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL);
   }
 #endif
 
@@ -368,13 +406,13 @@ void I2SAudioDuplex::audio_task_() {
     // ══════════════════════════════════════════════════════════════════
     if (this->rx_handle_ && this->mic_running_) {
       // Note: i2s_channel_read timeout is in milliseconds (new driver), not ticks
-      esp_err_t err = i2s_channel_read(this->rx_handle_, mic_buffer, FRAME_BYTES,
+      esp_err_t err = i2s_channel_read(this->rx_handle_, mic_buffer, frame_bytes,
                                         &bytes_read, I2S_IO_TIMEOUT_MS);
       // Don't log INVALID_STATE - this is expected during shutdown (race condition)
       if (err != ESP_OK && err != ESP_ERR_TIMEOUT && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "i2s_channel_read failed: %s", esp_err_to_name(err));
       }
-      if (err == ESP_OK && bytes_read == FRAME_BYTES) {
+      if (err == ESP_OK && bytes_read == frame_bytes) {
         did_work = true;
         int16_t *output_buffer = mic_buffer;  // Default: no AEC processing
 
@@ -382,28 +420,29 @@ void I2SAudioDuplex::audio_task_() {
         // Process through AEC if enabled and initialized
         if (this->aec_ != nullptr && this->aec_enabled_ && this->aec_->is_initialized() &&
             spk_ref_buffer != nullptr && aec_output != nullptr) {
-          // Get speaker reference (best effort, pad with silence if not enough data)
-          // Avoid available() which is not thread-safe; read directly and pad
+          // Get speaker reference from delayed buffer
+          // The buffer was pre-filled with silence, so we read "old" reference that matches echo timing
           if (this->speaker_ref_buffer_ != nullptr) {
-            size_t got_ref = this->speaker_ref_buffer_->read((void *) spk_ref_buffer, FRAME_BYTES, 0);
-            if (got_ref < FRAME_BYTES) {
-              memset(((uint8_t *) spk_ref_buffer) + got_ref, 0, FRAME_BYTES - got_ref);
+            size_t got_ref = this->speaker_ref_buffer_->read((void *) spk_ref_buffer, frame_bytes, 0);
+            if (got_ref < frame_bytes) {
+              memset(((uint8_t *) spk_ref_buffer) + got_ref, 0, frame_bytes - got_ref);
             }
           } else {
-            memset(spk_ref_buffer, 0, FRAME_BYTES);
+            memset(spk_ref_buffer, 0, frame_bytes);
           }
           // Process AEC: removes echo from mic_buffer using spk_ref_buffer
-          this->aec_->process(mic_buffer, spk_ref_buffer, aec_output, FRAME_SIZE);
+          this->aec_->process(mic_buffer, spk_ref_buffer, aec_output, frame_size);
           output_buffer = aec_output;
           if (++this->aec_frame_count_ % 500 == 0) {
-            ESP_LOGD(TAG, "AEC processing: %lu frames", (unsigned long) this->aec_frame_count_);
+            ESP_LOGD(TAG, "AEC processing: %lu frames (ref_delay=%ums)",
+                     (unsigned long) this->aec_frame_count_, (unsigned)AEC_REF_DELAY_MS);
           }
         }
 #endif
 
         // Apply mic gain
         if (this->mic_gain_ != 1.0f) {
-          for (size_t i = 0; i < FRAME_SIZE; i++) {
+          for (size_t i = 0; i < frame_size; i++) {
             int32_t sample = (int32_t)(output_buffer[i] * this->mic_gain_);
             // Clamp to int16_t range
             if (sample > 32767) sample = 32767;
@@ -414,7 +453,7 @@ void I2SAudioDuplex::audio_task_() {
 
         // Call callbacks with zero-copy pointer (no vector allocation per frame)
         for (auto &callback : this->mic_callbacks_) {
-          callback((const uint8_t *) output_buffer, FRAME_BYTES);
+          callback((const uint8_t *) output_buffer, frame_bytes);
         }
       }
     }
@@ -425,18 +464,18 @@ void I2SAudioDuplex::audio_task_() {
     // ══════════════════════════════════════════════════════════════════
     if (this->tx_handle_ && this->speaker_running_) {
       // Read whatever is available (non-blocking), pad remainder with silence
-      size_t got = this->speaker_buffer_->read((void *) spk_buffer, FRAME_BYTES, 0);
+      size_t got = this->speaker_buffer_->read((void *) spk_buffer, frame_bytes, 0);
       if (got > 0) {
         did_work = true;  // Had actual audio data to play
       }
-      if (got < FRAME_BYTES) {
+      if (got < frame_bytes) {
         // Pad with silence to maintain frame alignment
-        memset(((uint8_t *) spk_buffer) + got, 0, FRAME_BYTES - got);
+        memset(((uint8_t *) spk_buffer) + got, 0, frame_bytes - got);
       }
 
       // Apply speaker volume with clamp
       if (this->speaker_volume_ != 1.0f) {
-        for (size_t i = 0; i < FRAME_SIZE; i++) {
+        for (size_t i = 0; i < frame_size; i++) {
           int32_t sample = (int32_t)(spk_buffer[i] * this->speaker_volume_);
           if (sample > 32767) sample = 32767;
           if (sample < -32768) sample = -32768;
@@ -444,8 +483,18 @@ void I2SAudioDuplex::audio_task_() {
         }
       }
 
+#ifdef USE_ESP_AEC
+      // Store speaker reference for AEC AFTER volume is applied
+      // This ensures the reference matches exactly what goes to the speaker
+      // The reference buffer has a delay (pre-filled with silence) so when we read
+      // during mic processing, we get the reference from ~80ms ago
+      if (this->speaker_ref_buffer_ != nullptr && got > 0) {
+        this->speaker_ref_buffer_->write_without_replacement((void *) spk_buffer, frame_bytes, 0, true);
+      }
+#endif
+
       // Note: i2s_channel_write timeout is in milliseconds (new driver), not ticks
-      esp_err_t err = i2s_channel_write(this->tx_handle_, spk_buffer, FRAME_BYTES, &bytes_written, I2S_IO_TIMEOUT_MS);
+      esp_err_t err = i2s_channel_write(this->tx_handle_, spk_buffer, frame_bytes, &bytes_written, I2S_IO_TIMEOUT_MS);
       // Don't log INVALID_STATE - this is expected during shutdown (race condition)
       if (err != ESP_OK && err != ESP_ERR_TIMEOUT && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "i2s_channel_write failed: %s", esp_err_to_name(err));

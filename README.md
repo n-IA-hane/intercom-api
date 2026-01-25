@@ -48,19 +48,16 @@ A flexible intercom framework for ESP32 devices - from simple full-duplex doorbe
 
 **Home Assistant acts as the central hub** - it can receive calls (doorbell), make calls to ESPs, and relay calls between devices. All audio flows through HA, enabling remote access without complex NAT/firewall configuration.
 
-```
-                    ┌─────────────────┐
-                    │  Home Assistant │
-                    │   (PBX hub)     │
-                    └────────┬────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-          ▼                  ▼                  ▼
-    ┌──────────┐       ┌──────────┐       ┌──────────┐
-    │  ESP #1  │       │  ESP #2  │       │  Browser │
-    │ (Kitchen)│       │ (Bedroom)│       │  (Phone) │
-    └──────────┘       └──────────┘       └──────────┘
+```mermaid
+graph TD
+    HA[🏠 Home Assistant<br/>PBX hub]
+    ESP1[📻 ESP #1<br/>Kitchen]
+    ESP2[📻 ESP #2<br/>Bedroom]
+    Browser[🌐 Browser<br/>Phone]
+
+    HA <--> ESP1
+    HA <--> ESP2
+    HA <--> Browser
 ```
 
 ### Why This Project?
@@ -100,34 +97,26 @@ This component was born from the limitations of [esphome-intercom](https://githu
 
 ### System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              HOME ASSISTANT                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    intercom_native integration                       │   │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────┐   │   │
-│  │  │ WebSocket API │  │  TCP Client  │  │  Auto-Bridge (Full Mode) │   │   │
-│  │  │  /start       │  │  Port 6054   │  │  Detects ESP "Outgoing"  │   │   │
-│  │  │  /stop        │  │  Async queue │  │  Starts ESP↔ESP relay    │   │   │
-│  │  │  /audio       │  │  8-slot buff │  │                         │   │   │
-│  │  └──────┬───────┘  └──────┬───────┘  └─────────────────────────┘   │   │
-│  └─────────┼─────────────────┼──────────────────────────────────────────┘   │
-│            │                 │                                               │
-└────────────┼─────────────────┼───────────────────────────────────────────────┘
-             │ WebSocket       │ TCP :6054
-             │ JSON+Base64     │ Binary PCM
-             ▼                 ▼
-┌─────────────────┐    ┌─────────────────┐
-│     Browser     │    │      ESP32      │
-│  ┌───────────┐  │    │  ┌───────────┐  │
-│  │ Lovelace  │  │    │  │ intercom  │  │
-│  │   Card    │  │    │  │   _api    │  │
-│  │           │  │    │  │           │  │
-│  │ AudioWork │  │    │  │ FreeRTOS  │  │
-│  │   let     │  │    │  │  Tasks    │  │
-│  └───────────┘  │    │  └───────────┘  │
-│   getUserMedia  │    │   I2S mic/spk   │
-└─────────────────┘    └─────────────────┘
+```mermaid
+graph TB
+    subgraph HA[🏠 HOME ASSISTANT]
+        subgraph Integration[intercom_native integration]
+            WS[WebSocket API<br/>/start /stop /audio]
+            TCP[TCP Client<br/>Port 6054<br/>Async queue]
+            Bridge[Auto-Bridge<br/>Full Mode<br/>ESP↔ESP relay]
+        end
+    end
+
+    subgraph Browser[🌐 Browser]
+        Card[Lovelace Card<br/>AudioWorklet<br/>getUserMedia]
+    end
+
+    subgraph ESP[📻 ESP32]
+        API[intercom_api<br/>FreeRTOS Tasks<br/>I2S mic/spk]
+    end
+
+    Card <-->|WebSocket<br/>JSON+Base64| WS
+    API <-->|TCP :6054<br/>Binary PCM| TCP
 ```
 
 ### Audio Format
@@ -143,20 +132,22 @@ This component was born from the limitations of [esphome-intercom](https://githu
 
 ### TCP Protocol (Port 6054)
 
-```
-Header (4 bytes):
-┌──────────────┬──────────────┬──────────────────────┐
-│ Type (1 byte)│ Flags (1 byte)│ Length (2 bytes LE) │
-└──────────────┴──────────────┴──────────────────────┘
+**Header (4 bytes):**
 
-Message Types:
-  0x01 AUDIO  - PCM audio data
-  0x02 START  - Start streaming (includes caller_name, no_ring flag)
-  0x03 STOP   - Stop streaming
-  0x04 PING   - Keep-alive
-  0x05 PONG   - Keep-alive response
-  0x06 ERROR  - Error notification
-```
+| Byte 0 | Byte 1 | Bytes 2-3 |
+|--------|--------|-----------|
+| Type | Flags | Length (LE) |
+
+**Message Types:**
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0x01 | AUDIO | PCM audio data |
+| 0x02 | START | Start streaming (includes caller_name, no_ring flag) |
+| 0x03 | STOP | Stop streaming |
+| 0x04 | PING | Keep-alive |
+| 0x05 | PONG | Keep-alive response |
+| 0x06 | ERROR | Error notification |
 
 ---
 
@@ -383,20 +374,18 @@ In Simple mode, the browser communicates directly with a single ESP device throu
 ![Browser calling ESP](readme-img/call-from-home-assistant-to-esp.gif)
 
 ```mermaid
-flowchart LR
-    Browser <-->|WS| HA[Home Assistant]
-    HA <-->|TCP 6054| ESP
+graph LR
+    Browser[🌐 Browser] <-->|WebSocket| HA[🏠 HA]
+    HA <-->|TCP 6054| ESP[📻 ESP]
 ```
 
-```
-Call Flow:
+**Call Flow:**
 1. User clicks "Call" in browser
-2. Card sends intercom_native/start to HA
+2. Card sends `intercom_native/start` to HA
 3. HA opens TCP connection to ESP:6054
 4. HA sends START message (caller="Home Assistant")
 5. ESP enters Ringing state (or auto-answers)
 6. Bidirectional audio streaming begins
-```
 
 **Use Simple mode when:**
 - You only have one intercom device
@@ -409,18 +398,13 @@ In Full mode, ESP devices can call each other through Home Assistant, which acts
 
 ![ESP to ESP call](readme-img/call-between-esp.png)
 
+```mermaid
+graph TB
+    ESP1[📻 ESP #1<br/>Kitchen] <-->|TCP 6054| HA[🏠 HA Bridge<br/>relay]
+    ESP2[📻 ESP #2<br/>Bedroom] <-->|TCP 6054| HA
 ```
-┌──────────┐                              ┌──────────┐
-│  ESP #1  │◄──────TCP 6054──────┐ ┌─────►│  ESP #2  │
-│ (Kitchen)│                     │ │      │ (Bedroom)│
-└──────────┘                     ▼ ▼      └──────────┘
-                            ┌──────────┐
-                            │    HA    │
-                            │  Bridge  │
-                            │  (relay) │
-                            └──────────┘
 
-Call Flow (ESP #1 calls ESP #2):
+**Call Flow (ESP #1 calls ESP #2):**
 1. User selects "Bedroom" on ESP #1 display/button
 2. User presses Call button → ESP #1 enters "Outgoing" state
 3. HA detects state change via ESPHome API
@@ -429,7 +413,6 @@ Call Flow (ESP #1 calls ESP #2):
 6. User answers on ESP #2 (or auto-answer)
 7. HA bridges audio: ESP #1 ↔ HA ↔ ESP #2
 8. Either device can hangup → STOP propagates to both
-```
 
 **Full mode features:**
 - Contact list auto-discovery from HA
@@ -545,68 +528,64 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 
 ### Simple Mode: Browser calls ESP
 
-```
-  Browser              Home Assistant              ESP
-     │                       │                      │
-     │  WS: start            │                      │
-     │  {host: "esp.local"}  │                      │
-     ├──────────────────────►│                      │
-     │                       │  TCP Connect :6054   │
-     │                       ├─────────────────────►│
-     │                       │                      │
-     │                       │  START {caller:"HA"} │
-     │                       ├─────────────────────►│
-     │                       │                      │ State: Ringing
-     │                       │                      │ (or auto-answer)
-     │                       │  PONG (answered)     │
-     │                       │◄─────────────────────┤
-     │                       │                      │ State: Streaming
-     │  WS: audio (base64)   │  TCP: AUDIO (PCM)    │
-     ├──────────────────────►├─────────────────────►│ → Speaker
-     │                       │                      │
-     │  WS: audio_event      │  TCP: AUDIO (PCM)    │
-     │◄──────────────────────┤◄─────────────────────┤ ← Mic
-     │                       │                      │
-     │  WS: stop             │  TCP: STOP           │
-     ├──────────────────────►├─────────────────────►│
-     │                       │  TCP Close           │ State: Idle
-     │                       │◄────────────────────►│
+```mermaid
+sequenceDiagram
+    participant B as 🌐 Browser
+    participant HA as 🏠 Home Assistant
+    participant E as 📻 ESP
+
+    B->>HA: WS: start {host: "esp.local"}
+    HA->>E: TCP Connect :6054
+    HA->>E: START {caller:"HA"}
+    Note right of E: State: Ringing<br/>(or auto-answer)
+    E-->>HA: PONG (answered)
+    Note right of E: State: Streaming
+
+    loop Bidirectional Audio
+        B->>HA: WS: audio (base64)
+        HA->>E: TCP: AUDIO (PCM) → Speaker
+        E->>HA: TCP: AUDIO (PCM) ← Mic
+        HA->>B: WS: audio_event
+    end
+
+    B->>HA: WS: stop
+    HA->>E: TCP: STOP
+    Note right of E: State: Idle
 ```
 
 ### Full Mode: ESP calls ESP
 
-```
-  ESP #1 (Caller)        Home Assistant          ESP #2 (Callee)
-     │                         │                       │
-     │ State: "Outgoing"       │                       │
-     │ (user pressed Call)     │                       │
-     ├────ESPHome API─────────►│                       │
-     │                         │  TCP Connect :6054    │
-     │                         ├──────────────────────►│
-     │                         │                       │
-     │                         │  START {caller:"ESP1"}│
-     │                         ├──────────────────────►│
-     │                         │                       │ State: Ringing
-     │  TCP Connect :6054      │                       │
-     │◄────────────────────────┤                       │
-     │                         │                       │
-     │  START {caller:"ESP2"}  │                       │
-     │◄────────────────────────┤                       │
-     │ State: Ringing          │                       │
-     │                         │                       │
-     │                         │  PONG (user answered) │
-     │                         │◄──────────────────────┤
-     │  PONG                   │                       │ State: Streaming
-     │◄────────────────────────┤                       │
-     │ State: Streaming        │                       │
-     │                         │                       │
-     │  AUDIO ─────────────────┼──────────────────────►│ ESP1 mic → ESP2 spk
-     │◄────────────────────────┼─────────────────────── │ ESP2 mic → ESP1 spk
-     │                         │  (Bridge relays)      │
-     │                         │                       │
-     │  STOP (hangup)          │  STOP                 │
-     ├────────────────────────►├──────────────────────►│
-     │ State: Idle             │                       │ State: Idle
+```mermaid
+sequenceDiagram
+    participant E1 as 📻 ESP #1 (Caller)
+    participant HA as 🏠 Home Assistant
+    participant E2 as 📻 ESP #2 (Callee)
+
+    Note left of E1: State: Outgoing<br/>(user pressed Call)
+    E1->>HA: ESPHome API state change
+    HA->>E2: TCP Connect :6054
+    HA->>E2: START {caller:"ESP1"}
+    Note right of E2: State: Ringing
+    HA->>E1: TCP Connect :6054
+    HA->>E1: START {caller:"ESP2"}
+    Note left of E1: State: Ringing
+
+    E2-->>HA: PONG (user answered)
+    Note right of E2: State: Streaming
+    HA-->>E1: PONG
+    Note left of E1: State: Streaming
+
+    loop Bridge relays audio
+        E1->>HA: AUDIO (mic)
+        HA->>E2: AUDIO → Speaker
+        E2->>HA: AUDIO (mic)
+        HA->>E1: AUDIO → Speaker
+    end
+
+    E1->>HA: STOP (hangup)
+    HA->>E2: STOP
+    Note left of E1: State: Idle
+    Note right of E2: State: Idle
 ```
 
 ---
