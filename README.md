@@ -380,7 +380,7 @@ graph LR
     HA <-->|TCP 6054| ESP[📻 ESP]
 ```
 
-**Call Flow:**
+**Call Flow (Browser → ESP):**
 1. User clicks "Call" in browser
 2. Card sends `intercom_native/start` to HA
 3. HA opens TCP connection to ESP:6054
@@ -388,9 +388,17 @@ graph LR
 5. ESP enters Ringing state (or auto-answers)
 6. Bidirectional audio streaming begins
 
+**Call Flow (ESP → Browser):**
+1. User presses "Call" on ESP (with destination set to "Home Assistant")
+2. ESP sends RING message to HA
+3. HA notifies all connected browser cards
+4. Card shows incoming call with Answer/Decline buttons
+5. User clicks "Answer" in browser
+6. Bidirectional audio streaming begins
+
 **Use Simple mode when:**
 - You only have one intercom device
-- You only need browser-to-ESP communication
+- You need browser-to-ESP **and** ESP-to-browser communication
 - You want minimal configuration
 
 ### Full Mode (PBX-like)
