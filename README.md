@@ -392,9 +392,9 @@ graph LR
 - You only need browser-to-ESP communication
 - You want minimal configuration
 
-### Full Mode (ESP ↔ ESP)
+### Full Mode (PBX-like)
 
-In Full mode, ESP devices can call each other through Home Assistant, which acts as an audio relay.
+Full mode includes everything from Simple mode (Browser ↔ ESP calls) **plus** enables a PBX-like system where ESP devices can also call each other through Home Assistant, which acts as an audio relay.
 
 ![ESP to ESP call](readme-img/call-between-esp.png)
 
