@@ -4,6 +4,7 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
+#include "../intercom_api/intercom_protocol.h"  // For AEC delay constants
 
 #ifdef USE_ESP_AEC
 #include "../esp_aec/esp_aec.h"
@@ -12,6 +13,10 @@
 namespace esphome {
 namespace i2s_audio_duplex {
 
+// Use AEC constants from intercom_protocol.h
+using intercom_api::AEC_REF_DELAY_MS;
+using intercom_api::AEC_REF_DELAY_BYTES;
+
 static const char *const TAG = "i2s_audio_duplex";
 
 // Audio parameters
@@ -19,16 +24,6 @@ static const size_t DMA_BUFFER_COUNT = 8;
 static const size_t DMA_BUFFER_SIZE = 512;
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame (used when no AEC)
 static const size_t SPEAKER_BUFFER_SIZE = 8192;
-
-// AEC reference delay: compensate for I2S DMA latency + acoustic path
-// The mic captures echo from audio played ~60-100ms ago, but reference is "fresh".
-// We delay the reference so it aligns with when the echo appears in mic.
-// DMA latency: ~64ms (8 buffers * 512 samples / 16kHz = 256ms max, ~2-3 buffers typical)
-// Acoustic delay: ~5ms (room dependent)
-// Total: ~70ms, we use 80ms for safety margin
-static const size_t AEC_REF_DELAY_MS = 80;
-static const size_t AEC_REF_DELAY_SAMPLES = (16000 * AEC_REF_DELAY_MS) / 1000;  // 1280 samples
-static const size_t AEC_REF_DELAY_BYTES = AEC_REF_DELAY_SAMPLES * sizeof(int16_t);  // 2560 bytes
 
 // I2S new driver uses milliseconds directly, NOT FreeRTOS ticks
 static const uint32_t I2S_IO_TIMEOUT_MS = 50;
@@ -522,7 +517,7 @@ size_t I2SAudioDuplex::get_speaker_buffer_available() const {
 }
 
 size_t I2SAudioDuplex::get_speaker_buffer_size() const {
-  return 8192;  // SPEAKER_BUFFER_SIZE constant
+  return SPEAKER_BUFFER_SIZE;
 }
 
 }  // namespace i2s_audio_duplex

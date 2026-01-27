@@ -191,7 +191,6 @@ void IntercomApi::loop() {
         // close_client_socket_() sends STOP before closing
         this->close_client_socket_();
         this->state_ = ConnectionState::DISCONNECTED;
-        this->pending_incoming_call_ = false;
         if (this->full_mode_) {
           this->publish_caller_("");
         }
@@ -320,8 +319,6 @@ void IntercomApi::save_settings_() {
   stored.version = SETTINGS_VERSION;
   stored.volume_pct = static_cast<uint8_t>(std::lround(this->volume_ * 100.0f));
   stored.mic_gain_db = static_cast<int8_t>(std::lround(this->mic_gain_db_));
-  // NOTE: auto_answer and AEC flags are NOT saved here - handled by switch restore_mode
-  stored.flags = 0;
 
   this->settings_pref_.save(&stored);
   ESP_LOGD(TAG, "Saved settings: vol=%d%%, mic=%ddB",
@@ -454,6 +451,25 @@ void IntercomApi::set_mic_gain_db(float db) {
 }
 
 #ifdef USE_ESP_AEC
+void IntercomApi::reset_aec_buffers_() {
+  if (!this->aec_enabled_ || this->spk_ref_buffer_ == nullptr) return;
+
+  this->aec_mic_fill_ = 0;
+  if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+    this->spk_ref_buffer_->reset();
+    // Pre-fill reference buffer with silence to create delay
+    // This compensates for I2S DMA latency + acoustic delay
+    // The mic captures echo from audio played ~80ms ago, so we delay the reference
+    uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
+    if (silence) {
+      this->spk_ref_buffer_->write(silence, AEC_REF_DELAY_BYTES);
+      heap_caps_free(silence);
+      ESP_LOGD(TAG, "AEC buffers reset, pre-filled %ums silence", (unsigned)AEC_REF_DELAY_MS);
+    }
+    xSemaphoreGive(this->spk_ref_mutex_);
+  }
+}
+
 void IntercomApi::set_aec_enabled(bool enabled) {
   if (enabled) {
     // Only allow enabling if AEC is properly initialized
@@ -469,26 +485,10 @@ void IntercomApi::set_aec_enabled(bool enabled) {
     }
   }
   this->aec_enabled_ = enabled;
-  // Reset fill levels when toggling
-  this->aec_mic_fill_ = 0;
-  this->aec_ref_fill_ = 0;
-  if (this->spk_ref_buffer_) {
-    if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
-      this->spk_ref_buffer_->reset();
-      // Pre-fill reference buffer with silence to create delay
-      // This compensates for I2S DMA latency + acoustic delay
-      // The mic captures echo from audio played ~80ms ago, so we delay the reference
-      if (enabled) {
-        uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
-        if (silence) {
-          this->spk_ref_buffer_->write(silence, AEC_REF_DELAY_BYTES);
-          heap_caps_free(silence);
-          ESP_LOGI(TAG, "AEC reference buffer pre-filled with %ums of silence for delay compensation",
-                   (unsigned)AEC_REF_DELAY_MS);
-        }
-      }
-      xSemaphoreGive(this->spk_ref_mutex_);
-    }
+  if (enabled) {
+    this->reset_aec_buffers_();
+  } else {
+    this->aec_mic_fill_ = 0;
   }
   ESP_LOGI(TAG, "AEC %s", enabled ? "enabled" : "disabled");
   // NOTE: persistence handled by switch restore_mode, not save_settings_()
@@ -693,8 +693,6 @@ void IntercomApi::set_streaming_(bool on) {
   this->client_.streaming.store(on, std::memory_order_release);
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
   if (on) {
-    this->pending_incoming_call_ = false;  // Call answered, no longer pending
-
     // Reset audio buffers for new call - prevents stale data on quick reconnect
     if (this->mic_buffer_) {
       if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -711,20 +709,7 @@ void IntercomApi::set_streaming_(bool on) {
 
 #ifdef USE_ESP_AEC
     // Reset AEC state for new call - critical for proper echo cancellation
-    if (this->aec_enabled_ && this->spk_ref_buffer_ != nullptr) {
-      this->aec_mic_fill_ = 0;
-      if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
-        this->spk_ref_buffer_->reset();
-        // Pre-fill with delay compensation silence (80ms)
-        uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
-        if (silence) {
-          this->spk_ref_buffer_->write(silence, AEC_REF_DELAY_BYTES);
-          heap_caps_free(silence);
-          ESP_LOGD(TAG, "AEC buffers reset, pre-filled %ums silence", (unsigned)AEC_REF_DELAY_MS);
-        }
-        xSemaphoreGive(this->spk_ref_mutex_);
-      }
-    }
+    this->reset_aec_buffers_();
 #endif
 
     this->set_call_state_(CallState::STREAMING);  // FSM - trigger fired there
@@ -928,7 +913,6 @@ void IntercomApi::server_task_() {
           // 3. Now stop audio hardware
           this->set_active_(false);
           this->state_ = ConnectionState::DISCONNECTED;
-          this->pending_incoming_call_ = false;  // Clear pending flag
 
           // Clear caller sensor in full mode
           if (this->full_mode_) {
@@ -974,9 +958,8 @@ void IntercomApi::tx_task_() {
         this->client_.socket.load() < 0 ||
         !this->client_.streaming.load()) {
 #ifdef USE_ESP_AEC
-      // Reset AEC accumulators when paused
+      // Reset AEC accumulator when paused
       this->aec_mic_fill_ = 0;
-      this->aec_ref_fill_ = 0;
 #endif
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
@@ -1442,7 +1425,6 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       if (no_ring) {
         // NO_RING flag: we are the CALLER in a bridge, not the callee
         // Go to OUTGOING state and wait for audio (dest to answer)
-        this->pending_incoming_call_ = false;
         this->outgoing_start_time_ = millis();  // Start timeout counter BEFORE state change
         this->set_call_state_(CallState::OUTGOING);  // FSM: outgoing call
         this->set_active_(true);
@@ -1453,7 +1435,6 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       } else if (this->auto_answer_) {
         // Auto-answer ON: start streaming immediately, skip INCOMING/RINGING states
         // This prevents on_incoming_call trigger from firing for auto-answered calls
-        this->pending_incoming_call_ = false;
         this->set_call_state_(CallState::ANSWERING);  // FSM: go directly to answering
         this->set_active_(true);
         this->set_streaming_(true);  // This will set CallState::STREAMING
@@ -1462,19 +1443,16 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         // Auto-answer OFF: go to ringing state, wait for local answer
         this->set_call_state_(CallState::INCOMING);  // FSM: incoming call first
         this->state_ = ConnectionState::CONNECTED;  // Stay connected but not streaming
-        this->pending_incoming_call_ = true;  // Mark as incoming call waiting for answer
         this->send_message_(this->client_.socket.load(), MessageType::RING);
         ESP_LOGI(TAG, "Auto-answer OFF - sending RING, waiting for local answer");
         this->ringing_start_time_ = millis();  // Start ringing timeout timer
-        this->set_call_state_(CallState::RINGING);  // FSM: then ringing
-        this->publish_state_();  // Publish "Ringing" state
+        this->set_call_state_(CallState::RINGING);  // FSM: then ringing (triggers on_ringing)
       }
       break;
     }
 
     case MessageType::STOP:
       ESP_LOGI(TAG, "Received STOP from client");
-      this->pending_incoming_call_ = false;  // Clear incoming call flag
       // Clear caller name in full mode
       if (this->full_mode_) {
         this->publish_caller_("");
@@ -1510,10 +1488,9 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         ESP_LOGI(TAG, "Call answered");
         this->set_streaming_(true);  // This will set CallState::STREAMING
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
-      } else if (this->pending_incoming_call_) {
+      } else if (this->call_state_ == CallState::RINGING) {
         // We were ringing, HA answered for us remotely
         ESP_LOGI(TAG, "Call answered (remote)");
-        this->pending_incoming_call_ = false;
         this->set_call_state_(CallState::ANSWERING);  // FSM
         this->set_active_(true);
         this->set_streaming_(true);  // This will set CallState::STREAMING
@@ -1571,7 +1548,6 @@ bool IntercomApi::setup_server_socket_() {
   }
 
   ESP_LOGI(TAG, "Server listening on port %d", INTERCOM_PORT);
-  this->server_running_.store(true, std::memory_order_release);
   return true;
 }
 
@@ -1579,7 +1555,6 @@ void IntercomApi::close_server_socket_() {
   if (this->server_socket_ >= 0) {
     close(this->server_socket_);
     this->server_socket_ = -1;
-    this->server_running_.store(false, std::memory_order_release);
   }
 }
 
@@ -1610,38 +1585,30 @@ void IntercomApi::accept_client_() {
     return;
   }
 
-  // Check if already have a client
-  if (this->client_.socket.load() >= 0) {
-    ESP_LOGW(TAG, "Rejecting connection - already have client (socket=%d)", this->client_.socket.load());
-    // Send ERROR
+  // Helper to reject with BUSY error
+  auto reject_busy = [&](const char *reason) {
+    ESP_LOGW(TAG, "Rejecting connection - %s", reason);
     MessageHeader header;
     header.type = static_cast<uint8_t>(MessageType::ERROR);
     header.flags = 0;
     header.length = 1;
-    uint8_t error_code = static_cast<uint8_t>(ErrorCode::BUSY);
     uint8_t msg[HEADER_SIZE + 1];
     memcpy(msg, &header, HEADER_SIZE);
-    msg[HEADER_SIZE] = error_code;
+    msg[HEADER_SIZE] = static_cast<uint8_t>(ErrorCode::BUSY);
     send(client_sock, msg, sizeof(msg), 0);
     close(client_sock);
+  };
+
+  // Check if already have a client
+  if (this->client_.socket.load() >= 0) {
+    reject_busy("already have client");
     return;
   }
 
   // Check if we're in a state that shouldn't accept new connections
   // Allow IDLE (normal) and OUTGOING (ESP called someone, waiting for answer)
   if (this->call_state_ != CallState::IDLE && this->call_state_ != CallState::OUTGOING) {
-    ESP_LOGW(TAG, "Rejecting connection - busy (state=%s)", call_state_to_str(this->call_state_));
-    // Send ERROR
-    MessageHeader header;
-    header.type = static_cast<uint8_t>(MessageType::ERROR);
-    header.flags = 0;
-    header.length = 1;
-    uint8_t error_code = static_cast<uint8_t>(ErrorCode::BUSY);
-    uint8_t msg[HEADER_SIZE + 1];
-    memcpy(msg, &header, HEADER_SIZE);
-    msg[HEADER_SIZE] = error_code;
-    send(client_sock, msg, sizeof(msg), 0);
-    close(client_sock);
+    reject_busy(call_state_to_str(this->call_state_));
     return;
   }
 
@@ -1683,90 +1650,65 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
     return;
   }
 
-  // Handle based on mic_bits configuration
-  if (this->mic_bits_ == 32) {
-    // 32-bit mic (e.g., SPH0645) - convert to 16-bit
-    const int32_t *samples_32 = reinterpret_cast<const int32_t *>(data);
-    size_t num_samples = len / sizeof(int32_t);
+  static constexpr size_t MAX_SAMPLES = 512;
+  int16_t converted[MAX_SAMPLES];
+  size_t num_samples;
+  bool needs_processing = this->mic_gain_ != 1.0f || this->dc_offset_removal_;
 
-    int16_t converted[256];
-    if (num_samples > 256) num_samples = 256;
+  if (this->mic_bits_ == 32) {
+    // 32-bit mic (e.g., SPH0645) - always needs conversion to 16-bit
+    const int32_t *src = reinterpret_cast<const int32_t *>(data);
+    num_samples = std::min(len / sizeof(int32_t), MAX_SAMPLES);
 
     for (size_t i = 0; i < num_samples; i++) {
-      // Extract upper 16 bits
-      int32_t sample = samples_32[i] >> 16;
-
-      // Optional DC offset removal
+      int32_t sample = src[i] >> 16;  // Extract upper 16 bits
       if (this->dc_offset_removal_) {
         this->dc_offset_ = ((this->dc_offset_ * 255) >> 8) + sample;
         sample -= (this->dc_offset_ >> 8);
       }
-
-      // Apply mic gain
       sample = static_cast<int32_t>(sample * this->mic_gain_);
-
-      // Clamp to int16_t range
       if (sample > 32767) sample = 32767;
       if (sample < -32768) sample = -32768;
-
       converted[i] = static_cast<int16_t>(sample);
     }
+  } else if (needs_processing) {
+    // 16-bit mic with gain or DC offset
+    const int16_t *src = reinterpret_cast<const int16_t *>(data);
+    num_samples = std::min(len / sizeof(int16_t), MAX_SAMPLES);
 
-    if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
-      this->mic_buffer_->write(converted, num_samples * sizeof(int16_t));
-      xSemaphoreGive(this->mic_mutex_);
-    } else {
-      static uint32_t mic_drops_32 = 0;
-      if (++mic_drops_32 <= 5 || mic_drops_32 % 100 == 0) {
-        ESP_LOGW(TAG, "Mic data dropped (32-bit): %lu total", (unsigned long)mic_drops_32);
+    for (size_t i = 0; i < num_samples; i++) {
+      int32_t sample = src[i];
+      if (this->dc_offset_removal_) {
+        this->dc_offset_ = ((this->dc_offset_ * 255) >> 8) + sample;
+        sample -= (this->dc_offset_ >> 8);
       }
+      sample = static_cast<int32_t>(sample * this->mic_gain_);
+      if (sample > 32767) sample = 32767;
+      if (sample < -32768) sample = -32768;
+      converted[i] = static_cast<int16_t>(sample);
     }
   } else {
-    // 16-bit mic - apply gain and optional DC offset removal
-    const int16_t *samples_16 = reinterpret_cast<const int16_t *>(data);
-    size_t num_samples = len / sizeof(int16_t);
-
-    // Only process if gain != 1.0 or dc_offset_removal is enabled
-    if (this->mic_gain_ != 1.0f || this->dc_offset_removal_) {
-      int16_t converted[512];
-      if (num_samples > 512) num_samples = 512;
-
-      for (size_t i = 0; i < num_samples; i++) {
-        int32_t sample = samples_16[i];
-
-        if (this->dc_offset_removal_) {
-          this->dc_offset_ = ((this->dc_offset_ * 255) >> 8) + sample;
-          sample -= (this->dc_offset_ >> 8);
-        }
-
-        // Apply mic gain
-        sample = static_cast<int32_t>(sample * this->mic_gain_);
-
-        if (sample > 32767) sample = 32767;
-        if (sample < -32768) sample = -32768;
-        converted[i] = static_cast<int16_t>(sample);
-      }
-
-      if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
-        this->mic_buffer_->write(converted, num_samples * sizeof(int16_t));
-        xSemaphoreGive(this->mic_mutex_);
-      } else {
-        static uint32_t mic_drops_16g = 0;
-        if (++mic_drops_16g <= 5 || mic_drops_16g % 100 == 0) {
-          ESP_LOGW(TAG, "Mic data dropped (16-bit gain): %lu total", (unsigned long)mic_drops_16g);
-        }
-      }
+    // 16-bit mic, direct passthrough (gain=1.0, no DC offset)
+    if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
+      this->mic_buffer_->write((void *)data, len);
+      xSemaphoreGive(this->mic_mutex_);
     } else {
-      // Direct passthrough (gain=1.0 and no DC offset removal)
-      if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
-        this->mic_buffer_->write((void *)data, len);
-        xSemaphoreGive(this->mic_mutex_);
-      } else {
-        static uint32_t mic_drops_16 = 0;
-        if (++mic_drops_16 <= 5 || mic_drops_16 % 100 == 0) {
-          ESP_LOGW(TAG, "Mic data dropped (16-bit): %lu total", (unsigned long)mic_drops_16);
-        }
+      static uint32_t mic_drops = 0;
+      if (++mic_drops <= 5 || mic_drops % 100 == 0) {
+        ESP_LOGW(TAG, "Mic data dropped: %lu total", (unsigned long)mic_drops);
       }
+    }
+    return;
+  }
+
+  // Write processed samples
+  if (xSemaphoreTake(this->mic_mutex_, pdMS_TO_TICKS(10)) == pdTRUE) {
+    this->mic_buffer_->write(converted, num_samples * sizeof(int16_t));
+    xSemaphoreGive(this->mic_mutex_);
+  } else {
+    static uint32_t mic_drops = 0;
+    if (++mic_drops <= 5 || mic_drops % 100 == 0) {
+      ESP_LOGW(TAG, "Mic data dropped: %lu total", (unsigned long)mic_drops);
     }
   }
 }

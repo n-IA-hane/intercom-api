@@ -154,10 +154,7 @@ class IntercomApi : public Component {
   // Manual answer for incoming call (when auto_answer is OFF)
   void answer_call();
   void decline_call();
-  bool is_ringing() const { return this->state_ == ConnectionState::CONNECTED &&
-                                   this->client_.socket.load() >= 0 &&
-                                   !this->client_.streaming.load() &&
-                                   this->pending_incoming_call_; }
+  bool is_ringing() const { return this->call_state_ == CallState::RINGING; }
   bool is_idle() const { return this->call_state_ == CallState::IDLE; }
   bool is_streaming() const { return this->call_state_ == CallState::STREAMING; }
 
@@ -268,6 +265,11 @@ class IntercomApi : public Component {
   void set_call_state_(CallState new_state);
   void end_call_(CallEndReason reason);
 
+#ifdef USE_ESP_AEC
+  // AEC helper
+  void reset_aec_buffers_();
+#endif
+
   // Components
 #ifdef USE_MICROPHONE
   microphone::Microphone *microphone_{nullptr};
@@ -279,9 +281,8 @@ class IntercomApi : public Component {
   // Mode and state
   bool full_mode_{false};  // simple (false) or full (true) mode
   std::atomic<bool> active_{false};
-  std::atomic<bool> server_running_{false};
   ConnectionState state_{ConnectionState::DISCONNECTED};
-  CallState call_state_{CallState::IDLE};  // High-level FSM state
+  CallState call_state_{CallState::IDLE};  // High-level FSM state (source of truth)
 
   // Sensors (state is always present, others only in full mode)
   text_sensor::TextSensor *state_sensor_{nullptr};
@@ -340,9 +341,6 @@ class IntercomApi : public Component {
   // Auto-answer (default true for backward compatibility)
   bool auto_answer_{true};
 
-  // Pending incoming call (waiting for local answer, NOT just stopped streaming)
-  bool pending_incoming_call_{false};
-
   // Call timeout (0 = disabled, otherwise auto-hangup after this many ms)
   uint32_t ringing_timeout_ms_{0};
   uint32_t ringing_start_time_{0};
@@ -354,14 +352,12 @@ class IntercomApi : public Component {
 
   // === Settings persistence (local flash) ===
   static constexpr uint8_t SETTINGS_VERSION = 1;
-  static constexpr uint8_t FLAG_AUTO_ANSWER = 1 << 0;
-  static constexpr uint8_t FLAG_AEC = 1 << 1;
 
   struct StoredSettings {
     uint8_t version{SETTINGS_VERSION};
     uint8_t volume_pct{100};   // 0..100
     int8_t mic_gain_db{0};     // -20..+20
-    uint8_t flags{FLAG_AUTO_ANSWER};  // bit0=auto_answer (default ON), bit1=aec
+    uint8_t reserved{0};       // Padding for alignment
   };
 
   ESPPreferenceObject settings_pref_{};
@@ -392,7 +388,6 @@ class IntercomApi : public Component {
   int16_t *aec_ref_{nullptr};   // Speaker reference samples (frame_size)
   int16_t *aec_out_{nullptr};   // AEC output samples (frame_size)
   size_t aec_mic_fill_{0};      // Current fill level in aec_mic_
-  size_t aec_ref_fill_{0};      // Current fill level in aec_ref_
 #endif
 
   // Legacy triggers (backward compatible)
