@@ -1022,39 +1022,24 @@ void IntercomApi::tx_task_() {
           ESP_LOGW(TAG, "AEC: mutex timeout");
         }
 
-        // Calculate reference energy
-        int64_t ref_energy = 0;
-        for (int i = 0; i < this->aec_frame_samples_; i++) {
-          ref_energy += (int64_t)this->aec_ref_[i] * this->aec_ref_[i];
-        }
-        int ref_rms = (int)sqrt((double)ref_energy / this->aec_frame_samples_);
-
-        // Skip AEC when reference is too low (no echo to cancel)
-        if (ref_rms < 50) {
-          memcpy(this->aec_out_, this->aec_mic_, this->aec_frame_samples_ * sizeof(int16_t));
-        } else {
-          // Process AEC
-          this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_, this->aec_frame_samples_);
-        }
+        // Always process AEC - no skip threshold to avoid audio discontinuities
+        this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_, this->aec_frame_samples_);
 
         // Debug: log AEC stats periodically
         static uint32_t aec_frame_count = 0;
-        static uint32_t aec_skipped = 0;
-        aec_frame_count++;
-        if (ref_rms < 50) aec_skipped++;
-
-        if (aec_frame_count % 100 == 0) {  // Every ~3 seconds at 32ms/frame
-          int64_t mic_sum = 0, out_sum = 0;
+        if (++aec_frame_count % 100 == 0) {  // Every ~3 seconds at 32ms/frame
+          int64_t mic_sum = 0, ref_sum = 0, out_sum = 0;
           for (int i = 0; i < this->aec_frame_samples_; i++) {
             mic_sum += (int64_t)this->aec_mic_[i] * this->aec_mic_[i];
+            ref_sum += (int64_t)this->aec_ref_[i] * this->aec_ref_[i];
             out_sum += (int64_t)this->aec_out_[i] * this->aec_out_[i];
           }
           int mic_rms = (int)sqrt((double)mic_sum / this->aec_frame_samples_);
+          int ref_rms = (int)sqrt((double)ref_sum / this->aec_frame_samples_);
           int out_rms = (int)sqrt((double)out_sum / this->aec_frame_samples_);
-          ESP_LOGI(TAG, "AEC #%lu: mic=%d ref=%d out=%d %s (skip: %lu/%lu)",
-                   (unsigned long)aec_frame_count, mic_rms, ref_rms, out_rms,
-                   ref_rms >= 50 ? (mic_rms > 0 ? (out_rms < mic_rms ? "CANCEL" : "pass") : "quiet") : "SKIP",
-                   (unsigned long)aec_skipped, (unsigned long)aec_frame_count);
+          int reduction = (mic_rms > 0) ? (100 - (out_rms * 100 / mic_rms)) : 0;
+          ESP_LOGI(TAG, "AEC #%lu: mic=%d ref=%d out=%d (%d%% reduction)",
+                   (unsigned long)aec_frame_count, mic_rms, ref_rms, out_rms, reduction);
         }
 
         // Send processed audio (may be larger than AUDIO_CHUNK_SIZE)
