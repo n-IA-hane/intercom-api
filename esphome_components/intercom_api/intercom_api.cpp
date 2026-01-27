@@ -1148,9 +1148,24 @@ void IntercomApi::speaker_task_() {
 
 #ifdef USE_ESP_AEC
       // Feed speaker reference buffer for AEC
+      // IMPORTANT: Apply same volume scaling as speaker output so reference matches actual echo
       if (this->aec_enabled_ && this->spk_ref_buffer_ != nullptr) {
         if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
-          this->spk_ref_buffer_->write(audio_chunk, read);
+          // Use separate buffer for scaled reference (don't modify audio_chunk!)
+          if (this->volume_ != 1.0f) {
+            static int16_t ref_scaled[AUDIO_CHUNK_SIZE * 4 / sizeof(int16_t)];
+            const int16_t *src = reinterpret_cast<const int16_t *>(audio_chunk);
+            size_t num_samples = read / sizeof(int16_t);
+            for (size_t i = 0; i < num_samples; i++) {
+              int32_t scaled = static_cast<int32_t>(src[i] * this->volume_);
+              if (scaled > 32767) scaled = 32767;
+              if (scaled < -32768) scaled = -32768;
+              ref_scaled[i] = static_cast<int16_t>(scaled);
+            }
+            this->spk_ref_buffer_->write(ref_scaled, read);
+          } else {
+            this->spk_ref_buffer_->write(audio_chunk, read);
+          }
           xSemaphoreGive(this->spk_ref_mutex_);
         }
       }
