@@ -140,7 +140,7 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8
   sample_rate: 16000
   aec_id: aec_component   # AEC here for perfect mic/speaker sync (same audio task)
-  aec_reference_delay_ms: 10  # ES8311 integrated codec - minimal acoustic delay
+  aec_reference_delay_ms: 80  # Now capturing ref in play() like Mini - use same delay
   mic_attenuation: 0.1       # -20dB: ES8311 ADC is very hot, attenuate BEFORE AEC to prevent clipping
 
 # ==============================================================================
@@ -228,6 +228,14 @@ intercom_api:
         blue: 31%
         effect: none
     - output.turn_on: speaker_enable
+    # Set peer_name: use caller if incoming, else destination if outgoing
+    - lambda: |-
+        std::string caller = id(intercom).get_caller();
+        if (!caller.empty()) {
+          id(peer_name) = caller;  // Incoming call: show who's calling
+        } else {
+          id(peer_name) = id(intercom).get_current_destination();  // Outgoing: show destination
+        }
     - display.page.show: page_in_call
     - component.update: main_display
 

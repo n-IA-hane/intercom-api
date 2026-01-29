@@ -346,13 +346,49 @@ size_t I2SAudioDuplex::play(const uint8_t *data, size_t len, TickType_t ticks_to
     return 0;
   }
 
-  // NOTE: AEC reference is captured in audio_task_() AFTER volume is applied,
-  // so the reference matches exactly what goes to the speaker.
+  // Write to speaker buffer for playback
+  size_t written = this->speaker_buffer_->write_without_replacement((void *) data, len, ticks_to_wait, true);
 
-  // Use write_without_replacement which properly supports timeout
-  // This avoids the non-thread-safe free() call in regular write()
-  // Note: RingBuffer timeout is in FreeRTOS ticks (NOT milliseconds)
-  return this->speaker_buffer_->write_without_replacement((void *) data, len, ticks_to_wait, true);
+  // DEBUG: log play() calls
+  static uint32_t play_dbg = 0;
+  if (++play_dbg % 50 == 0) {
+    ESP_LOGI(TAG, "play() #%lu: len=%zu wr=%zu ref_buf=%s",
+             (unsigned long)play_dbg, len, written,
+             this->speaker_ref_buffer_ ? "OK" : "NULL");
+  }
+
+#ifdef USE_ESP_AEC
+  // CRITICAL FIX: Capture reference HERE when data enters the pipeline
+  // This matches Mini's timing where reference is captured when speaker->play() is called
+  // NOT in audio_task where speaker_buffer latency (50-100ms) would desync the reference
+  if (this->speaker_ref_buffer_ != nullptr && written > 0) {
+    // Scale reference to match what the attenuated mic will "hear"
+    float ref_scale = this->aec_ref_volume_ * this->mic_attenuation_;
+    if (ref_scale != 1.0f) {
+      // Need temp buffer for scaling
+      size_t num_samples = written / sizeof(int16_t);
+      const int16_t *src = reinterpret_cast<const int16_t *>(data);
+      // Use stack buffer for small writes, heap for large
+      if (num_samples <= 1024) {
+        int16_t scaled[1024];
+        for (size_t i = 0; i < num_samples; i++) {
+          int32_t sample = (int32_t)(src[i] * ref_scale);
+          if (sample > 32767) sample = 32767;
+          if (sample < -32768) sample = -32768;
+          scaled[i] = (int16_t) sample;
+        }
+        this->speaker_ref_buffer_->write_without_replacement((void *) scaled, written, 0, true);
+      } else {
+        // Fallback: write unscaled for very large buffers
+        this->speaker_ref_buffer_->write_without_replacement((void *) data, written, 0, true);
+      }
+    } else {
+      this->speaker_ref_buffer_->write_without_replacement((void *) data, written, 0, true);
+    }
+  }
+#endif
+
+  return written;
 }
 
 void I2SAudioDuplex::audio_task(void *param) {
@@ -505,27 +541,9 @@ void I2SAudioDuplex::audio_task_() {
         }
       }
 
-#ifdef USE_ESP_AEC
-      // Store speaker reference for AEC
-      // Scale reference by: codec hardware volume * mic_attenuation
-      // This matches what the attenuated mic actually "hears" as echo
-      // CRITICAL: Always write to ref buffer, even when got=0 (silence padded)
-      if (this->speaker_ref_buffer_ != nullptr) {
-        float ref_scale = this->aec_ref_volume_ * this->mic_attenuation_;
-        if (ref_scale != 1.0f) {
-          // Scale reference to match attenuated mic
-          for (size_t i = 0; i < frame_size; i++) {
-            int32_t sample = (int32_t)(spk_buffer[i] * ref_scale);
-            if (sample > 32767) sample = 32767;
-            if (sample < -32768) sample = -32768;
-            spk_ref_buffer[i] = (int16_t) sample;
-          }
-          this->speaker_ref_buffer_->write_without_replacement((void *) spk_ref_buffer, frame_bytes, 0, true);
-        } else {
-          this->speaker_ref_buffer_->write_without_replacement((void *) spk_buffer, frame_bytes, 0, true);
-        }
-      }
-#endif
+      // NOTE: AEC reference is now captured in play() method
+      // This fixes the timing - reference is captured when data enters the pipeline
+      // NOT here where speaker_buffer latency would desync the reference
 
       // Note: i2s_channel_write timeout is in milliseconds (new driver), not ticks
       esp_err_t err = i2s_channel_write(this->tx_handle_, spk_buffer, frame_bytes, &bytes_written, I2S_IO_TIMEOUT_MS);
