@@ -32,6 +32,31 @@ esphome:
           brightness: 100%
       - light.turn_off: status_led
       - delay: 1s
+      # Configure ES8311 for digital feedback AEC
+      # Register 0x44 bits[6:4] = ADCDAT_SEL: 4 = DACL + ADC
+      # This makes ASDOUT output stereo: L=DAC loopback (reference), R=ADC (mic)
+      - lambda: |-
+          ESP_LOGI("es8311", "Configuring ES8311 register 0x44 for digital feedback...");
+          // ES8311 I2C address is 0x18
+          // First read current value
+          uint8_t reg = 0x44;
+          uint8_t current_val = 0;
+          id(i2c_bus).write(0x18, &reg, 1);
+          id(i2c_bus).read(0x18, &current_val, 1);
+          ESP_LOGI("es8311", "Register 0x44 current value: 0x%02X", current_val);
+
+          // Write new value: bits[6:4]=4 (DACL+ADC)
+          uint8_t data[2] = {0x44, 0x48};
+          auto err = id(i2c_bus).write(0x18, data, 2);
+          if (err == esphome::i2c::ERROR_OK) {
+            ESP_LOGI("es8311", "Wrote register 0x44=0x48 for digital feedback AEC");
+            // Verify
+            id(i2c_bus).write(0x18, &reg, 1);
+            id(i2c_bus).read(0x18, &current_val, 1);
+            ESP_LOGI("es8311", "Register 0x44 after write: 0x%02X", current_val);
+          } else {
+            ESP_LOGE("es8311", "Failed to write register 0x44: error %d", (int)err);
+          }
       # Restore ES8311 volume and sync AEC reference
       - lambda: |-
           float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
@@ -106,6 +131,7 @@ external_components:
 # I2C BUS (for ES8311 codec control)
 # ==============================================================================
 i2c:
+  id: i2c_bus
   sda: GPIO15
   scl: GPIO14
   scan: false
@@ -143,7 +169,12 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8
   sample_rate: 16000
   aec_id: aec_component
-  aec_reference_delay_ms: 100  # Increased to ensure ref buffer doesn't run empty
+  # ES8311 digital feedback: RX is stereo with L=DAC(ref), R=ADC(mic)
+  # Gives sample-accurate reference for AEC (no ring buffer timing issues)
+  # Requires ES8311 register 0x44 bits[6:4]=4 (set in on_boot)
+  use_stereo_aec_reference: true
+  # Minimal delay for stereo mode - reference is nearly sample-aligned
+  aec_reference_delay_ms: 10
 
 # ==============================================================================
 # MICROPHONE (via duplex platform)
