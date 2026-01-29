@@ -615,7 +615,10 @@ class BridgeSession:
                 await self._dest_client.disconnect()
                 self._dest_client = None
 
-            _LOGGER.debug("Bridge stopped: %s", self.bridge_id)
+            # Remove from global _bridges dict to allow new bridges
+            _bridges.pop(self.bridge_id, None)
+
+            _LOGGER.info("Bridge stopped and removed: %s", self.bridge_id)
             self._fire_state_event("idle")
 
 
