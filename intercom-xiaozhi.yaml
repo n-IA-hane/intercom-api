@@ -118,6 +118,9 @@ audio_dac:
     id: es8311_dac
     bits_per_sample: 16bit
     sample_rate: 16000
+    # use_microphone: false (default) = analog mic input (MIC1P/MIC1N)
+    # use_microphone: true = PDM digital mic (WRONG for Xiaozhi!)
+    mic_gain: 24DB          # Default 42DB is too hot. Try 24DB first.
 
 # ==============================================================================
 # ECHO CANCELLATION
@@ -139,9 +142,8 @@ i2s_audio_duplex:
   i2s_din_pin: GPIO10
   i2s_dout_pin: GPIO8
   sample_rate: 16000
-  aec_id: aec_component   # AEC here for perfect mic/speaker sync (same audio task)
-  aec_reference_delay_ms: 80  # Now capturing ref in play() like Mini - use same delay
-  mic_attenuation: 0.01      # -40dB: ES8311 ADC is very hot, attenuate BEFORE AEC to prevent clipping
+  aec_id: aec_component
+  aec_reference_delay_ms: 100  # Increased to ensure ref buffer doesn't run empty
 
 # ==============================================================================
 # MICROPHONE (via duplex platform)
