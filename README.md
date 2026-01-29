@@ -84,7 +84,7 @@ This component was born from the limitations of [esphome-intercom](https://githu
   - **Simple**: Browser ↔ Home Assistant ↔ ESP
   - **Full**: ESP ↔ Home Assistant ↔ ESP (intercom between devices)
 - **Echo Cancellation (AEC)** - Built-in acoustic echo cancellation using ESP-SR
-  *(this is a notoriously difficult feature to implement correctly; it works but still needs improvement)*
+  *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
 - **Auto Answer** - Configurable automatic call acceptance
 - **Volume Control** - Adjustable speaker volume and microphone gain
 - **Contact Management** - Select call destination from discovered devices
@@ -812,7 +812,14 @@ Complete working examples are provided in the repository:
 
 ## Version History
 
-### v2.0.0 (Current)
+### v2.0.1 (Current)
+
+- **ES8311 Digital Feedback AEC**: Sample-accurate echo cancellation for ES8311 codec
+- **Bridge cleanup fix**: Properly remove bridges when calls end
+- **Reference counting**: Support for multiple mic/speaker listeners (voice_assistant coexistence)
+- **MicrophoneSource pattern**: Shared microphone access between components
+
+### v2.0.0
 
 - Full mode: ESP↔ESP calls through HA bridge
 - Card as pure ESP state mirror (no internal state tracking)
