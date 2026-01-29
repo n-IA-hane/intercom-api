@@ -7,6 +7,9 @@
 #include "esphome/components/speaker/speaker.h"
 #include "../i2s_audio_duplex.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
 namespace esphome {
 namespace i2s_audio_duplex {
 
@@ -15,6 +18,7 @@ class I2SAudioDuplexSpeaker : public speaker::Speaker,
                                public Parented<I2SAudioDuplex> {
  public:
   void setup() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 
@@ -30,6 +34,10 @@ class I2SAudioDuplexSpeaker : public speaker::Speaker,
 
   void set_volume(float volume) override;
   void set_mute_state(bool mute_state) override;
+
+ protected:
+  // Reference counting for multiple listeners (media_player, voice_assistant, intercom, etc.)
+  SemaphoreHandle_t active_listeners_semaphore_{nullptr};
 };
 
 }  // namespace i2s_audio_duplex
