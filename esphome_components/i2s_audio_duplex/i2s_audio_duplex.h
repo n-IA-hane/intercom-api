@@ -52,6 +52,16 @@ class I2SAudioDuplex : public Component {
   void set_speaker_volume(float volume) { this->speaker_volume_ = volume; }
   float get_speaker_volume() const { return this->speaker_volume_; }
 
+  // AEC reference volume - for codecs with hardware volume (ES8311)
+  // Set this to match the codec's output volume so AEC reference matches actual echo
+  void set_aec_reference_volume(float volume) { this->aec_ref_volume_ = volume; }
+  float get_aec_reference_volume() const { return this->aec_ref_volume_; }
+
+  // AEC reference delay - acoustic path delay in milliseconds
+  // Default 80ms for separate I2S, use shorter (20-40ms) for integrated codecs like ES8311
+  void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
+  uint32_t get_aec_reference_delay_ms() const { return this->aec_ref_delay_ms_; }
+
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
   void start_mic();
@@ -115,7 +125,9 @@ class I2SAudioDuplex : public Component {
 
   // Volume control
   float mic_gain_{1.0f};       // 0.0 - 2.0 (1.0 = unity gain)
-  float speaker_volume_{1.0f}; // 0.0 - 1.0
+  float speaker_volume_{1.0f}; // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
+  float aec_ref_volume_{1.0f}; // AEC reference scaling (set to codec's output volume for proper echo matching)
+  uint32_t aec_ref_delay_ms_{80}; // AEC reference delay in ms (80 for separate I2S, 20-40 for ES8311)
 };
 
 }  // namespace i2s_audio_duplex

@@ -13,9 +13,11 @@
 namespace esphome {
 namespace i2s_audio_duplex {
 
-// Use AEC constants from intercom_protocol.h
-using intercom_api::AEC_REF_DELAY_MS;
-using intercom_api::AEC_REF_DELAY_BYTES;
+// AEC delay constants - can be overridden per-instance via set_aec_reference_delay_ms()
+// Default values from intercom_protocol.h (80ms for separate I2S hardware)
+static constexpr uint32_t DEFAULT_AEC_REF_DELAY_MS = 80;
+static constexpr size_t SAMPLE_RATE = 16000;
+static constexpr size_t BYTES_PER_SAMPLE = 2;
 
 static const char *const TAG = "i2s_audio_duplex";
 
@@ -51,11 +53,13 @@ void I2SAudioDuplex::set_aec(esp_aec::EspAec *aec) {
   // Create speaker reference buffer for AEC now (since set_aec is called after setup)
   if (aec != nullptr && !this->speaker_ref_buffer_) {
     // Buffer needs to hold: delay samples + working frames
-    size_t ref_buffer_size = AEC_REF_DELAY_BYTES + SPEAKER_BUFFER_SIZE;
+    // Use configurable delay (default 80ms, can be set lower for integrated codecs)
+    size_t delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
+    size_t ref_buffer_size = delay_bytes + SPEAKER_BUFFER_SIZE;
     this->speaker_ref_buffer_ = RingBuffer::create(ref_buffer_size);
     if (this->speaker_ref_buffer_) {
       ESP_LOGI(TAG, "AEC speaker reference buffer created (size=%u, delay=%ums)",
-               (unsigned)ref_buffer_size, (unsigned)AEC_REF_DELAY_MS);
+               (unsigned)ref_buffer_size, (unsigned)this->aec_ref_delay_ms_);
     } else {
       ESP_LOGE(TAG, "Failed to create AEC speaker reference buffer");
     }
@@ -231,16 +235,18 @@ void I2SAudioDuplex::start() {
 #ifdef USE_ESP_AEC
   // Pre-fill reference buffer with silence to create delay
   // This compensates for I2S DMA latency + acoustic delay
-  // The mic captures echo from audio played ~80ms ago, so we delay the reference
+  // The mic captures echo from audio played X ms ago, so we delay the reference
+  // Delay is configurable: 80ms for separate I2S, 20-40ms for integrated codecs like ES8311
   if (this->speaker_ref_buffer_ != nullptr && this->aec_ != nullptr) {
     this->speaker_ref_buffer_->reset();
+    size_t delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
     // Allocate temp buffer for silence
-    uint8_t *silence = (uint8_t *) heap_caps_calloc(1, AEC_REF_DELAY_BYTES, MALLOC_CAP_INTERNAL);
+    uint8_t *silence = (uint8_t *) heap_caps_calloc(1, delay_bytes, MALLOC_CAP_INTERNAL);
     if (silence) {
-      this->speaker_ref_buffer_->write_without_replacement(silence, AEC_REF_DELAY_BYTES, 0, true);
+      this->speaker_ref_buffer_->write_without_replacement(silence, delay_bytes, 0, true);
       heap_caps_free(silence);
       ESP_LOGI(TAG, "AEC reference buffer pre-filled with %ums of silence for delay compensation",
-               (unsigned)AEC_REF_DELAY_MS);
+               (unsigned)this->aec_ref_delay_ms_);
     }
   }
 #endif
@@ -428,9 +434,22 @@ void I2SAudioDuplex::audio_task_() {
           // Process AEC: removes echo from mic_buffer using spk_ref_buffer
           this->aec_->process(mic_buffer, spk_ref_buffer, aec_output, frame_size);
           output_buffer = aec_output;
-          if (++this->aec_frame_count_ % 500 == 0) {
-            ESP_LOGD(TAG, "AEC processing: %lu frames (ref_delay=%ums)",
-                     (unsigned long) this->aec_frame_count_, (unsigned)AEC_REF_DELAY_MS);
+
+          // Debug: log AEC stats periodically (same as intercom_api)
+          if (++this->aec_frame_count_ % 100 == 0) {
+            int64_t mic_sum = 0, ref_sum = 0, out_sum = 0;
+            for (size_t i = 0; i < frame_size; i++) {
+              mic_sum += (int64_t)mic_buffer[i] * mic_buffer[i];
+              ref_sum += (int64_t)spk_ref_buffer[i] * spk_ref_buffer[i];
+              out_sum += (int64_t)aec_output[i] * aec_output[i];
+            }
+            int mic_rms = (int)sqrt((double)mic_sum / frame_size);
+            int ref_rms = (int)sqrt((double)ref_sum / frame_size);
+            int out_rms = (int)sqrt((double)out_sum / frame_size);
+            int reduction = (mic_rms > 0) ? (100 - (out_rms * 100 / mic_rms)) : 0;
+            ESP_LOGI(TAG, "AEC #%lu: mic=%d ref=%d out=%d (%d%% reduction, aec_ref_vol=%.2f)",
+                     (unsigned long)this->aec_frame_count_, mic_rms, ref_rms, out_rms,
+                     reduction, this->aec_ref_volume_);
           }
         }
 #endif
@@ -479,14 +498,25 @@ void I2SAudioDuplex::audio_task_() {
       }
 
 #ifdef USE_ESP_AEC
-      // Store speaker reference for AEC AFTER volume is applied
-      // This ensures the reference matches exactly what goes to the speaker
-      // The reference buffer has a delay (pre-filled with silence) so when we read
-      // during mic processing, we get the reference from ~80ms ago
+      // Store speaker reference for AEC
+      // For codecs with hardware volume (ES8311), aec_ref_volume_ should match the codec's
+      // output volume so the reference amplitude matches the actual echo picked up by mic.
       // CRITICAL: Always write to ref buffer, even when got=0 (silence padded)
       // Otherwise ref buffer falls behind real-time, causing AEC desync
       if (this->speaker_ref_buffer_ != nullptr) {
-        this->speaker_ref_buffer_->write_without_replacement((void *) spk_buffer, frame_bytes, 0, true);
+        if (this->aec_ref_volume_ != 1.0f) {
+          // Scale reference to match codec hardware volume
+          // Use spk_ref_buffer which was allocated for AEC
+          for (size_t i = 0; i < frame_size; i++) {
+            int32_t sample = (int32_t)(spk_buffer[i] * this->aec_ref_volume_);
+            if (sample > 32767) sample = 32767;
+            if (sample < -32768) sample = -32768;
+            spk_ref_buffer[i] = (int16_t) sample;
+          }
+          this->speaker_ref_buffer_->write_without_replacement((void *) spk_ref_buffer, frame_bytes, 0, true);
+        } else {
+          this->speaker_ref_buffer_->write_without_replacement((void *) spk_buffer, frame_bytes, 0, true);
+        }
       }
 #endif
 

@@ -19,6 +19,7 @@ CONF_I2S_DIN_PIN = "i2s_din_pin"
 CONF_I2S_DOUT_PIN = "i2s_dout_pin"
 CONF_SAMPLE_RATE = "sample_rate"
 CONF_AEC_ID = "aec_id"
+CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
@@ -46,6 +47,8 @@ CONFIG_SCHEMA = cv.Schema({
     ),
     cv.Optional(CONF_SAMPLE_RATE, default=16000): cv.int_range(min=8000, max=48000),
     cv.Optional(CONF_AEC_ID): cv.use_id(EspAec),
+    # AEC reference delay: 80ms for separate I2S, 20-40ms for integrated codecs like ES8311
+    cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
 }).extend(cv.COMPONENT_SCHEMA)
 
 
@@ -62,6 +65,9 @@ async def to_code(config):
     cg.add(var.set_din_pin(config[CONF_I2S_DIN_PIN]))
     cg.add(var.set_dout_pin(config[CONF_I2S_DOUT_PIN]))
     cg.add(var.set_sample_rate(config[CONF_SAMPLE_RATE]))
+
+    # Set AEC reference delay (must be set BEFORE set_aec for buffer sizing)
+    cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
 
     # Link AEC if configured
     if CONF_AEC_ID in config:

@@ -32,11 +32,12 @@ esphome:
           brightness: 100%
       - light.turn_off: status_led
       - delay: 1s
-      # Restore ES8311 volume and sync to i2s_duplex for AEC
+      # Restore ES8311 volume and sync AEC reference
       - lambda: |-
           float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
           id(es8311_dac).set_volume(vol);
-          id(i2s_duplex).set_speaker_volume(vol);  // Sync for AEC reference
+          // AEC reference must match ES8311 hardware output level
+          id(i2s_duplex).set_aec_reference_volume(vol);
           id(peer_name) = id(intercom).get_current_destination();
       - script.execute: update_display_page
 
@@ -139,6 +140,7 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8
   sample_rate: 16000
   aec_id: aec_component   # AEC here for perfect mic/speaker sync (same audio task)
+  aec_reference_delay_ms: 10  # ES8311 integrated codec - minimal acoustic delay
 
 # ==============================================================================
 # MICROPHONE (via duplex platform)
@@ -406,9 +408,9 @@ number:
           // ES8311 volume range: 0.15 (min) to 0.75 (max)
           float es8311_vol = 0.15 + (x / 100.0) * 0.60;
           id(es8311_dac).set_volume(es8311_vol);
-          // Sync SAME volume to i2s_duplex for AEC reference scaling
-          // This ensures reference amplitude matches actual speaker output
-          id(i2s_duplex).set_speaker_volume(es8311_vol);
+          // AEC reference must match ES8311 hardware output level
+          // This ensures reference amplitude matches actual echo picked up by mic
+          id(i2s_duplex).set_aec_reference_volume(es8311_vol);
 
 # ==============================================================================
 # TEXT SENSORS
