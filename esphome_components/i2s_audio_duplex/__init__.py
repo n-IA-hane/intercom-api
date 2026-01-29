@@ -21,6 +21,7 @@ CONF_SAMPLE_RATE = "sample_rate"
 CONF_AEC_ID = "aec_id"
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_MIC_ATTENUATION = "mic_attenuation"
+CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
@@ -52,6 +53,9 @@ CONFIG_SCHEMA = cv.Schema({
     cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
     # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
     cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=1.0),
+    # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
+    # Requires ES8311 register 0x44 bits[6:4]=4 (ADCDAT_SEL=DACL+ADC)
+    cv.Optional(CONF_USE_STEREO_AEC_REF, default=False): cv.boolean,
 }).extend(cv.COMPONENT_SCHEMA)
 
 
@@ -74,6 +78,9 @@ async def to_code(config):
 
     # Set mic attenuation for hot mics (applied BEFORE AEC)
     cg.add(var.set_mic_attenuation(config[CONF_MIC_ATTENUATION]))
+
+    # ES8311 digital feedback mode: stereo RX with L=ref, R=mic
+    cg.add(var.set_use_stereo_aec_reference(config[CONF_USE_STEREO_AEC_REF]))
 
     # Link AEC if configured
     if CONF_AEC_ID in config:
