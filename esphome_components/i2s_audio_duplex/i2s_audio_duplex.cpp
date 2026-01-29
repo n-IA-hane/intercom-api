@@ -13,9 +13,6 @@
 namespace esphome {
 namespace i2s_audio_duplex {
 
-// AEC delay constants - can be overridden per-instance via set_aec_reference_delay_ms()
-// Default values from intercom_protocol.h (80ms for separate I2S hardware)
-static constexpr uint32_t DEFAULT_AEC_REF_DELAY_MS = 80;
 static constexpr size_t SAMPLE_RATE = 16000;
 static constexpr size_t BYTES_PER_SAMPLE = 2;
 
@@ -417,7 +414,6 @@ void I2SAudioDuplex::audio_task_() {
 
   // For stereo mode (ES8311 digital feedback), we read 2x data (L=ref, R=mic)
   size_t rx_frame_bytes = this->use_stereo_aec_ref_ ? (frame_bytes * 2) : frame_bytes;
-  size_t rx_frame_samples = this->use_stereo_aec_ref_ ? (frame_size * 2) : frame_size;
 
   // Allocate DMA-capable buffers for I2S operations
   int16_t *rx_buffer = (int16_t *) heap_caps_malloc(rx_frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
