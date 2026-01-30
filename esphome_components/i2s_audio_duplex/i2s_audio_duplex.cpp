@@ -226,8 +226,8 @@ void I2SAudioDuplex::start() {
   }
 
   this->duplex_running_ = true;
-  this->mic_running_ = (this->rx_handle_ != nullptr);
-  this->speaker_running_ = (this->tx_handle_ != nullptr);
+  this->mic_running_ = false;
+  this->speaker_running_ = false;
 
   // Reset debug counters
   this->aec_frame_count_ = 0;
@@ -329,22 +329,28 @@ void I2SAudioDuplex::start_mic() {
   if (!this->duplex_running_) {
     this->start();
   }
+  this->mic_running_ = true;
 }
 
 void I2SAudioDuplex::stop_mic() {
-  // In duplex mode, stopping mic stops everything
-  this->stop();
+  this->mic_running_ = false;
+  if (!this->speaker_running_) {
+    this->stop();
+  }
 }
 
 void I2SAudioDuplex::start_speaker() {
   if (!this->duplex_running_) {
     this->start();
   }
+  this->speaker_running_ = true;
 }
 
 void I2SAudioDuplex::stop_speaker() {
-  // In duplex mode, stopping speaker stops everything
-  this->stop();
+  this->speaker_running_ = false;
+  if (!this->mic_running_) {
+    this->stop();
+  }
 }
 
 size_t I2SAudioDuplex::play(const uint8_t *data, size_t len, TickType_t ticks_to_wait) {

@@ -7,12 +7,17 @@ from esphome.components.esp32 import add_idf_component
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
 
-# Only available on ESP32-S3 with ESP-SR
-def _validate_esp32s3(config):
+# Only available on ESP32-S3 or ESP32-P4 with ESP-SR
+_AEC_SUPPORTED_VARIANTS = ("ESP32S3", "ESP32P4")
+
+def _validate_esp32_variant(config):
     if CORE.is_esp32:
         import esphome.components.esp32 as esp32
-        if esp32.get_esp32_variant() != "ESP32S3":
-            raise cv.Invalid("esp_aec requires ESP32-S3")
+        variant = esp32.get_esp32_variant()
+        if variant not in _AEC_SUPPORTED_VARIANTS:
+            raise cv.Invalid(
+                f"esp_aec requires {' or '.join(_AEC_SUPPORTED_VARIANTS)}, got {variant}"
+            )
     return config
 
 esp_aec_ns = cg.esphome_ns.namespace("esp_aec")
@@ -36,7 +41,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_MODE, default="voip_low_cost"): cv.enum(AEC_MODES, lower=True),
         }
     ).extend(cv.COMPONENT_SCHEMA),
-    _validate_esp32s3,
+    _validate_esp32_variant,
 )
 
 
