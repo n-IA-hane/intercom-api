@@ -4,9 +4,8 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
-#include "esphome/core/ring_buffer.h"
-#include "esphome/core/application.h"
 #include "esphome/core/preferences.h"
+#include "esphome/core/ring_buffer.h"
 
 #ifdef USE_MICROPHONE
 #include "esphome/components/microphone/microphone.h"
@@ -195,12 +194,6 @@ class IntercomApi : public Component {
   void register_aec_switch(switch_::Switch *sw) { this->aec_switch_ = sw; }
 #endif
 
-  // Publish sensor values
-  void publish_state_();
-  void publish_destination_();
-  void publish_caller_(const std::string &caller_name);
-  void publish_contacts_();
-
   // Contacts management (full mode only)
   void set_contacts(const std::string &contacts_csv);
   void next_contact();
@@ -261,6 +254,12 @@ class IntercomApi : public Component {
   // State helpers - consolidate duplicated start/stop logic
   void set_active_(bool on);
   void set_streaming_(bool on);
+
+  // Publish sensor values
+  void publish_state_();
+  void publish_destination_();
+  void publish_caller_(const std::string &caller_name);
+  void publish_contacts_();
 
   // Call state FSM
   void set_call_state_(CallState new_state);

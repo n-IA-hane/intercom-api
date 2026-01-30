@@ -24,7 +24,7 @@ IntercomAecSwitch = intercom_api_ns.class_(
 )
 
 
-def _switch_schema(switch_class, icon, default_restore="RESTORE_DEFAULT_OFF"):
+def _switch_schema(switch_class, icon):
     """Create switch schema for a specific switch type."""
     return switch.switch_schema(
         switch_class,
@@ -40,17 +40,11 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_INTERCOM_API_ID): cv.use_id(IntercomApi),
         # On/off control for intercom
-        cv.Optional(CONF_ACTIVE): _switch_schema(
-            IntercomApiSwitch, "mdi:phone", "RESTORE_DEFAULT_OFF"
-        ),
+        cv.Optional(CONF_ACTIVE): _switch_schema(IntercomApiSwitch, "mdi:phone"),
         # Auto-answer incoming calls (default ON)
-        cv.Optional(CONF_AUTO_ANSWER): _switch_schema(
-            IntercomApiAutoAnswer, "mdi:phone-in-talk", "RESTORE_DEFAULT_ON"
-        ),
+        cv.Optional(CONF_AUTO_ANSWER): _switch_schema(IntercomApiAutoAnswer, "mdi:phone-in-talk"),
         # AEC (Echo Cancellation) - default OFF
-        cv.Optional(CONF_AEC): _switch_schema(
-            IntercomAecSwitch, "mdi:ear-hearing", "RESTORE_DEFAULT_OFF"
-        ),
+        cv.Optional(CONF_AEC): _switch_schema(IntercomAecSwitch, "mdi:ear-hearing"),
     }
 )
 

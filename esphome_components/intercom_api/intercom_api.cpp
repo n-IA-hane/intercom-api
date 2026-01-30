@@ -580,7 +580,7 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
   this->publish_destination_();
   this->publish_contacts_();  // Publish updated contacts list
 
-  ESP_LOGI(TAG, "Contacts updated: %d devices", this->contacts_.size());
+  ESP_LOGI(TAG, "Contacts updated: %zu devices", this->contacts_.size());
 }
 
 void IntercomApi::next_contact() {
@@ -622,8 +622,8 @@ void IntercomApi::publish_contacts_() {
     // Publish count only (e.g. "3 contacts"), not the full CSV
     // Full list available via get_contacts_csv() if needed
     char buf[32];
-    snprintf(buf, sizeof(buf), "%d contact%s",
-             static_cast<int>(this->contacts_.size()),
+    snprintf(buf, sizeof(buf), "%zu contact%s",
+             this->contacts_.size(),
              this->contacts_.size() == 1 ? "" : "s");
     this->contacts_sensor_->publish_state(buf);
   }
@@ -714,9 +714,10 @@ void IntercomApi::set_streaming_(bool on) {
     this->reset_aec_buffers_();
 #endif
 
-    this->set_call_state_(CallState::STREAMING);  // FSM - trigger fired there
+    this->set_call_state_(CallState::STREAMING);  // FSM - publishes state internally
+  } else {
+    this->publish_state_();  // Only publish when stopping (set_call_state_ already publishes)
   }
-  this->publish_state_();
 }
 
 void IntercomApi::set_call_state_(CallState new_state) {
@@ -1310,7 +1311,7 @@ bool IntercomApi::receive_message_(int socket, MessageHeader &header, uint8_t *b
 
   if (header_read != HEADER_SIZE) {
     if (header_read > 0) {
-      ESP_LOGW(TAG, "Header incomplete: %zu/%d", header_read, HEADER_SIZE);
+      ESP_LOGW(TAG, "Header incomplete: %zu/%zu", header_read, HEADER_SIZE);
     }
     return false;
   }

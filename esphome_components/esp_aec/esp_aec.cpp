@@ -2,6 +2,8 @@
 
 #ifdef USE_ESP32
 
+#include <cstring>
+
 #include "esphome/core/log.h"
 
 namespace esphome {
