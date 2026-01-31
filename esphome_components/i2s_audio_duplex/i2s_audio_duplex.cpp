@@ -512,22 +512,7 @@ void I2SAudioDuplex::audio_task_() {
           this->aec_->process(mic_buffer, spk_ref_buffer, aec_output, frame_size);
           output_buffer = aec_output;
 
-          // Debug: log AEC stats periodically (every ~16 seconds)
-          if (++this->aec_frame_count_ % 500 == 0) {
-            int64_t mic_sum = 0, ref_sum = 0, out_sum = 0;
-            for (size_t i = 0; i < frame_size; i++) {
-              mic_sum += static_cast<int64_t>(mic_buffer[i]) * mic_buffer[i];
-              ref_sum += static_cast<int64_t>(spk_ref_buffer[i]) * spk_ref_buffer[i];
-              out_sum += static_cast<int64_t>(aec_output[i]) * aec_output[i];
-            }
-            int mic_rms = static_cast<int>(std::sqrt(static_cast<double>(mic_sum) / frame_size));
-            int ref_rms = static_cast<int>(std::sqrt(static_cast<double>(ref_sum) / frame_size));
-            int out_rms = static_cast<int>(std::sqrt(static_cast<double>(out_sum) / frame_size));
-            int reduction = (mic_rms > 0) ? (100 - (out_rms * 100 / mic_rms)) : 0;
-            ESP_LOGI(TAG, "AEC #%lu: mic=%d ref=%d out=%d (%d%% %s)",
-                     (unsigned long)this->aec_frame_count_, mic_rms, ref_rms, out_rms, reduction,
-                     this->use_stereo_aec_ref_ ? "STEREO" : "ringbuf");
-          }
+          ++this->aec_frame_count_;
         }
 #endif
 
