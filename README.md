@@ -677,6 +677,8 @@ See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md)
 
 ## Voice Assistant Coexistence & AEC Best Practices
 
+![Voice Assistant during Intercom call](readme-img/intercom_va.gif)
+
 The intercom can run alongside ESPHome's **Voice Assistant** (VA) and **Micro Wake Word** (MWW) on the same device. This combination is powerful but pushes the ESP32-S3 hardware to its limits. This section documents what we learned from extensive testing.
 
 ### AEC Performance Impact
