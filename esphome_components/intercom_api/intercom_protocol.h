@@ -61,7 +61,6 @@ static constexpr size_t MAX_MESSAGE_SIZE = HEADER_SIZE + MAX_AUDIO_CHUNK + 64;
 // Buffer sizes
 static constexpr size_t RX_BUFFER_SIZE = 8192;       // ~256ms - fits 4 browser chunks
 static constexpr size_t TX_BUFFER_SIZE = 2048;       // ~64ms of audio
-static constexpr size_t SOCKET_BUFFER_SIZE = 4096;
 
 // AEC reference delay: compensate for I2S DMA latency + acoustic path
 // The mic captures echo from audio played ~60-100ms ago, but reference is "fresh".
@@ -74,9 +73,7 @@ static constexpr size_t AEC_REF_DELAY_SAMPLES = (SAMPLE_RATE * AEC_REF_DELAY_MS)
 static constexpr size_t AEC_REF_DELAY_BYTES = AEC_REF_DELAY_SAMPLES * sizeof(int16_t);   // 2560 bytes
 
 // Timeouts
-static constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;
 static constexpr uint32_t PING_INTERVAL_MS = 5000;
-static constexpr uint32_t PING_TIMEOUT_MS = 10000;
 
 }  // namespace intercom_api
 }  // namespace esphome

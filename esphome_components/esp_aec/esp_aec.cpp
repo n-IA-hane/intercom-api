@@ -24,10 +24,17 @@ void EspAec::setup() {
     return;
   }
 
-  int frame_size = aec_get_chunksize(this->handle_);
+  this->cached_frame_size_ = aec_get_chunksize(this->handle_);
   ESP_LOGI(TAG, "AEC initialized: sample_rate=%d, filter_length=%d, frame_size=%d samples (%dms)",
-           this->sample_rate_, this->filter_length_, frame_size,
-           frame_size * 1000 / this->sample_rate_);
+           this->sample_rate_, this->filter_length_, this->cached_frame_size_,
+           this->cached_frame_size_ * 1000 / this->sample_rate_);
+}
+
+EspAec::~EspAec() {
+  if (this->handle_ != nullptr) {
+    aec_destroy(this->handle_);
+    this->handle_ = nullptr;
+  }
 }
 
 void EspAec::dump_config() {
@@ -39,11 +46,7 @@ void EspAec::dump_config() {
 }
 
 int EspAec::get_frame_size() const {
-  if (this->handle_ == nullptr) {
-    // Default frame size: 32ms at 16kHz = 512 samples
-    return 512;
-  }
-  return aec_get_chunksize(this->handle_);
+  return this->cached_frame_size_;
 }
 
 void EspAec::process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size) {

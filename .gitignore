@@ -9,7 +9,6 @@ secrets.yaml
 
 # Claude Code project file (internal notes)
 CLAUDE.md
-REFACTOR_NOTES.md
 
 # Python cache
 __pycache__/

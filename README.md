@@ -31,6 +31,7 @@ A flexible intercom framework for ESP32 devices - from simple full-duplex doorbe
 - [Entities and Controls](#entities-and-controls)
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
+- [Voice Assistant Coexistence & AEC Best Practices](#voice-assistant-coexistence--aec-best-practices)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -85,12 +86,17 @@ This component was born from the limitations of [esphome-intercom](https://githu
   - **Full**: ESP ↔ Home Assistant ↔ ESP (intercom between devices)
 - **Echo Cancellation (AEC)** - Built-in acoustic echo cancellation using ESP-SR
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
+- **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Auto Answer** - Configurable automatic call acceptance
 - **Volume Control** - Adjustable speaker volume and microphone gain
 - **Contact Management** - Select call destination from discovered devices
 - **Status LED** - Visual feedback for call states
 - **Persistent Settings** - Volume, gain, AEC state saved to flash
 - **Remote Access** - Works through any HA remote access method
+
+### Bundled Components
+
+This repo also provides **[i2s_audio_duplex](esphome_components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration, dual mic paths (raw + AEC-processed), and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome_components/i2s_audio_duplex/README.md) for full details.
 
 ---
 
@@ -509,10 +515,16 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `filter_length` | int | 4 | Echo tail in frames (4 = 64ms) |
 | `mode` | string | `voip_low_cost` | AEC algorithm mode |
 
-**AEC modes:**
-- `voip_low_cost` - Optimized for real-time voice, lower CPU
-- `voip` - Standard VoIP quality
-- `speex` - Speex-based algorithm
+**AEC modes** (ESP-SR closed-source Espressif library):
+
+| Mode | CPU | Memory | Use Case |
+|------|-----|--------|----------|
+| `voip_low_cost` | Low | Low | Intercom-only, no VA/MWW. Best for resource-constrained setups |
+| `voip` | Medium | Medium | General purpose |
+| `voip_high_perf` | Medium | Medium | Recommended when coexisting with Voice Assistant + MWW |
+| `sr_high_perf` | High | **Very High** | Best cancellation. May exhaust DMA memory on ESP32-S3 causing SPI errors |
+
+> **Note**: All modes have similar CPU cost per frame (~7ms). The difference is primarily in memory allocation and adaptive filter quality. See [Voice Assistant Coexistence](#voice-assistant-coexistence--aec-best-practices) for detailed recommendations.
 
 ---
 
@@ -612,10 +624,10 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | Microphone | Speaker | I2S Mode | Component |
-|--------|------------|---------|----------|-----------|
-| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` |
-| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` |
+| Device | Microphone | Speaker | I2S Mode | Component | VA/MWW |
+|--------|------------|---------|----------|-----------|--------|
+| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Yes (mixer speaker) |
+| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | Yes (dual mic path) |
 
 ### Requirements
 
@@ -658,6 +670,137 @@ speaker:
 ```
 
 See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md) for detailed configuration.
+
+---
+
+## Voice Assistant Coexistence & AEC Best Practices
+
+The intercom can run alongside ESPHome's **Voice Assistant** (VA) and **Micro Wake Word** (MWW) on the same device. This combination is powerful but pushes the ESP32-S3 hardware to its limits. This section documents what we learned from extensive testing.
+
+### AEC Performance Impact
+
+AEC uses Espressif's closed-source ESP-SR library. It has a **fixed CPU cost per audio frame** regardless of `filter_length`:
+
+| Metric | Value |
+|--------|-------|
+| Processing time per frame | ~7ms avg, ~10ms peak (out of 16ms budget) |
+| CPU usage | ~42% of one core |
+| `filter_length` impact on CPU | None (4 vs 8 = identical processing time) |
+
+This is significant on ESP32-S3 hardware. With AEC active during TTS responses, you may observe:
+- **Display slowdowns**: UI rendering takes longer (display updates delayed) because the main loop gets less CPU time
+- **Audio remains unaffected**: The FreeRTOS task priorities ensure audio processing (priority 9) always runs before display (priority 1)
+
+The `audio_task` uses `vTaskDelay(3)` after each frame to yield 3ms of CPU to lower-priority tasks. Without this yield, MWW inference and display rendering starve completely.
+
+### Choosing the Right AEC Mode
+
+**If you use intercom only (no Voice Assistant/MWW):**
+- Use `voip_low_cost` or `voip` — lightest on resources, sufficient echo cancellation for voice calls
+- `filter_length: 4` (64ms) is enough for integrated codecs like ES8311
+
+**If you use Voice Assistant + MWW + intercom:**
+- Use `voip_high_perf` — best balance of cancellation quality and resource usage
+- `filter_length: 8` (128ms) provides more margin for acoustic path variations
+- **Avoid `sr_high_perf`**: While it offers the best cancellation, it allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability
+
+```yaml
+# Recommended for VA + MWW coexistence
+esp_aec:
+  sample_rate: 16000
+  filter_length: 8       # 128ms tail
+  mode: voip_high_perf   # Good quality without memory exhaustion
+```
+
+### ES8311 Stereo L/R Reference: The Best Configuration
+
+If your codec supports it (ES8311, and potentially others with DAC loopback), **stereo digital feedback is the optimal AEC reference method**. This is the single most impactful configuration choice.
+
+**How it works:**
+- ES8311 outputs a stereo I2S frame: **L channel = DAC loopback** (what the speaker is playing), **R channel = ADC** (microphone)
+- The reference signal is **sample-accurate** — same I2S frame as the mic capture, no timing estimation needed
+- `aec_reference_delay_ms: 10` (just a few ms for internal codec latency, vs ~80ms for ring buffer mode)
+
+**What this enables:**
+- **Perfect echo cancellation** — the AEC adaptive filter converges fast because reference and echo are precisely aligned
+- **Voice Assistant during active intercom calls** — TTS output is completely removed from the mic signal. The remote intercom peer does not hear TTS responses at all
+- **AEC-processed audio goes to VA** — so an intercom call does not interfere with voice assistant STT quality
+
+```yaml
+i2s_audio_duplex:
+  aec_id: aec_component
+  use_stereo_aec_reference: true   # Enable DAC feedback
+  aec_reference_delay_ms: 10       # Sample-aligned, minimal delay
+
+esphome:
+  on_boot:
+    - lambda: |-
+        // Configure ES8311 register 0x44: output DAC+ADC on stereo ASDOUT
+        uint8_t data[2] = {0x44, 0x48};
+        id(i2c_bus).write(0x18, data, 2);
+```
+
+Without stereo feedback, the component falls back to a **ring buffer reference** — it copies speaker audio to a delay buffer and reads it back ~80ms later to match the acoustic path. This works with any codec but requires careful delay tuning and is never perfectly aligned.
+
+### Wake Word During TTS Playback
+
+MWW can detect wake words **even while TTS is playing** — useful for "barge-in" scenarios (e.g., interrupt a long response with your wake word, or intent scripts like "shut up!").
+
+However, there are caveats:
+- **MWW should use raw (pre-AEC) mic audio**: AEC suppresses everything that correlates with the speaker output, including your voice when you speak over TTS. In our tests, MWW on AEC-processed audio detected wake words only ~10% of the time during TTS. On raw mic audio, the neural model handles speaker echo much better.
+- **Detection accuracy is reduced during TTS**: The mic captures both your voice and the speaker output simultaneously. The MWW neural model is resilient but not perfect — expect occasional missed detections during loud TTS. This is a fundamental hardware limitation.
+- **CPU contention**: With AEC + TTS + MWW all active, the ESP32-S3 is running at near capacity. The `vTaskDelay(3)` yield gives MWW inference enough CPU, but the timing is tight.
+
+```yaml
+# Dual mic path for best MWW + VA experience
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_aec                    # AEC-processed: for VA STT + intercom TX
+    i2s_audio_duplex_id: i2s_duplex
+
+  - platform: i2s_audio_duplex
+    id: mic_raw                    # Raw: for MWW (pre-AEC, hears through TTS)
+    i2s_audio_duplex_id: i2s_duplex
+    pre_aec: true
+
+micro_wake_word:
+  microphone: mic_raw              # Raw mic for best wake word detection
+
+voice_assistant:
+  microphone: mic_aec              # AEC mic for clean STT
+```
+
+### AEC Timeout Gating
+
+AEC processing is automatically gated: it only runs when the speaker had real audio within the last 250ms. When the speaker is silent (idle, no TTS, no intercom audio), AEC is bypassed and mic audio passes through unchanged.
+
+This prevents the adaptive filter from drifting during silence, which would otherwise suppress the mic signal and kill wake word detection. The gating is transparent — no configuration needed.
+
+### Custom Wake Words
+
+Two custom Micro Wake Word models trained by the author are included in the `wakewords/` directory:
+
+- **Hey Bender** (`hey_bender.json`) — inspired by the Futurama character
+- **Hey Trowyayoh** (`hey_trowyayoh.json`) — phonetic spelling of the Italian word *"troiaio"* (roughly: "what a mess", or more colorfully, "bullshit")
+
+These are standard `.json` + `.tflite` files compatible with ESPHome's `micro_wake_word`. To use them:
+
+```yaml
+micro_wake_word:
+  models:
+    - model: "wakewords/hey_trowyayoh.json"
+```
+
+### Experiment and Tune
+
+Every setup is different: room acoustics, mic sensitivity, speaker placement, codec characteristics. We encourage you to:
+
+- **Try different `filter_length` values** (4 vs 8) — longer isn't always better if your acoustic path is short
+- **Toggle AEC on/off during calls** to hear the difference — the `aec` switch is available in HA
+- **Adjust `mic_gain`** — higher gain helps voice detection but can introduce noise
+- **Test MWW during TTS** with your specific wake word — some words are more robust than others
+- **Compare `voip_low_cost` vs `voip_high_perf`** — the difference may be subtle in your environment
+- **Monitor ESP logs** — AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
 
 ---
 
@@ -811,20 +954,38 @@ views:
 
 ## Example YAML Files
 
-Complete working examples are provided in the repository:
+Complete working examples are provided in the repository. All files are tested and deployed on real hardware.
 
-- [`intercom-mini.yaml`](intercom-mini.yaml) - ESP32-S3 Mini with separate I2S (SPH0645 + MAX98357A)
-- [`intercom-xiaozhi.yaml`](intercom-xiaozhi.yaml) - Xiaozhi Ball V3 with ES8311 codec + display
+### Intercom Only
+
+For devices that only need intercom functionality (no voice assistant, no wake word detection):
+
+- [`intercom-mini.yaml`](intercom-mini.yaml) - ESP32-S3 Mini with separate I2S buses (SPH0645 mic + MAX98357A speaker). Minimal intercom setup with LED status feedback.
+- [`intercom-xiaozhi.yaml`](intercom-xiaozhi.yaml) - Xiaozhi Ball V3 with ES8311 codec + round GC9A01A display. Intercom with display pages for call states.
+
+### Intercom + Voice Assistant + Micro Wake Word
+
+For devices running both intercom and ESPHome Voice Assistant with on-device wake word detection. These configs demonstrate full coexistence of intercom, VA, and MWW on a single ESP32-S3:
+
+- [`intercom-va.yaml`](intercom-va.yaml) - **Xiaozhi Ball V3** (ES8311 codec, GC9A01A round display, dual I2C bus). Based on [RealDeco/xiaozhi-esphome](https://github.com/RealDeco/xiaozhi-esphome) Ball_v2.yaml with major additions: `i2s_audio_duplex` for true full-duplex I2S, `esp_aec` with ES8311 stereo digital feedback, mixer speaker, dual-mode UI (VA pages + intercom pages with GPIO0 switching), custom wake word, animated display with scrolling text, backlight auto-off timer. See the file header for a full list of changes from the original.
+
+- [`intercom-mini-va.yaml`](intercom-mini-va.yaml) - **ESP32-S3 Mini** (SPH0645 mic, MAX98357A speaker, WS2812 LED). Uses standard `i2s_audio` with separate I2S buses and a `platform: mixer` speaker to share the hardware speaker between VA TTS and intercom audio. MWW barge-in support (interrupt TTS with wake word). LED feedback for both VA and intercom states.
 
 ---
 
 ## Version History
 
-### v2.0.1 (Current)
+### v2.0.2 (Current)
 
-- **ES8311 Digital Feedback AEC**: Sample-accurate echo cancellation for ES8311 codec
+- **AEC + MWW coexistence**: Timeout gating, reference buffer reset on speaker start/stop, TTS barge-in support
+- **Dual mic path**: `pre_aec` microphone option for raw audio to MWW while AEC-processed audio goes to VA
+- **Voice Assistant dual mode**: Full intercom + VA + MWW on same device (intercom-va.yaml, intercom-mini-va.yaml)
+
+### v2.0.1
+
+- **ES8311 Digital Feedback AEC**: Sample-accurate echo cancellation via stereo L/R split
 - **Bridge cleanup fix**: Properly remove bridges when calls end
-- **Reference counting**: Support for multiple mic/speaker listeners (voice_assistant coexistence)
+- **Reference counting**: Counting semaphore for multiple mic/speaker listeners
 - **MicrophoneSource pattern**: Shared microphone access between components
 
 ### v2.0.0
@@ -833,8 +994,6 @@ Complete working examples are provided in the repository:
 - Card as pure ESP state mirror (no internal state tracking)
 - Contacts management with auto-discovery
 - Persistent settings (volume, gain, AEC saved to flash)
-- User-friendly ESP logs ("Incoming call from...", "Calling...")
-- Removed legacy button.py platform (use template buttons)
 
 ### v1.0.0
 

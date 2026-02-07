@@ -27,8 +27,15 @@ void I2SAudioDuplexMicrophone::setup() {
   this->audio_stream_info_ = audio::AudioStreamInfo(16, 1, this->parent_->get_sample_rate());
 
   // Register callback with the parent I2SAudioDuplex to receive mic data
-  this->parent_->add_mic_data_callback(
-      [this](const uint8_t *data, size_t len) { this->on_audio_data_(data, len); });
+  // pre_aec=true: raw mic for wake word detection (not suppressed by AEC)
+  // pre_aec=false: AEC-processed mic for voice assistant STT
+  if (this->pre_aec_) {
+    this->parent_->add_raw_mic_data_callback(
+        [this](const uint8_t *data, size_t len) { this->on_audio_data_(data, len); });
+  } else {
+    this->parent_->add_mic_data_callback(
+        [this](const uint8_t *data, size_t len) { this->on_audio_data_(data, len); });
+  }
 }
 
 void I2SAudioDuplexMicrophone::dump_config() {
@@ -62,8 +69,8 @@ void I2SAudioDuplexMicrophone::on_audio_data_(const uint8_t *data, size_t len) {
 
   // ESPHome microphone interface requires std::vector<uint8_t>
   // The data_callbacks_ are wrapped by base class to handle muting
-  std::vector<uint8_t> audio_data(data, data + len);
-  this->data_callbacks_.call(audio_data);
+  this->audio_buffer_.assign(data, data + len);
+  this->data_callbacks_.call(this->audio_buffer_);
 }
 
 void I2SAudioDuplexMicrophone::loop() {
@@ -85,21 +92,18 @@ void I2SAudioDuplexMicrophone::loop() {
       if (this->status_has_error()) {
         break;
       }
-
-      ESP_LOGI(TAG, "Starting microphone...");
+      ESP_LOGD(TAG, "Microphone started");
       this->parent_->start_mic();
       this->state_ = microphone::STATE_RUNNING;
-      ESP_LOGI(TAG, "Microphone started");
       break;
 
     case microphone::STATE_RUNNING:
       break;
 
     case microphone::STATE_STOPPING:
-      ESP_LOGI(TAG, "Stopping microphone...");
+      ESP_LOGD(TAG, "Microphone stopped");
       this->parent_->stop_mic();
       this->state_ = microphone::STATE_STOPPED;
-      ESP_LOGI(TAG, "Microphone stopped");
       break;
 
     case microphone::STATE_STOPPED:

@@ -2,7 +2,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import audio, speaker
-from esphome.const import CONF_ID
+from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
 from .. import (
     i2s_audio_duplex_ns,
     I2SAudioDuplex,
@@ -18,6 +18,15 @@ I2SAudioDuplexSpeaker = i2s_audio_duplex_ns.class_(
     cg.Component,
     cg.Parented.template(I2SAudioDuplex),
 )
+
+
+def _set_audio_properties(config):
+    """Set audio properties in config so mixer speaker can inherit them."""
+    if CONF_NUM_CHANNELS not in config:
+        config[CONF_NUM_CHANNELS] = 1
+    if CONF_SAMPLE_RATE not in config:
+        config[CONF_SAMPLE_RATE] = 16000
+    return config
 
 
 def _set_stream_limits(config):
@@ -39,6 +48,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(CONF_I2S_AUDIO_DUPLEX_ID): cv.use_id(I2SAudioDuplex),
         }
     ).extend(cv.COMPONENT_SCHEMA),
+    _set_audio_properties,
     _set_stream_limits,
 )
 

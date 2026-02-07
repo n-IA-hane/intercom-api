@@ -52,8 +52,7 @@ void I2SAudioDuplexSpeaker::stop() {
 }
 
 void I2SAudioDuplexSpeaker::finish() {
-  // Wait for buffer to drain, then stop
-  ESP_LOGI(TAG, "Finishing speaker (waiting for buffer to drain)...");
+  ESP_LOGD(TAG, "Speaker finishing (draining buffer)...");
 
   // Wait up to 1 second for buffer to drain
   int wait_count = 0;
@@ -124,21 +123,18 @@ void I2SAudioDuplexSpeaker::loop() {
       if (this->status_has_error()) {
         break;
       }
-
-      ESP_LOGI(TAG, "Starting speaker...");
+      ESP_LOGD(TAG, "Speaker started");
       this->parent_->start_speaker();
       this->state_ = speaker::STATE_RUNNING;
-      ESP_LOGI(TAG, "Speaker started");
       break;
 
     case speaker::STATE_RUNNING:
       break;
 
     case speaker::STATE_STOPPING:
-      ESP_LOGI(TAG, "Stopping speaker...");
+      ESP_LOGD(TAG, "Speaker stopped");
       this->parent_->stop_speaker();
       this->state_ = speaker::STATE_STOPPED;
-      ESP_LOGI(TAG, "Speaker stopped");
       break;
 
     case speaker::STATE_STOPPED:

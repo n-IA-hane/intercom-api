@@ -75,9 +75,10 @@ class I2SAudioDuplex : public Component {
 
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
+  void add_raw_mic_data_callback(MicDataCallback callback) { this->raw_mic_callbacks_.push_back(callback); }
   void start_mic();
   void stop_mic();
-  bool is_mic_running() const { return this->mic_running_; }
+  bool is_mic_running() const { return this->mic_ref_count_.load() > 0; }
 
   // Speaker interface
   size_t play(const uint8_t *data, size_t len, TickType_t ticks_to_wait = portMAX_DELAY);
@@ -118,21 +119,21 @@ class I2SAudioDuplex : public Component {
 
   // State
   std::atomic<bool> duplex_running_{false};
-  bool mic_running_{false};
-  bool speaker_running_{false};
+  std::atomic<int> mic_ref_count_{0};  // Reference-counted mic (multiple microphone instances)
+  std::atomic<bool> speaker_running_{false};
   TaskHandle_t audio_task_handle_{nullptr};
 
   // Mic data callbacks
-  std::vector<MicDataCallback> mic_callbacks_;
+  std::vector<MicDataCallback> mic_callbacks_;       // Post-AEC (for VA/STT)
+  std::vector<MicDataCallback> raw_mic_callbacks_;   // Pre-AEC (for MWW)
 
   // Speaker ring buffer
   std::unique_ptr<RingBuffer> speaker_buffer_;
 
   // AEC support
   esp_aec::EspAec *aec_{nullptr};
-  bool aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
+  std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
   std::unique_ptr<RingBuffer> speaker_ref_buffer_;  // Reference for AEC
-  uint32_t aec_frame_count_{0};  // Debug counter, reset on start()
 
   // Volume control
   float mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)
@@ -141,6 +142,11 @@ class I2SAudioDuplex : public Component {
   float aec_ref_volume_{1.0f};   // AEC reference scaling (set to codec's output volume for proper echo matching)
   uint32_t aec_ref_delay_ms_{80}; // AEC reference delay in ms (80 for separate I2S, 20-40 for ES8311)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
+
+  // AEC gating: only run echo canceller while speaker has recent real audio.
+  // Prevents AEC from processing silence when mixer keeps speaker_running_ true.
+  uint32_t last_speaker_audio_ms_{0};
+  static constexpr uint32_t AEC_ACTIVE_TIMEOUT_MS{250};
 };
 
 }  // namespace i2s_audio_duplex

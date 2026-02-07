@@ -7,6 +7,8 @@
 #include "esphome/components/microphone/microphone.h"
 #include "../i2s_audio_duplex.h"
 
+#include <vector>
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -26,8 +28,13 @@ class I2SAudioDuplexMicrophone : public microphone::Microphone,
   void start() override;
   void stop() override;
 
+  void set_pre_aec(bool pre_aec) { this->pre_aec_ = pre_aec; }
+
  protected:
   void on_audio_data_(const uint8_t *data, size_t len);
+
+  bool pre_aec_{false};  // If true, receives raw (pre-AEC) mic data for wake word detection
+  std::vector<uint8_t> audio_buffer_;
 
   // Reference counting for multiple listeners (voice_assistant, wake_word, intercom, etc.)
   SemaphoreHandle_t active_listeners_semaphore_{nullptr};
