@@ -671,6 +671,8 @@ speaker:
 
 See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md) for detailed configuration.
 
+> **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
+
 ---
 
 ## Voice Assistant Coexistence & AEC Best Practices
