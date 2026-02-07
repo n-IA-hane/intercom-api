@@ -977,11 +977,22 @@ For devices running both intercom and ESPHome Voice Assistant with on-device wak
 
 ## Version History
 
-### v2.0.2 (Current)
+### v2.0.3 (Current)
+
+- **Voice Assistant + Intercom coexistence**: Full dual-mode operation with MWW, VA, and intercom on the same ESP32-S3
+- **Ready-to-use YAML configs**: `intercom-va.yaml` (Xiaozhi Ball V3 + display) and `intercom-mini-va.yaml` (ESP32-S3 Mini headless)
+- **Bug fixes**: `speaker_running_` data race (now `std::atomic`), inconsistent allocator in `start_speaker()`, removed dead `aec_frame_count_`
+- **Performance**: Pre-allocated audio buffer in duplex_microphone (eliminates per-frame vector allocation at ~62 Hz)
+- **ESP32-P4 support**: Added to `esp_aec` supported variants, `#ifdef USE_ESP_AEC` guards for clean builds without AEC
+- **Custom wake words**: "Hey Bender" and "Hey Trowyayoh" models included
+- **Documentation overhaul**: AEC best practices, ES8311 stereo L/R reference, mode selection guide, attribution headers
+
+### v2.0.2
 
 - **AEC + MWW coexistence**: Timeout gating, reference buffer reset on speaker start/stop, TTS barge-in support
 - **Dual mic path**: `pre_aec` microphone option for raw audio to MWW while AEC-processed audio goes to VA
-- **Voice Assistant dual mode**: Full intercom + VA + MWW on same device (intercom-va.yaml, intercom-mini-va.yaml)
+- **Code style refactor**: C++ casts, include order, format specifiers across all components
+- **TCP read timeout**: Dead connection detection (5s streaming, 60s idle)
 
 ### v2.0.1
 
