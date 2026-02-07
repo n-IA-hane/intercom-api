@@ -629,6 +629,8 @@ sequenceDiagram
 | ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Yes (mixer speaker) |
 | Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | Yes (dual mic path) |
 
+> **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
+
 ### Requirements
 
 - **ESP32-S3** with PSRAM (required for AEC)
@@ -670,8 +672,6 @@ speaker:
 ```
 
 See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md) for detailed configuration.
-
-> **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
 
 ---
 
