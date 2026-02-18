@@ -23,17 +23,20 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up Intercom Native from configuration.yaml."""
+async def _async_setup_shared(hass: HomeAssistant, config: dict | None = None) -> None:
+    """Shared setup logic for both YAML and config entry."""
+    if hass.data.get(DOMAIN, {}).get("initialized"):
+        return  # Already set up (e.g. YAML + config entry both present)
+
     hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["initialized"] = True
 
     # Register WebSocket API commands
     async_register_websocket_api(hass)
 
-    # Load sensor platform (creates sensor.intercom_active_devices)
-    # The sensor also listens for ESP state changes to auto-start bridges
+    # Load sensor platform
     hass.async_create_task(
-        async_load_platform(hass, Platform.SENSOR, DOMAIN, {}, config)
+        async_load_platform(hass, Platform.SENSOR, DOMAIN, {}, config or {})
     )
 
     # Register frontend (Lovelace card auto-served from integration)
@@ -48,16 +51,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _register_frontend)
 
     _LOGGER.info("Intercom Native integration loaded (simple + full mode auto-bridge)")
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up Intercom Native from configuration.yaml (legacy support)."""
+    await _async_setup_shared(hass, config)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Intercom Native from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-
-    # Register WebSocket API if not already done
-    async_register_websocket_api(hass)
-
+    """Set up Intercom Native from a config entry (UI setup)."""
+    await _async_setup_shared(hass)
     return True
 
 

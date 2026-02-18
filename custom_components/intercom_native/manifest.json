@@ -3,7 +3,7 @@
   "name": "Intercom Native",
   "version": "2.0.4",
   "codeowners": ["@n-IA-hane"],
-  "config_flow": false,
+  "config_flow": true,
   "dependencies": ["esphome", "http", "lovelace"],
   "documentation": "https://github.com/n-IA-hane/intercom-api",
   "issue_tracker": "https://github.com/n-IA-hane/intercom-api/issues",

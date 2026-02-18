@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Intercom Native",
+        "description": "This will set up the Intercom Native integration.\n\nIt provides full-duplex audio intercom between your browser and ESPHome devices.\n\nClick **Submit** to install."
+      }
+    },
+    "abort": {
+      "already_configured": "Intercom Native is already configured."
+    }
+  }
+}
