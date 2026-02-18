@@ -10,9 +10,9 @@ which are more reliable across NAT/firewall scenarios.
 
 import logging
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, CoreState, Event
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import Platform, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.helpers.discovery import async_load_platform
 
 from .const import DOMAIN
@@ -35,6 +35,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.async_create_task(
         async_load_platform(hass, Platform.SENSOR, DOMAIN, {}, config)
     )
+
+    # Register frontend (Lovelace card auto-served from integration)
+    async def _register_frontend(_event: Event | None = None) -> None:
+        from .frontend import JSModuleRegistration
+        registration = JSModuleRegistration(hass)
+        await registration.async_register()
+
+    if hass.state == CoreState.running:
+        await _register_frontend(None)
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _register_frontend)
 
     _LOGGER.info("Intercom Native integration loaded (simple + full mode auto-bridge)")
     return True

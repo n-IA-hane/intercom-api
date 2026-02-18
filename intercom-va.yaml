@@ -13,6 +13,7 @@
 #   - Added intercom_api component (TCP-based full-duplex intercom, full mode)
 #   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
 #   - Custom wake word model (hey_trowyayoh) instead of built-in models
+#   - All images, animations, and sounds stored locally (no external downloads)
 #   - Removed battery monitoring, touchscreen, captive_portal, startup/wake sounds
 #   - Removed wake_word_engine_location select (always on-device MWW)
 #   - Removed show_text, show_battery_status switches
@@ -32,17 +33,12 @@ substitutions:
   name: esphome-web-0bac48
   friendly_name: Xiaozhi Ball V3
 
-  # Selectable character model
-  imagemodel: "Cybergirl"
-
-  # Image URLs for each VA state
-  loading_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/loading.png
-  idle_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/idle.png
-  listening_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/listening.png
-  thinking_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/thinking.png
-  replying_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/replying.png
-  error_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/error.png
-  timer_finished_illustration_file: https://github.com/RealDeco/xiaozhi-esphome/raw/main/images/${imagemodel}/240x240/timer_finished.png
+  # Local image/animation files for each VA state
+  loading_illustration_file: images/loading.png
+  listening_illustration_file: images/listening.png
+  thinking_illustration_file: images/thinking.png
+  error_illustration_file: images/error.png
+  timer_finished_illustration_file: images/timer_finished.png
 
   # Background colors for each VA state
   loading_illustration_background_color: "000000"
@@ -342,7 +338,7 @@ media_player:
       num_channels: 1
     files:
       - id: timer_finished_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+        file: sounds/timer_finished.flac
     on_announcement:
       # Restart MWW during TTS for barge-in (interrupt assistant by saying wake word).
       # MWW uses mic_raw (pre-AEC) so it hears voice even while speaker plays TTS.
@@ -565,7 +561,7 @@ intercom_api:
         id(current_mode) = 1;
     - script.execute: backlight_timer
     - display.page.show: ic_ringing_in_page
-    - component.update: s3_box_lcd
+    - script.execute: request_redraw
     - light.turn_on:
         id: led
         effect: "Ringing"
@@ -579,7 +575,7 @@ intercom_api:
         id: led
         effect: "Calling"
     - display.page.show: ic_ringing_out_page
-    - component.update: s3_box_lcd
+    - script.execute: request_redraw
     - if:
         condition:
           lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
@@ -608,6 +604,11 @@ intercom_api:
         blue: 31%
         effect: none
     - lambda: |-
+        // Auto-answer skips on_incoming_call, so switch mode here if needed
+        if (id(current_mode) != 1) {
+          id(previous_mode) = id(current_mode);
+          id(current_mode) = 1;
+        }
         std::string caller = id(intercom).get_caller();
         if (!caller.empty()) {
           id(peer_name) = caller;
@@ -615,7 +616,7 @@ intercom_api:
           id(peer_name) = id(intercom).get_current_destination();
         }
     - display.page.show: ic_in_call_page
-    - component.update: s3_box_lcd
+    - script.execute: request_redraw
 
   on_idle:
     - light.turn_off: led
@@ -629,7 +630,7 @@ intercom_api:
         else:
           - lambda: id(current_mode) = 1;
           - display.page.show: ic_idle_page
-          - component.update: s3_box_lcd
+          - script.execute: request_redraw
 
   on_hangup:
     - logger.log:
@@ -1448,57 +1449,47 @@ text_sensor:
 # =============================================================================
 image:
   - file: ${error_illustration_file}
-    id: casita_error
-    resize: 240x240
-    type: RGB565
-    transparency: alpha_channel
-  - file: ${idle_illustration_file}
-    id: casita_idle
+    id: assistant_gui_error
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
   - file: ${listening_illustration_file}
-    id: casita_listening
+    id: assistant_gui_listening
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
   - file: ${thinking_illustration_file}
-    id: casita_thinking
-    resize: 240x240
-    type: RGB565
-    transparency: alpha_channel
-  - file: ${replying_illustration_file}
-    id: casita_replying
+    id: assistant_gui_thinking
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
   - file: ${timer_finished_illustration_file}
-    id: casita_timer_finished
+    id: assistant_gui_timer_finished
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
   - file: ${loading_illustration_file}
-    id: casita_initializing
+    id: assistant_gui_initializing
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: https://github.com/esphome/wake-word-voice-assistants/raw/main/error_box_illustrations/error-no-wifi.png
+  - file: images/error-no-wifi.png
     id: error_no_wifi
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: https://github.com/esphome/wake-word-voice-assistants/raw/main/error_box_illustrations/error-no-ha.png
+  - file: images/error-no-ha.png
     id: error_no_ha
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
 
 animation:
-  - file: "gif/idle.gif"
+  - file: "gif/new_idle.gif"
     id: idle_anim
     type: RGB565
     transparency: alpha_channel
-  - file: "gif/replying.gif"
+  - file: "gif/new_replying.gif"
     id: replying_anim
     type: RGB565
     transparency: alpha_channel
@@ -1646,7 +1637,7 @@ display:
       - id: initializing_page
         lambda: |-
           it.fill(id(loading_color));
-          it.image(${display_center_x}, ${display_center_y}, id(casita_initializing), ImageAlign::CENTER);
+          it.image(${display_center_x}, ${display_center_y}, id(assistant_gui_initializing), ImageAlign::CENTER);
           if (id(x_metrics).empty()) {
             id(x_metrics).clear();
             id(x_metrics).reserve(3);
@@ -1710,7 +1701,7 @@ display:
           it.fill(id(listening_color));
           const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
           const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
-          it.image(cx, cy, id(casita_listening), ImageAlign::CENTER);
+          it.image(cx, cy, id(assistant_gui_listening), ImageAlign::CENTER);
           id(draw_timer_ui).execute();
 
       # ========================================================================
@@ -1719,7 +1710,7 @@ display:
       - id: thinking_page
         lambda: |-
           it.fill(id(thinking_color));
-          it.image(id(x_metrics)[1], id(y_metrics)[1], id(casita_thinking), ImageAlign::CENTER);
+          it.image(id(x_metrics)[1], id(y_metrics)[1], id(assistant_gui_thinking), ImageAlign::CENTER);
           if (!id(text_pages).empty() && !id(text_pages)[0].empty() && !id(x_metrics).empty()) {
             const auto &words = id(text_pages)[0];
             const int cx = id(x_metrics)[1];
@@ -1845,14 +1836,14 @@ display:
           it.fill(id(idle_color));
           const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
           const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
-          it.image(cx, cy, id(casita_timer_finished), ImageAlign::CENTER);
+          it.image(cx, cy, id(assistant_gui_timer_finished), ImageAlign::CENTER);
 
       - id: error_page
         lambda: |-
           it.fill(id(error_color));
           const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
           const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
-          it.image(cx, cy, id(casita_error), ImageAlign::CENTER);
+          it.image(cx, cy, id(assistant_gui_error), ImageAlign::CENTER);
 
       - id: no_ha_page
         lambda: |-

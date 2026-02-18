@@ -1,6 +1,17 @@
 """Constants for Intercom Native integration."""
 
+import json
+from pathlib import Path
+
 DOMAIN = "intercom_native"
+
+# Version from manifest.json
+_MANIFEST = Path(__file__).parent / "manifest.json"
+with open(_MANIFEST, encoding="utf-8") as _f:
+    INTEGRATION_VERSION = json.load(_f).get("version", "0.0.0")
+
+# Frontend URL base for serving the Lovelace card
+URL_BASE = "/intercom-native"
 
 # TCP Protocol
 INTERCOM_PORT = 6054
