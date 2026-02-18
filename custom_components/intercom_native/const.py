@@ -55,11 +55,6 @@ CONNECT_TIMEOUT = 5.0
 PING_INTERVAL = 5.0
 PING_TIMEOUT = 10.0
 
-# WebSocket commands
-WS_TYPE_START = f"{DOMAIN}/start"
-WS_TYPE_STOP = f"{DOMAIN}/stop"
-WS_TYPE_LIST = f"{DOMAIN}/list_devices"
-
 # Events
 EVENT_AUDIO_RECEIVED = f"{DOMAIN}_audio_received"
 EVENT_CONNECTED = f"{DOMAIN}_connected"

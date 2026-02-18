@@ -162,30 +162,34 @@ graph TB
 
 ### 1. Home Assistant Integration
 
-#### Copy the integration files
+#### Option A: Install via HACS (Recommended)
+
+1. In HACS, go to **⋮ → Custom repositories**
+2. Add `https://github.com/n-IA-hane/intercom-api` as **Integration**
+3. Find "Intercom Native" and click **Download**
+4. Restart Home Assistant
+5. Go to **Settings → Integrations → Add Integration** → search "Intercom Native" → click **Submit**
+
+The integration automatically registers the Lovelace card — no manual frontend setup needed.
+
+#### Option B: Manual install
 
 ```bash
 # From the repository root
-cp -r homeassistant/custom_components/intercom_native /config/custom_components/
+cp -r custom_components/intercom_native /config/custom_components/
 ```
 
-#### Add to configuration.yaml
+Then either:
+- Add via UI: **Settings → Integrations → Add Integration → Intercom Native**
+- Or add to `configuration.yaml`: `intercom_native:`
 
-**This step is required!** The integration must be declared in your `configuration.yaml`:
+Restart Home Assistant.
 
-```yaml
-# configuration.yaml
-intercom_native:
-```
-
-That's it - no additional configuration needed. The integration will:
+The integration will:
 - Register WebSocket API commands for the card
 - Create `sensor.intercom_active_devices` (lists all intercom ESPs)
 - Auto-detect ESP state changes for Full Mode bridging
-
-#### Restart Home Assistant
-
-After adding the configuration, restart Home Assistant completely.
+- Auto-register the Lovelace card as a frontend resource
 
 ### 2. ESPHome Component
 
@@ -335,23 +339,7 @@ text_sensor:
 
 ### 3. Lovelace Card
 
-#### Copy the card files
-
-```bash
-cp frontend/www/intercom-card.js /config/www/
-cp frontend/www/intercom-processor.js /config/www/
-```
-
-#### Add as Lovelace resource
-
-Go to **Settings → Dashboards → Resources** (or edit `configuration.yaml`):
-
-```yaml
-lovelace:
-  resources:
-    - url: /local/intercom-card.js
-      type: module
-```
+The Lovelace card is **automatically registered** when the integration loads — no manual file copying or resource registration needed.
 
 #### Add the card to your dashboard
 
