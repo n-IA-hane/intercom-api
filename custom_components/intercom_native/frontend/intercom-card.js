@@ -484,7 +484,7 @@ class IntercomCard extends HTMLElement {
     );
     if (this._audioContext.state === "suspended") await this._audioContext.resume();
 
-    await this._audioContext.audioWorklet.addModule(`/local/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
+    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
     this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
     this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
     this._workletNode.port.onmessage = (e) => {
@@ -532,7 +532,7 @@ class IntercomCard extends HTMLElement {
     );
     if (this._audioContext.state === "suspended") await this._audioContext.resume();
 
-    await this._audioContext.audioWorklet.addModule(`/local/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
+    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
     this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
     this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
     this._workletNode.port.onmessage = (e) => {
