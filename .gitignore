@@ -22,6 +22,9 @@ gif/new_*.mp4
 # Private YAML configs (use offensive assets)
 troiaio-palletta.yaml
 
+# Brand images (submitted to home-assistant/brands repo)
+brands/
+
 # OS files
 .DS_Store
 Thumbs.db
