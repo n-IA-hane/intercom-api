@@ -1485,11 +1485,11 @@ image:
     transparency: alpha_channel
 
 animation:
-  - file: "gif/new_idle.gif"
+  - file: "gif/idle.gif"
     id: idle_anim
     type: RGB565
     transparency: alpha_channel
-  - file: "gif/new_replying.gif"
+  - file: "gif/replying.gif"
     id: replying_anim
     type: RGB565
     transparency: alpha_channel
