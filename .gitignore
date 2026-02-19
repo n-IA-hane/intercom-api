@@ -15,6 +15,13 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Offensive/private GIFs
+gif/new_*.gif
+gif/new_*.mp4
+
+# Private YAML configs (use offensive assets)
+troiaio-palletta.yaml
+
 # OS files
 .DS_Store
 Thumbs.db
