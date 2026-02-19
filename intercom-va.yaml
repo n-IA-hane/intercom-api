@@ -30,7 +30,7 @@
 # =============================================================================
 
 substitutions:
-  name: esphome-web-0bac48
+  name: xiaozhi-ball-v3
   friendly_name: Xiaozhi Ball V3
 
   # Local image/animation files for each VA state
