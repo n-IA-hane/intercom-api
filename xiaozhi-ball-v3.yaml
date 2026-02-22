@@ -20,7 +20,7 @@
 #   - Removed wake_word_engine_location select (always on-device MWW)
 #   - Removed show_text, show_battery_status switches
 #   - Added backlight auto-off timer with configurable timeout
-#   - LVGL display: animimg for idle/replying, declarative page widgets
+#   - LVGL display: declarative page widgets, mood-based replying backgrounds
 #   - Added intercom pages: idle (contact selector), ringing, in-call
 #   - Added intercom controls: call/hangup/next/prev buttons, volume, mic gain
 #
@@ -888,7 +888,7 @@ script:
             lv_obj_set_width(think[i], cw[i]);
           }
 
-          // --- Replying page: chord-width labels (10 children after animimg) ---
+          // --- Replying page: chord-width labels ---
           lv_obj_t* reply[] = {
             id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
             id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
@@ -915,7 +915,6 @@ script:
       - lambda: |-
           // Determine target page
           lv_obj_t* target = nullptr;
-          bool want_idle_anim = false;
 
           if (id(init_in_progress)) {
             target = id(initializing_page)->obj;
@@ -954,7 +953,6 @@ script:
               target = id(timer_finished_page)->obj;
             } else {
               target = id(idle_page)->obj;
-              want_idle_anim = true;
             }
           }
 
@@ -966,12 +964,6 @@ script:
             lv_disp_load_scr(target);
           }
 
-          // Animation lifecycle: start idle animation only when needed
-          if (want_idle_anim) {
-            lv_animimg_start(id(idle_animation));
-          } else {
-            lv_anim_del(id(idle_animation), nullptr);
-          }
       # Update dynamic labels after page routing (only when needed)
       - if:
           condition:
@@ -1901,55 +1893,9 @@ image:
     type: RGB565
     transparency: alpha_channel
 
-  # Idle animation frames (extracted from gif/new_idle.gif, 10 frames @ 2fps)
-  # GIF has no alpha — opaque saves ~850KB flash vs alpha_channel
-  - file: images/idle_00.png
-    id: idle_00
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_01.png
-    id: idle_01
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_02.png
-    id: idle_02
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_03.png
-    id: idle_03
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_04.png
-    id: idle_04
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_05.png
-    id: idle_05
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_06.png
-    id: idle_06
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_07.png
-    id: idle_07
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_08.png
-    id: idle_08
-    resize: 240x240
-    type: RGB565
-    transparency: opaque
-  - file: images/idle_09.png
-    id: idle_09
+  # Idle background (static)
+  - file: images/idle.png
+    id: idle_bg
     resize: 240x240
     type: RGB565
     transparency: opaque
@@ -2052,10 +1998,8 @@ display:
 # =============================================================================
 # LVGL DISPLAY ENGINE
 #
-# Phase 1: boot, idle (animimg ping-pong), muted pages functional.
-# Other pages are placeholders with static label.
-# animimg uses duplicated frame list for ping-pong effect:
-#   [00..19, 19, 19, 18..01, 00, 00, 00] = 43 entries x 500ms = 21.5s cycle
+# Declarative widgets for VA + intercom pages. Static idle image,
+# mood-based replying backgrounds, timer overlay on top_layer.
 # =============================================================================
 lvgl:
   displays:
@@ -2105,47 +2049,15 @@ lvgl:
             src: assistant_gui_initializing
 
     # ========================================================================
-    # VA: IDLE PAGE (animated)
+    # VA: IDLE PAGE
     # ========================================================================
     - id: idle_page
       bg_color: 0x000000
       widgets:
-        - animimg:
-            id: idle_animation
+        - image:
+            id: idle_image
             align: CENTER
-            width: 240
-            height: 240
-            src:
-              # Forward: 00 -> 09
-              - idle_00
-              - idle_01
-              - idle_02
-              - idle_03
-              - idle_04
-              - idle_05
-              - idle_06
-              - idle_07
-              - idle_08
-              - idle_09
-              # Pause at end (tripled)
-              - idle_09
-              - idle_09
-              # Reverse: 08 -> 01
-              - idle_08
-              - idle_07
-              - idle_06
-              - idle_05
-              - idle_04
-              - idle_03
-              - idle_02
-              - idle_01
-              # Pause at start (tripled)
-              - idle_00
-              - idle_00
-              - idle_00
-            duration: 11500ms  # 23 entries × 500ms
-            repeat_count: forever
-            auto_start: false
+            src: idle_bg
         - label:
             id: idle_battery_label
             align: TOP_MID
