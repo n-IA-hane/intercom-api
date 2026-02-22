@@ -28,8 +28,8 @@
 # ==============================================================================
 
 substitutions:
-  name: intercom-mini
-  friendly_name: Intercom Mini
+  name: esp32-s3-mini-intercom
+  friendly_name: ESP32-S3 Mini Intercom
 
 esphome:
   name: ${name}
@@ -76,7 +76,7 @@ wifi:
   password: !secret wifi_password
   use_address: 192.168.1.18
   ap:
-    ssid: "${name} Fallback"
+    ssid: "s3-mini-ic Fallback"
 
 # ==============================================================================
 # EXTERNAL COMPONENTS
