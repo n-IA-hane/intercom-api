@@ -426,6 +426,14 @@ voice_assistant:
         id: text_response
         state: "..."
     - script.stop: reply_pagination_timer
+    # Clear LVGL reply labels so old response doesn't flash on screen
+    - lambda: |-
+        lv_obj_t* lines[] = {
+          id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
+          id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
+        };
+        for (auto *l : lines) lv_label_set_text(l, "");
+        lv_label_set_text(id(reply_page_counter), "");
     - script.execute: draw_display
   on_stt_vad_end:
     - globals.set:

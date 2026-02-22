@@ -89,10 +89,11 @@ void IntercomApi::setup() {
 
   // Create server task (Core 1) - handles TCP connections and receiving
   // Highest priority (7) - RX must never starve, data must flow immediately
+  // 8KB stack: callbacks trigger YAML automations that may do LVGL operations
   BaseType_t ok = xTaskCreatePinnedToCore(
       IntercomApi::server_task,
       "intercom_srv",
-      4096,
+      8192,
       this,
       7,  // Highest priority - RX must win always
       &this->server_task_handle_,
