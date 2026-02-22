@@ -989,7 +989,7 @@ Complete working examples are provided in the repository. All files are tested a
 For devices that only need intercom functionality (no voice assistant, no wake word detection):
 
 - [`intercom-mini.yaml`](intercom-mini.yaml) - ESP32-S3 Mini with separate I2S buses (SPH0645 mic + MAX98357A speaker). Minimal intercom setup with LED status feedback.
-- [`intercom-va.yaml`](intercom-va.yaml) - Xiaozhi Ball V3 with ES8311 codec (intercom only, no display, no VA). Use this for Xiaozhi devices that serve purely as intercom endpoints.
+- [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) - Xiaozhi Ball V3 with ES8311 codec, GC9A01A display (C++ lambdas), AEC. Intercom only — no VA, no MWW, no LVGL. Use this for Xiaozhi devices that serve purely as intercom endpoints.
 
 ### Intercom + Voice Assistant + LVGL Display
 

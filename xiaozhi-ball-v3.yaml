@@ -1903,69 +1903,69 @@ image:
 
   # Idle animation frames (extracted from gif/new_idle.gif, 10 frames @ 2fps)
   # GIF has no alpha — opaque saves ~850KB flash vs alpha_channel
-  - file: images/lvgl/idle_00.png
+  - file: images/idle_00.png
     id: idle_00
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_01.png
+  - file: images/idle_01.png
     id: idle_01
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_02.png
+  - file: images/idle_02.png
     id: idle_02
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_03.png
+  - file: images/idle_03.png
     id: idle_03
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_04.png
+  - file: images/idle_04.png
     id: idle_04
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_05.png
+  - file: images/idle_05.png
     id: idle_05
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_06.png
+  - file: images/idle_06.png
     id: idle_06
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_07.png
+  - file: images/idle_07.png
     id: idle_07
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_08.png
+  - file: images/idle_08.png
     id: idle_08
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/idle_09.png
+  - file: images/idle_09.png
     id: idle_09
     resize: 240x240
     type: RGB565
     transparency: opaque
 
   # Mood backgrounds for replying page (set based on LLM emoticon prefix)
-  - file: images/lvgl/happy.png
+  - file: images/happy.png
     id: mood_happy
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/neutral.png
+  - file: images/neutral.png
     id: mood_neutral
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/lvgl/angry.png
+  - file: images/angry.png
     id: mood_angry
     resize: 240x240
     type: RGB565
