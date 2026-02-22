@@ -25,6 +25,8 @@ namespace i2s_audio_duplex {
 
 // Callback type for mic data: receives raw PCM samples (pointer + length, zero-copy)
 using MicDataCallback = std::function<void(const uint8_t *data, size_t len)>;
+// Callback type for speaker output: reports frames played and timestamp (for mixer pending_playback tracking)
+using SpeakerOutputCallback = std::function<void(uint32_t frames, int64_t timestamp)>;
 
 class I2SAudioDuplex : public Component {
  public:
@@ -92,6 +94,11 @@ class I2SAudioDuplex : public Component {
 
   bool is_running() const { return this->duplex_running_; }
 
+  // Speaker output callback registration (for mixer pending_playback_frames tracking)
+  void add_speaker_output_callback(SpeakerOutputCallback callback) {
+    this->speaker_output_callbacks_.push_back(std::move(callback));
+  }
+
   // Getters for platform wrappers
   uint32_t get_sample_rate() const { return this->sample_rate_; }
   size_t get_speaker_buffer_available() const;
@@ -126,6 +133,9 @@ class I2SAudioDuplex : public Component {
   // Mic data callbacks
   std::vector<MicDataCallback> mic_callbacks_;       // Post-AEC (for VA/STT)
   std::vector<MicDataCallback> raw_mic_callbacks_;   // Pre-AEC (for MWW)
+
+  // Speaker output callbacks (for mixer pending_playback_frames tracking)
+  std::vector<SpeakerOutputCallback> speaker_output_callbacks_;
 
   // Speaker ring buffer
   std::unique_ptr<RingBuffer> speaker_buffer_;

@@ -25,6 +25,14 @@ void I2SAudioDuplexSpeaker::setup() {
   // Configure audio stream info for 16-bit mono PCM
   // AudioStreamInfo constructor: (bits_per_sample, channels, sample_rate)
   this->audio_stream_info_ = audio::AudioStreamInfo(16, 1, this->parent_->get_sample_rate());
+
+  // Register speaker output callback on the parent duplex component.
+  // The mixer registers callbacks on this speaker (hw_speaker) via add_audio_output_callback()
+  // to track pending_playback_frames. We forward frame-played notifications from the I2S
+  // audio task so the mixer can properly decrement its counters and detect when audio is done.
+  this->parent_->add_speaker_output_callback([this](uint32_t frames, int64_t timestamp) {
+    this->audio_output_callback_.call(frames, timestamp);
+  });
 }
 
 void I2SAudioDuplexSpeaker::dump_config() {
@@ -38,17 +46,36 @@ void I2SAudioDuplexSpeaker::start() {
   if (this->is_failed())
     return;
 
-  // Take semaphore to register as active listener
-  // Non-blocking (0 timeout) - if all slots taken, this listener won't be counted
-  xSemaphoreTake(this->active_listeners_semaphore_, 0);
+  // Idempotent: register listener only once per stream session.
+  bool expected = false;
+  if (!this->listener_registered_.compare_exchange_strong(expected, true)) {
+    ESP_LOGV(TAG, "start() skipped: already registered (state=%d sem=%u)",
+             (int) this->state_, (unsigned) uxSemaphoreGetCount(this->active_listeners_semaphore_));
+    return;
+  }
+
+  if (xSemaphoreTake(this->active_listeners_semaphore_, 0) != pdTRUE) {
+    this->listener_registered_.store(false);
+    ESP_LOGW(TAG, "start() FAILED: no free semaphore slots");
+    return;
+  }
+  ESP_LOGD(TAG, "start() OK: registered listener (state=%d sem=%u)",
+           (int) this->state_, (unsigned) uxSemaphoreGetCount(this->active_listeners_semaphore_));
 }
 
 void I2SAudioDuplexSpeaker::stop() {
-  if (this->state_ == speaker::STATE_STOPPED || this->is_failed())
+  if (this->is_failed())
     return;
 
-  // Give semaphore to unregister as listener
+  if (!this->listener_registered_.exchange(false)) {
+    ESP_LOGV(TAG, "stop() skipped: not registered (state=%d sem=%u)",
+             (int) this->state_, (unsigned) uxSemaphoreGetCount(this->active_listeners_semaphore_));
+    return;
+  }
+
   xSemaphoreGive(this->active_listeners_semaphore_);
+  ESP_LOGD(TAG, "stop() OK: unregistered listener (state=%d sem=%u)",
+           (int) this->state_, (unsigned) uxSemaphoreGetCount(this->active_listeners_semaphore_));
 }
 
 void I2SAudioDuplexSpeaker::finish() {
@@ -105,16 +132,17 @@ void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
 }
 
 void I2SAudioDuplexSpeaker::loop() {
-  // Check semaphore count to decide when to start/stop
   UBaseType_t count = uxSemaphoreGetCount(this->active_listeners_semaphore_);
 
-  // Start the speaker if any semaphores are taken (listeners active)
   if ((count < MAX_LISTENERS) && (this->state_ == speaker::STATE_STOPPED)) {
+    ESP_LOGD(TAG, "loop: STOPPED->STARTING (sem=%u/%u reg=%d)", count, (unsigned) MAX_LISTENERS,
+             (int) this->listener_registered_.load());
     this->state_ = speaker::STATE_STARTING;
   }
 
-  // Stop the speaker if all semaphores are returned (no listeners)
   if ((count == MAX_LISTENERS) && (this->state_ == speaker::STATE_RUNNING)) {
+    ESP_LOGD(TAG, "loop: RUNNING->STOPPING (sem=%u/%u reg=%d)", count, (unsigned) MAX_LISTENERS,
+             (int) this->listener_registered_.load());
     this->state_ = speaker::STATE_STOPPING;
   }
 
@@ -123,7 +151,7 @@ void I2SAudioDuplexSpeaker::loop() {
       if (this->status_has_error()) {
         break;
       }
-      ESP_LOGD(TAG, "Speaker started");
+      ESP_LOGD(TAG, "Speaker started (sem=%u)", count);
       this->parent_->start_speaker();
       this->state_ = speaker::STATE_RUNNING;
       break;
@@ -132,7 +160,7 @@ void I2SAudioDuplexSpeaker::loop() {
       break;
 
     case speaker::STATE_STOPPING:
-      ESP_LOGD(TAG, "Speaker stopped");
+      ESP_LOGD(TAG, "Speaker stopped (sem=%u)", count);
       this->parent_->stop_speaker();
       this->state_ = speaker::STATE_STOPPED;
       break;

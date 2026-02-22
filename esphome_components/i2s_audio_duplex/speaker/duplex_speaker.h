@@ -10,6 +10,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <atomic>
+
 namespace esphome {
 namespace i2s_audio_duplex {
 
@@ -38,6 +40,11 @@ class I2SAudioDuplexSpeaker : public speaker::Speaker,
  protected:
   // Reference counting for multiple listeners (media_player, voice_assistant, intercom, etc.)
   SemaphoreHandle_t active_listeners_semaphore_{nullptr};
+  // Idempotency guard: prevents multiple xSemaphoreTake per stream session.
+  // Without this, play() calling start() before loop() sets STATE_RUNNING causes
+  // semaphore count to leak (take N times, give 1 time → never reaches MAX_LISTENERS
+  // → speaker never enters STATE_STOPPING → is_playing stays true forever).
+  std::atomic<bool> listener_registered_{false};
 };
 
 }  // namespace i2s_audio_duplex

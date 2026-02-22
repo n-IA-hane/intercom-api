@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include <cmath>
+#include <esp_timer.h>
 
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
@@ -601,6 +602,17 @@ void I2SAudioDuplex::audio_task_() {
       // Don't log INVALID_STATE - this is expected during shutdown (race condition)
       if (err != ESP_OK && err != ESP_ERR_TIMEOUT && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "i2s_channel_write failed: %s", esp_err_to_name(err));
+      }
+
+      // Notify mixer of frames played so it can decrement pending_playback_frames.
+      // Without this, mixer source speakers (va_speaker, intercom_speaker) never detect
+      // that their audio has been played, causing them to stay in STATE_RUNNING forever.
+      if (err == ESP_OK && bytes_written > 0 && !this->speaker_output_callbacks_.empty()) {
+        uint32_t frames_played = bytes_written / sizeof(int16_t);  // mono: 1 sample = 1 frame
+        int64_t timestamp = esp_timer_get_time();
+        for (auto &cb : this->speaker_output_callbacks_) {
+          cb(frames_played, timestamp);
+        }
       }
     }
 
