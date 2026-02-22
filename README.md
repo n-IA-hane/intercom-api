@@ -982,24 +982,14 @@ views:
 
 ## Example YAML Files
 
-Complete working examples are provided in the repository. All files are tested and deployed on real hardware.
+Working configs tested on real hardware are included in the repository:
 
-### Intercom Only
-
-For devices that only need intercom functionality (no voice assistant, no wake word detection):
-
-- [`intercom-mini.yaml`](intercom-mini.yaml) - ESP32-S3 Mini with separate I2S buses (SPH0645 mic + MAX98357A speaker). Minimal intercom setup with LED status feedback.
-- [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) - Xiaozhi Ball V3 with ES8311 codec, GC9A01A display (C++ lambdas), AEC. Intercom only — no VA, no MWW, no LVGL. Use this for Xiaozhi devices that serve purely as intercom endpoints.
-
-### Intercom + Voice Assistant + LVGL Display
-
-For devices running intercom, ESPHome Voice Assistant, Micro Wake Word, and LVGL display on a single ESP32-S3:
-
-- [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) - **Xiaozhi Ball V3** (ES8311 codec, GC9A01A 240x240 round display, dual I2C bus). The most complete config: `i2s_audio_duplex` for true full-duplex I2S, `esp_aec` with ES8311 stereo digital feedback, mixer speaker, LVGL declarative widgets (animated idle, mood-based replying backgrounds, scrolling text, timer overlay), dual-mode UI (VA pages + intercom pages with GPIO0 switching), custom wake word. See [LVGL Display Coexistence](#lvgl-display-coexistence) for details.
-
-### Intercom + Voice Assistant (headless)
-
-- [`intercom-mini-va.yaml`](intercom-mini-va.yaml) - **ESP32-S3 Mini** (SPH0645 mic, MAX98357A speaker, WS2812 LED). Uses standard `i2s_audio` with separate I2S buses and a `platform: mixer` speaker to share the hardware speaker between VA TTS and intercom audio. MWW barge-in support (interrupt TTS with wake word). LED feedback for both VA and intercom states.
+| File | Device | Features |
+|------|--------|----------|
+| [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display |
+| [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
+| [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
+| [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
 
 ---
 
