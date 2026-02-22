@@ -995,14 +995,15 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.2.0 (Current)
+### v2.0.5 (Current)
 
-- **LVGL display migration**: Declarative LVGL widgets replace 14 manual C++ page lambdas, 26 `component.update` calls, and frame-by-frame animation scripts. Lower CPU usage and simpler maintenance.
-- **Mood-based replying**: LLM emoticon prefix (`:-)` `:-(` `:-|`) sets happy/neutral/angry background image during VA responses
-- **Timer alarm fix**: Replaced `REPEAT_ONE` media player mode (caused TTS repeat race condition) with explicit loop script. Fixed 48kHz→16kHz sample rate mismatch for announcement pipeline.
-- **Display fixes**: LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions
-- **YAML cleanup**: Renamed all configs to descriptive names (`xiaozhi-ball-v3.yaml`, `xiaozhi-ball-v3-intercom.yaml`, `esp32-s3-mini-va-intercom.yaml`, `esp32-s3-mini-intercom.yaml`)
-- **i2s_audio_duplex fixes**: `audio_output_callback_` forwarding for mixer compatibility, atomic `listener_registered_` guard for speaker start/stop idempotency
+- **i2s_audio_duplex: mixer compatibility fix** — Added `audio_output_callback_` forwarding from the I2S audio task to the duplex speaker. Without this, `platform: mixer` source speakers (va_speaker, intercom_speaker) never detect that audio has been played, staying stuck in `STATE_RUNNING` forever. This caused `media_player.is_announcing` to stay true indefinitely after TTS playback.
+- **i2s_audio_duplex: speaker start/stop idempotency** — `start()` now uses an atomic `listener_registered_` guard with `compare_exchange_strong` to prevent multiple `xSemaphoreTake()` per stream session. Previously, `play()` calling `start()` before `loop()` set `STATE_RUNNING` caused the semaphore count to leak (N takes, 1 give), preventing the speaker from ever stopping.
+- **New: `xiaozhi-ball-v3.yaml`** — Voice Assistant + Intercom + LVGL display config for Xiaozhi Ball V3. Uses LVGL declarative widgets instead of manual C++ display lambdas: `animimg` for idle animation, mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix), `SCROLL_CIRCULAR` for long text, timer overlay on `top_layer`. Coexists with VA, MWW, AEC, and intercom on a single ESP32-S3.
+- **Timer alarm fix** — Replaced `REPEAT_ONE` media player mode (caused TTS to loop instead of timer sound due to race condition) with explicit `timer_alarm_loop` script. Fixed timer sound not playing: converted `timer_finished.flac` from 48kHz to 16kHz to match announcement pipeline sample rate.
+- **Display fixes** — LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions (labels cleared in `text_sensor.on_value` handlers)
+- **Intercom stack overflow fix** — Increased intercom task stack from 4KB to 8KB to prevent crash during concurrent TTS playback
+- **YAML reorganization** — All configs renamed to descriptive names: `xiaozhi-ball-v3.yaml`, `xiaozhi-ball-v3-intercom.yaml`, `esp32-s3-mini-va-intercom.yaml`, `esp32-s3-mini-intercom.yaml`
 
 ### v2.0.3
 
