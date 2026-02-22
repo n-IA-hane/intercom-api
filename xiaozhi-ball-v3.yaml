@@ -200,7 +200,6 @@ wifi:
     - script.execute: draw_display
   on_disconnect:
     - script.execute: draw_display
-  use_address: 192.168.1.31
 
 captive_portal:
 

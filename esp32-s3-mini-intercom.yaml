@@ -74,7 +74,6 @@ logger:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  use_address: 192.168.1.18
   ap:
     ssid: "s3-mini-ic Fallback"
 
