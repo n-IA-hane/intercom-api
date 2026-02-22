@@ -4,9 +4,7 @@
 # Based on: https://github.com/RealDeco/xiaozhi-esphome
 # Original: devices/Spotpear Balls/Ball_v2.yaml (v1.07)
 #
-# This is the LVGL variant of troiaio-palletta.yaml.
 # Display uses LVGL declarative widgets instead of manual ili9xxx lambdas.
-# Phase 1: boot, idle (animimg), muted pages functional; others placeholder.
 #
 # Key changes from the original:
 #   - Replaced i2s_audio + audio_dac with i2s_audio_duplex for true full-duplex
@@ -32,7 +30,7 @@
 # =============================================================================
 
 substitutions:
-  name: troiaio-palletta-lvgl
+  name: xiaozhi-ball-v3
   friendly_name: Xiaozhi Ball V3 LVGL
 
   # Local image/animation files for each VA state
