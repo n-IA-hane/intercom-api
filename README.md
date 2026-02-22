@@ -1001,13 +1001,13 @@ Working configs tested on real hardware are included in the repository:
 - **Mood-based replying**: LLM emoticon prefix (`:-)` `:-(` `:-|`) sets happy/neutral/angry background image during VA responses
 - **Timer alarm fix**: Replaced `REPEAT_ONE` media player mode (caused TTS repeat race condition) with explicit loop script. Fixed 48kHz→16kHz sample rate mismatch for announcement pipeline.
 - **Display fixes**: LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions
-- **YAML cleanup**: Removed legacy configs, renamed primary config to `xiaozhi-ball-v3.yaml`, `intercom-va.yaml` for intercom-only Xiaozhi devices
+- **YAML cleanup**: Renamed all configs to descriptive names (`xiaozhi-ball-v3.yaml`, `xiaozhi-ball-v3-intercom.yaml`, `esp32-s3-mini-va-intercom.yaml`, `esp32-s3-mini-intercom.yaml`)
 - **i2s_audio_duplex fixes**: `audio_output_callback_` forwarding for mixer compatibility, atomic `listener_registered_` guard for speaker start/stop idempotency
 
 ### v2.0.3
 
 - **Voice Assistant + Intercom coexistence**: Full dual-mode operation with MWW, VA, and intercom on the same ESP32-S3
-- **Ready-to-use YAML configs**: `intercom-va.yaml` (Xiaozhi Ball V3 + display) and `intercom-mini-va.yaml` (ESP32-S3 Mini headless)
+- **Ready-to-use YAML configs** for Xiaozhi Ball V3 and ESP32-S3 Mini
 - **Bug fixes**: `speaker_running_` data race (now `std::atomic`), inconsistent allocator in `start_speaker()`, removed dead `aec_frame_count_`
 - **Performance**: Pre-allocated audio buffer in duplex_microphone (eliminates per-frame vector allocation at ~62 Hz)
 - **ESP32-P4 support**: Added to `esp_aec` supported variants, `#ifdef USE_ESP_AEC` guards for clean builds without AEC
