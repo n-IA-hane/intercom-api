@@ -1,0 +1,1998 @@
+# =============================================================================
+# XIAOZHI BALL V3 - VOICE ASSISTANT + INTERCOM
+# =============================================================================
+# Based on: https://github.com/RealDeco/xiaozhi-esphome
+# Original: devices/Spotpear Balls/Ball_v2.yaml (v1.07)
+#
+# Key changes from the original:
+#   - Replaced i2s_audio + audio_dac with i2s_audio_duplex for true full-duplex
+#     single-bus I2S (mic + speaker on same ES8311 bus)
+#   - Added esp_aec (Acoustic Echo Cancellation) with ES8311 stereo L/R digital
+#     feedback for sample-accurate reference alignment
+#   - Added mixer speaker (VA TTS + intercom audio share hw_speaker)
+#   - Added intercom_api component (TCP-based full-duplex intercom, full mode)
+#   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
+#   - Custom wake word model (hey_trowyayoh) instead of built-in models
+#   - All images, animations, and sounds stored locally (no external downloads)
+#   - Removed battery monitoring, touchscreen, captive_portal, startup/wake sounds
+#   - Removed wake_word_engine_location select (always on-device MWW)
+#   - Removed show_text, show_battery_status switches
+#   - Added backlight auto-off timer with configurable timeout
+#   - Added replying page with animated scrolling text (multi-page pagination)
+#   - Added intercom pages: idle (contact selector), ringing, in-call
+#   - Added intercom controls: call/hangup/next/prev buttons, volume, mic gain
+#   - Changed display rendering to interval-based animation (500ms) with
+#     coalesced redraw requests for SPI bus contention mitigation
+#
+# Combines voice_assistant + micro_wake_word with intercom_api.
+# Uses i2s_audio_duplex (ES8311) + mixer speaker for concurrent audio.
+# Wake word ALWAYS active. Mode switching is UI-only (display + buttons).
+# =============================================================================
+
+substitutions:
+  name: xiaozhi-ball-v3
+  friendly_name: Xiaozhi Ball V3
+
+  # Local image/animation files for each VA state
+  loading_illustration_file: images/loading.png
+  listening_illustration_file: images/listening.png
+  thinking_illustration_file: images/thinking.png
+  error_illustration_file: images/error.png
+  timer_finished_illustration_file: images/timer_finished.png
+
+  # Background colors for each VA state
+  loading_illustration_background_color: "000000"
+  idle_illustration_background_color: "000000"
+  listening_illustration_background_color: "FFFFFF"
+  thinking_illustration_background_color: "FFFFFF"
+  replying_illustration_background_color: "000000"
+  error_illustration_background_color: "000000"
+
+  # Voice assistant phase IDs
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+
+  # Font configuration
+  font_glyphsets: "GF_Latin_Core"
+  font_family: Figtree
+
+  # Display constants
+  display_width: "240"
+  display_height: "240"
+  display_center_x: "120"
+  display_center_y: "120"
+  display_radius: "120"
+
+# =============================================================================
+# ESP32 BASE CONFIGURATION
+# =============================================================================
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2025.5.0
+  name_add_mac_suffix: false
+  on_boot:
+    priority: 600
+    then:
+      - output.turn_on: speaker_enable
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      - script.execute: request_redraw
+      - script.execute: backlight_timer
+      - micro_wake_word.stop:
+      - delay: 1s
+      # Configure ES8311 for digital feedback AEC
+      # Register 0x44 bits[6:4] = ADCDAT_SEL: 4 = DACL + ADC
+      # This makes ASDOUT output stereo: L=DAC loopback (reference), R=ADC (mic)
+      - lambda: |-
+          ESP_LOGI("es8311", "Configuring ES8311 register 0x44 for digital feedback...");
+          uint8_t reg = 0x44;
+          uint8_t current_val = 0;
+          id(i2c_bus).write(0x18, &reg, 1);
+          id(i2c_bus).read(0x18, &current_val, 1);
+          ESP_LOGI("es8311", "Register 0x44 current value: 0x%02X", current_val);
+          uint8_t data[2] = {0x44, 0x48};
+          auto err = id(i2c_bus).write(0x18, data, 2);
+          if (err == esphome::i2c::ERROR_OK) {
+            ESP_LOGI("es8311", "Wrote register 0x44=0x48 for digital feedback AEC");
+            id(i2c_bus).write(0x18, &reg, 1);
+            id(i2c_bus).read(0x18, &current_val, 1);
+            ESP_LOGI("es8311", "Register 0x44 after write: 0x%02X", current_val);
+          } else {
+            ESP_LOGE("es8311", "Failed to write register 0x44: error %d", (int)err);
+          }
+      # Restore ES8311 volume and sync AEC reference
+      - lambda: |-
+          float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
+          id(es8311_dac).set_volume(vol);
+          id(i2s_duplex).set_aec_reference_volume(vol);
+          id(peer_name) = id(intercom).get_current_destination();
+      - micro_wake_word.start:
+      - delay: 30s
+      - if:
+          condition:
+            lambda: return id(init_in_progress);
+          then:
+            - lambda: id(init_in_progress) = false;
+            - script.execute: request_redraw
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_FREERTOS_HZ: "1000"
+      CONFIG_ESP32_WIFI_TASK_PINNED_TO_CORE_1: "y"
+      CONFIG_LWIP_MAX_SOCKETS: "16"
+      # Use dynamic TLS buffers to reduce peak memory usage for SSL connections
+      CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
+      CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT: "y"
+      CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA: "y"
+      # Smaller TLS buffers (default 16384 is too much with all components active)
+      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "8192"
+      CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN: "4096"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# =============================================================================
+# EXTERNAL COMPONENTS
+# =============================================================================
+external_components:
+  - source:
+      type: local
+      path: esphome_components
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
+
+# =============================================================================
+# CONNECTIVITY
+# =============================================================================
+api:
+  on_client_connected:
+    - lambda: |-
+        static bool published = false;
+        if (!published) {
+          published = true;
+          id(intercom).publish_entity_states();
+        }
+    - script.execute: request_redraw
+  on_client_disconnected:
+    - script.execute: request_redraw
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: DEBUG
+  logs:
+    intercom_api: INFO
+    i2s_duplex: DEBUG
+    micro_wake_word: DEBUG
+    voice_assistant: DEBUG
+    component: INFO
+    wifi: INFO
+    api: INFO
+    ota: INFO
+    mdns: INFO
+    sensor: INFO
+    switch: INFO
+    light: INFO
+    display: INFO
+    image: INFO
+    animation: INFO
+    spi: INFO
+    i2c: INFO
+    esp32: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Ball v3 Hotspot"
+  on_connect:
+    - script.execute: request_redraw
+  on_disconnect:
+    - script.execute: request_redraw
+  use_address: 192.168.1.31
+
+captive_portal:
+
+time:
+  - platform: sntp
+    id: my_time
+    timezone: Europe/Rome
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+
+# =============================================================================
+# I2C BUS (ES8311 codec control)
+# =============================================================================
+i2c:
+  id: i2c_bus
+  sda: GPIO15
+  scl: GPIO14
+  scan: false
+
+# =============================================================================
+# AUDIO CODEC (ES8311)
+# =============================================================================
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    mic_gain: 24DB
+
+# =============================================================================
+# ECHO CANCELLATION (ESP-SR library, closed-source Espressif)
+#
+# AEC modes tested on ESP32-S3 with ES8311 + MWW + Voice Assistant:
+#   - sr_high_perf:   AVOID - exhausts DMA memory, causes SPI err 101
+#   - voip_high_perf: Works but heavy CPU (~50% of Core 1 per frame)
+#   - voip_low_cost:  Recommended - same CPU as high_perf but lighter memory
+#
+# filter_length controls echo tail (N * 16ms). Higher = better cancellation
+# but NO impact on CPU (ESP-SR cost is fixed per frame regardless of length).
+# Tested: filter_length 8 (128ms) vs 4 (64ms) = identical CPU (~7ms/frame).
+# Use 4 for integrated codecs (ES8311, short echo path).
+# Use 8 for separate mic+speaker setups (longer acoustic path).
+#
+# CPU impact: AEC costs ~7ms per 16ms frame = ~42% of Core 1.
+# audio_task uses vTaskDelay(3) to yield CPU to MWW and main loop.
+# =============================================================================
+esp_aec:
+  id: aec_component
+  sample_rate: 16000
+  filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
+  mode: voip_low_cost   # Lightest mode, same quality as high_perf on ESP32-S3
+
+# =============================================================================
+# I2S AUDIO DUPLEX (single bus for ES8311)
+# Full-duplex I2S: mic + speaker on same bus, managed by one FreeRTOS task.
+# audio_task runs on Core 1 at priority 9, processes AEC inline.
+# =============================================================================
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO45
+  i2s_bclk_pin: GPIO9
+  i2s_mclk_pin: GPIO16
+  i2s_din_pin: GPIO10
+  i2s_dout_pin: GPIO8
+  sample_rate: 16000
+  aec_id: aec_component
+  # ES8311 digital feedback: RX is stereo L=DAC(reference), R=ADC(mic).
+  # Sample-accurate reference alignment, no ring buffer delay needed.
+  # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
+  use_stereo_aec_reference: true
+  aec_reference_delay_ms: 10   # Minimal (sample-aligned via stereo feedback)
+
+# =============================================================================
+# MICROPHONES
+# Two instances on the same I2S bus, different audio paths:
+#   mic_aec (post-AEC): Echo-cancelled audio for VA STT and intercom TX.
+#     AEC removes speaker echo so the remote peer / STT engine hears only voice.
+#   mic_raw (pre-AEC):  Raw mic signal for MWW wake word detection.
+#     MWW needs raw audio because AEC suppresses voice during TTS playback,
+#     making wake word detection unreliable (tested: 1/10 detections with AEC).
+#     The neural MWW model handles speaker echo better than AEC-suppressed audio.
+# Both share the same I2S RX via callback broadcast (no extra task/CPU cost).
+# =============================================================================
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_aec
+    i2s_audio_duplex_id: i2s_duplex
+  - platform: i2s_audio_duplex
+    id: mic_raw
+    i2s_audio_duplex_id: i2s_duplex
+    pre_aec: true
+
+
+# =============================================================================
+# SPEAKERS (mixer topology: VA + Intercom -> hw_speaker)
+# =============================================================================
+speaker:
+  - platform: i2s_audio_duplex
+    id: hw_speaker
+    i2s_audio_duplex_id: i2s_duplex
+
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    source_speakers:
+      - id: va_speaker
+        timeout: 10s
+      - id: intercom_speaker
+        timeout: 10s
+
+# =============================================================================
+# MEDIA PLAYER (VA TTS output through va_speaker)
+# =============================================================================
+media_player:
+  - platform: speaker
+    name: None
+    id: speaker_media_player
+    volume_min: 0.0
+    volume_max: 1.0
+    announcement_pipeline:
+      speaker: va_speaker
+      format: FLAC
+      sample_rate: 16000
+      num_channels: 1
+    files:
+      - id: timer_finished_sound
+        file: sounds/timer_finished.flac
+    on_announcement:
+      # Restart MWW during TTS for barge-in (interrupt assistant by saying wake word).
+      # MWW uses mic_raw (pre-AEC) so it hears voice even while speaker plays TTS.
+      - if:
+          condition:
+            and:
+              - lambda: return id(wake_word_engine_location).current_option() == "On device";
+              - switch.is_off: mute
+          then:
+            - micro_wake_word.start:
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+            - script.execute: request_redraw
+    on_idle:
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return id(intercom).get_state_str() == "Idle";
+          then:
+            - script.execute: start_wake_word
+            - script.execute: set_idle_or_mute_phase
+            - script.execute: request_redraw
+
+# =============================================================================
+# WAKE WORD & VOICE ASSISTANT
+#
+# MWW uses mic_raw (pre-AEC) for reliable detection even during TTS playback.
+# VA uses mic_aec (post-AEC) for clean STT audio without speaker echo.
+#
+# MWW inference runs as a FreeRTOS task (priority 3, unpinned).
+# With AEC active (~7ms/frame), audio_task yields 3ms via vTaskDelay(3)
+# to ensure MWW gets enough CPU for TFLite micro inference.
+# =============================================================================
+micro_wake_word:
+  id: mww
+  microphone: mic_raw    # Pre-AEC: hears voice through TTS echo
+  on_wake_word_detected:
+    - script.execute: backlight_timer
+    # Barge-in: if TTS is playing, interrupt it and restart VA
+    - if:
+        condition:
+          media_player.is_announcing:
+        then:
+          - media_player.stop:
+              announcement: true
+          - voice_assistant.stop:
+          - delay: 100ms
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+  models:
+    - model: "wakewords/hey_trowyayoh.json"
+
+voice_assistant:
+  id: va
+  microphone: mic_aec    # Post-AEC: clean audio for STT (no speaker echo)
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_listening:
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 0.00
+        green: 1.00
+        blue: 0.00
+        effect: "Slow Pulse"
+    - lambda: |-
+        id(current_mode) = 0;
+        id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+    - text_sensor.template.publish:
+        id: text_request
+        state: "..."
+    - text_sensor.template.publish:
+        id: text_response
+        state: "..."
+    - script.execute: request_redraw
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 1.00
+        green: 0.55
+        blue: 0.00
+        effect: "Fast Pulse"
+    - script.execute: request_redraw
+  on_stt_end:
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: request_redraw
+  on_tts_start:
+    - light.turn_off:
+        id: led
+    - light.turn_on:
+        id: led
+        brightness: 100%
+        red: 0.00
+        green: 0.00
+        blue: 1.00
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - lambda: |-
+        id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+        id(text_page_index) = 0;
+    - script.stop: text_pagination_timer
+    - script.execute: text_pagination_timer
+    - script.execute: backlight_timer
+    - script.stop: backlight_timer
+    - script.execute: request_redraw
+  on_end:
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+                    id: va_speaker
+    - delay: 100ms
+    - voice_assistant.stop:
+    - if:
+        condition:
+          - lambda: return id(wake_word_engine_location).current_option() == "On device";
+        then:
+          - lambda: id(va).set_use_wake_word(false);
+          - micro_wake_word.start:
+    - script.stop: text_pagination_timer
+    - script.execute: backlight_timer
+    - text_sensor.template.publish:
+        id: text_request
+        state: ""
+    - text_sensor.template.publish:
+        id: text_response
+        state: ""
+    - light.turn_off:
+        id: led
+    # Reset VA phase, then return to correct screen
+    - script.execute: set_idle_or_mute_phase
+    - if:
+        condition:
+          lambda: return id(intercom).get_state_str() != "Idle";
+        then:
+          - lambda: id(current_mode) = 1;
+    - script.execute: request_redraw
+  on_error:
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 1.00
+        green: 0.00
+        blue: 0.00
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+          - script.execute: request_redraw
+          - delay: 2s
+          - if:
+              condition:
+                switch.is_off: mute
+              then:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              else:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+          - script.execute: request_redraw
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - script.execute: start_wake_word
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: request_redraw
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+    - script.execute: request_redraw
+  on_timer_started:
+    - script.execute: request_redraw
+  on_timer_cancelled:
+    - script.execute: request_redraw
+  on_timer_updated:
+    - script.execute: request_redraw
+  on_timer_tick:
+    - script.execute: request_redraw
+  on_timer_finished:
+    - switch.turn_on: timer_ringing
+    - wait_until:
+        condition:
+          media_player.is_announcing:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_timer_finished_phase_id};
+    - script.execute: request_redraw
+
+# =============================================================================
+# INTERCOM API (TCP-based, port 6054)
+# =============================================================================
+intercom_api:
+  id: intercom
+  mode: full
+  microphone: mic_aec
+  speaker: intercom_speaker
+  ringing_timeout: 30s
+
+  on_incoming_call:
+    - lambda: |-
+        id(peer_name) = id(intercom).get_caller();
+        id(previous_mode) = id(current_mode);
+        id(current_mode) = 1;
+    - script.execute: backlight_timer
+    - display.page.show: ic_ringing_in_page
+    - script.execute: request_redraw
+    - light.turn_on:
+        id: led
+        effect: "Ringing"
+
+  on_outgoing_call:
+    - lambda: |-
+        id(peer_name) = id(intercom).get_current_destination();
+        id(current_mode) = 1;
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        effect: "Calling"
+    - display.page.show: ic_ringing_out_page
+    - script.execute: request_redraw
+    - if:
+        condition:
+          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+        then:
+          - homeassistant.event:
+              event: esphome.intercom_call
+              data:
+                caller: !lambda 'return App.get_friendly_name();'
+                destination: "Home Assistant"
+                type: "doorbell"
+
+  on_ringing:
+    - light.turn_on:
+        id: led
+        effect: "Ringing"
+
+  on_answered:
+    - logger.log: "Call answered"
+
+  on_streaming:
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        red: 30%
+        green: 69%
+        blue: 31%
+        effect: none
+    - lambda: |-
+        // Auto-answer skips on_incoming_call, so switch mode here if needed
+        if (id(current_mode) != 1) {
+          id(previous_mode) = id(current_mode);
+          id(current_mode) = 1;
+        }
+        std::string caller = id(intercom).get_caller();
+        if (!caller.empty()) {
+          id(peer_name) = caller;
+        } else {
+          id(peer_name) = id(intercom).get_current_destination();
+        }
+    - display.page.show: ic_in_call_page
+    - script.execute: request_redraw
+
+  on_idle:
+    - light.turn_off: led
+    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    # Restore previous mode after call ends
+    - if:
+        condition:
+          lambda: return id(previous_mode) == 0;
+        then:
+          - script.execute: switch_to_va
+        else:
+          - lambda: id(current_mode) = 1;
+          - display.page.show: ic_idle_page
+          - script.execute: request_redraw
+
+  on_hangup:
+    - logger.log:
+        format: "Hangup: %s"
+        args: ['reason.c_str()']
+
+  on_call_failed:
+    - logger.log:
+        format: "Call failed: %s"
+        args: ['reason.c_str()']
+
+# =============================================================================
+# GLOBALS
+# =============================================================================
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "true"
+
+  - id: voice_assistant_phase
+    type: int
+    restore_value: false
+    initial_value: ${voice_assist_not_ready_phase_id}
+
+  - id: text_page_index
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: text_pages
+    type: std::vector<std::vector<std::string>>
+    restore_value: false
+
+  # Timer state globals
+  - id: global_first_active_timer
+    type: voice_assistant::Timer
+    restore_value: false
+  - id: global_is_timer_active
+    type: bool
+    restore_value: false
+  - id: global_first_timer
+    type: voice_assistant::Timer
+    restore_value: false
+  - id: global_is_timer
+    type: bool
+    restore_value: false
+
+  # Ping-pong animation direction
+  - id: anim_direction
+    type: bool
+    restore_value: false
+    initial_value: "true"
+
+  # Geometry cache (precomputed for circular display)
+  - id: x_metrics
+    type: std::vector<int>
+    restore_value: false
+  - id: y_metrics
+    type: std::vector<int>
+    restore_value: false
+  - id: chord_widths_cache
+    type: std::vector<int>
+    restore_value: false
+
+  # Mode: 0=VA, 1=Intercom
+  - id: current_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Previous mode (for restoring after incoming call)
+  - id: previous_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Intercom peer name for display
+  - id: peer_name
+    type: std::string
+    restore_value: no
+    initial_value: '"Home Assistant"'
+
+# =============================================================================
+# SCRIPTS
+# =============================================================================
+script:
+  # Coalescing redraw requests (debounce)
+  - id: request_redraw
+    mode: restart
+    then:
+      - delay: 100ms
+      - script.execute: draw_display
+
+  # Text pagination timer (auto-scroll reply text)
+  - id: text_pagination_timer
+    mode: restart
+    then:
+      - delay: 14s
+      - lambda: id(text_page_index)++;
+      - script.execute: text_pagination_timer
+
+  # Main display rendering script - MODE AWARE
+  - id: draw_display
+    then:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - if:
+                condition:
+                  wifi.connected:
+                then:
+                  - if:
+                      condition:
+                        api.connected:
+                      then:
+                        - lambda: |-
+                            if (id(current_mode) == 0) {
+                              // === VA MODE ===
+                              switch (id(voice_assistant_phase)) {
+                                case ${voice_assist_listening_phase_id}: id(s3_box_lcd).show_page(listening_page); break;
+                                case ${voice_assist_thinking_phase_id}:  id(s3_box_lcd).show_page(thinking_page);  break;
+                                case ${voice_assist_replying_phase_id}:  id(s3_box_lcd).show_page(replying_page);  break;
+                                case ${voice_assist_error_phase_id}:     id(s3_box_lcd).show_page(error_page);     break;
+                                case ${voice_assist_muted_phase_id}:     id(s3_box_lcd).show_page(muted_page);     break;
+                                case ${voice_assist_not_ready_phase_id}: id(s3_box_lcd).show_page(no_ha_page);     break;
+                                case ${voice_assist_timer_finished_phase_id}: id(s3_box_lcd).show_page(timer_finished_page); break;
+                                default:                                 id(s3_box_lcd).show_page(idle_page);       break;
+                              }
+                            } else {
+                              // === INTERCOM MODE ===
+                              std::string state = id(intercom)->get_state_str();
+                              if (state == "Ringing" || state == "Incoming") {
+                                id(s3_box_lcd).show_page(ic_ringing_in_page);
+                              } else if (state == "Calling" || state == "Outgoing") {
+                                id(s3_box_lcd).show_page(ic_ringing_out_page);
+                              } else if (state == "Streaming" || state == "Answering") {
+                                id(s3_box_lcd).show_page(ic_in_call_page);
+                              } else {
+                                id(s3_box_lcd).show_page(ic_idle_page);
+                              }
+                            }
+                        - lambda: id(s3_box_lcd).update();
+                      else:
+                        - display.page.show: no_ha_page
+                        - component.update: s3_box_lcd
+                else:
+                  - display.page.show: no_wifi_page
+                  - component.update: s3_box_lcd
+          else:
+            - display.page.show: initializing_page
+            - component.update: s3_box_lcd
+
+  # Timer state update
+  - id: update_timer_state
+    then:
+      - lambda: |-
+          const auto &timers = id(va).get_timers();
+          id(global_is_timer) = !timers.empty();
+          voice_assistant::Timer first_timer{};
+          voice_assistant::Timer first_active{};
+          bool any_active = false;
+          for (auto &kv : timers) {
+            const auto &t = kv.second;
+            if (first_timer.total_seconds == 0 || t.seconds_left < first_timer.seconds_left) first_timer = t;
+            if (t.is_active && (!any_active || t.seconds_left < first_active.seconds_left)) {
+              first_active = t;
+              any_active = true;
+            }
+          }
+          id(global_first_timer) = first_timer;
+          id(global_first_active_timer) = first_active;
+          id(global_is_timer_active) = any_active;
+
+  # Timer UI rendering
+  - id: draw_timer_ui
+    then:
+      - lambda: |-
+          id(update_timer_state).execute();
+          static const int box_y = 0;
+          static const int box_h = 36;
+          static const int box_inner_h = box_h - 2;
+          static const int text_y = box_y + (box_h/2);
+          const int display_w = id(x_metrics).empty() ? ${display_width} : id(x_metrics)[2];
+          const int center_x = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          auto draw_progress_box = [&](uint32_t seconds_left, uint32_t total_seconds, Color fill_col) {
+            id(s3_box_lcd).filled_rectangle(0, box_y, display_w, box_h, Color::WHITE);
+            id(s3_box_lcd).rectangle(0, box_y, display_w, box_h, Color::BLACK);
+            if (total_seconds > 0) {
+              int fill_w = (display_w * seconds_left) / total_seconds;
+              if (fill_w > 2 && fill_w <= display_w) {
+                id(s3_box_lcd).filled_rectangle(1, box_y + 1, fill_w - 2, box_inner_h, fill_col);
+              }
+            }
+            static char buf[8];
+            int hours_left   = seconds_left / 3600U;
+            int minutes_left = (seconds_left / 60U) % 60U;
+            int secs_left    = seconds_left % 60U;
+            if (hours_left > 0) snprintf(buf, sizeof(buf), "%02d:%02d", hours_left, minutes_left);
+            else                snprintf(buf, sizeof(buf), "%02d:%02d", minutes_left, secs_left);
+            id(s3_box_lcd).print(center_x, text_y, id(font_timer), Color::BLACK, TextAlign::CENTER, buf);
+          };
+          if (id(global_is_timer_active)) {
+            draw_progress_box(id(global_first_active_timer).seconds_left, id(global_first_active_timer).total_seconds, id(active_timer_color));
+          } else if (id(global_is_timer)) {
+            draw_progress_box(id(global_first_timer).seconds_left, id(global_first_timer).total_seconds, id(paused_timer_color));
+          }
+
+  # Wake word management
+  - id: start_wake_word
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).current_option() == "On device";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - micro_wake_word.start:
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).current_option() == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(true);
+            - voice_assistant.start_continuous:
+
+  - id: stop_wake_word
+    then:
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).current_option() == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.stop:
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).current_option() == "On device";
+          then:
+            - micro_wake_word.stop:
+
+  - id: set_idle_or_mute_phase
+    then:
+      - if:
+          condition:
+            switch.is_off: mute
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          else:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  # Mode switching scripts
+  - id: switch_to_va
+    then:
+      - lambda: id(current_mode) = 0;
+      - script.execute: set_idle_or_mute_phase
+      - script.execute: request_redraw
+
+  - id: switch_to_intercom
+    then:
+      - lambda: id(current_mode) = 1;
+      - script.execute: request_redraw
+
+  # Backlight timer
+  - id: backlight_timer
+    mode: restart
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: usb_connected
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: 100%
+          else:
+            - light.turn_on:
+                id: backlight
+                brightness: 100%
+            - delay: 30s
+            - light.turn_on:
+                id: backlight
+                brightness: 60%
+            - delay: 120s
+            - light.turn_off: backlight
+
+# =============================================================================
+# BUTTONS
+# =============================================================================
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+
+  # Intercom template buttons
+  - platform: template
+    id: call_button
+    name: "Call"
+    icon: "mdi:phone"
+    on_press:
+      - intercom_api.call_toggle:
+          id: intercom
+
+  - platform: template
+    id: next_contact_button
+    name: "Next Contact"
+    icon: "mdi:arrow-right"
+    on_press:
+      - intercom_api.next_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: request_redraw
+
+  - platform: template
+    id: prev_contact_button
+    name: "Previous Contact"
+    icon: "mdi:arrow-left"
+    on_press:
+      - intercom_api.prev_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: request_redraw
+
+  - platform: template
+    id: decline_button
+    name: "Decline"
+    icon: "mdi:phone-hangup"
+    on_press:
+      - intercom_api.decline_call:
+          id: intercom
+
+  - platform: template
+    id: refresh_contacts_button
+    name: "Refresh Contacts"
+    icon: "mdi:refresh"
+    entity_category: config
+    on_press:
+      - intercom_api.set_contacts:
+          id: intercom
+          contacts_csv: !lambda 'return id(ha_active_devices).state;'
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: request_redraw
+
+  - platform: restart
+    name: "Restart"
+    icon: "mdi:restart"
+
+# =============================================================================
+# SENSORS
+# =============================================================================
+sensor:
+  - platform: adc
+    pin: GPIO1
+    name: "Battery Voltage"
+    id: battery_voltage
+    attenuation: 12db
+    accuracy_decimals: 2
+    update_interval: 1s
+    unit_of_measurement: "V"
+    icon: mdi:battery
+    filters:
+      - multiply: 2.0
+      - median:
+          window_size: 7
+          send_every: 7
+          send_first_at: 1
+      - throttle: 1min
+
+  - platform: template
+    id: battery_percentage
+    name: "Battery Percentage"
+    lambda: return id(battery_voltage).state;
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    icon: mdi:battery-medium
+    filters:
+      - calibrate_linear:
+         method: exact
+         datapoints:
+          - 2.80 -> 0.0
+          - 3.10 -> 10.0
+          - 3.30 -> 20.0
+          - 3.45 -> 30.0
+          - 3.60 -> 40.0
+          - 3.70 -> 50.0
+          - 3.75 -> 60.0
+          - 3.80 -> 70.0
+          - 3.90 -> 80.0
+          - 4.00 -> 90.0
+          - 4.20 -> 100.0
+      - lambda: |-
+          if (x > 100) return 100;
+          if (x < 0) return 0;
+          return x;
+
+  - platform: wifi_signal
+    id: wifi_signal_db
+    name: "WiFi Signal dBm"
+    icon: "mdi:wifi"
+    update_interval: 30s
+
+  - platform: template
+    id: wifi_pct
+    name: "WiFi Signal %"
+    icon: "mdi:wifi"
+    unit_of_measurement: "%"
+    update_interval: 30s
+    lambda: |-
+      if (!id(wifi_signal_db).has_state()) return 0.0f;
+      float dbm = id(wifi_signal_db).state;
+      if (dbm >= -50) return 100.0f;
+      if (dbm <= -100) return 0.0f;
+      return 2.0f * (dbm + 100.0f);
+
+# =============================================================================
+# BINARY SENSORS
+# =============================================================================
+binary_sensor:
+  - platform: status
+    id: node_status
+    name: "Status"
+
+  # Physical GPIO0 button - PAGE AWARE
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    id: main_button
+    name: "Main Button"
+    icon: "mdi:gesture-tap-button"
+#    filters:
+#      - delayed_on: 20ms
+#      - delayed_off: 20ms
+    on_multi_click:
+      # Single click
+      - timing:
+          - ON for 10ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                switch.is_on: timer_ringing
+              then:
+                - switch.turn_off: timer_ringing
+              else:
+                - if:
+                    condition:
+                      display.is_displaying_page:
+                        id: s3_box_lcd
+                        page_id: ic_idle_page
+                    then:
+                      - button.press: call_button
+                    else:
+                      - if:
+                          condition:
+                            or:
+                              - display.is_displaying_page:
+                                  id: s3_box_lcd
+                                  page_id: ic_ringing_in_page
+                              - display.is_displaying_page:
+                                  id: s3_box_lcd
+                                  page_id: ic_ringing_out_page
+                              - display.is_displaying_page:
+                                  id: s3_box_lcd
+                                  page_id: ic_in_call_page
+                          then:
+                            - button.press: call_button
+                          else:
+                            - if:
+                                condition:
+                                  not:
+                                    voice_assistant.is_running:
+                                then:
+                                  - voice_assistant.start:
+                                else:
+                                  - voice_assistant.stop:
+      # Double click: decline incoming or next contact
+      - timing:
+          - ON for 50ms to 500ms
+          - OFF for 50ms to 400ms
+          - ON for 50ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                display.is_displaying_page:
+                  id: s3_box_lcd
+                  page_id: ic_ringing_in_page
+              then:
+                - button.press: decline_button
+              else:
+                - if:
+                    condition:
+                      display.is_displaying_page:
+                        id: s3_box_lcd
+                        page_id: ic_idle_page
+                    then:
+                      - button.press: next_contact_button
+      # Long press (3s): switch VA <-> Intercom
+      - timing:
+          - ON for 1s to 3s
+        then:
+          - if:
+              condition:
+                display.is_displaying_page:
+                  id: s3_box_lcd
+                  page_id: ic_idle_page
+              then:
+                - script.execute: switch_to_va
+              else:
+                - script.execute: switch_to_intercom
+
+  - platform: template
+    name: "USB Connected"
+    id: usb_connected
+    device_class: plug
+    lambda: return id(battery_voltage).state > 3.9;
+    on_press:
+      - script.execute: backlight_timer
+    on_release:
+      - script.execute: backlight_timer
+
+  # Capacitive touch
+  - platform: gpio
+    pin:
+      number: GPIO12
+      mode: INPUT_PULLUP
+      inverted: true
+    id: touch_input
+    on_press:
+      then:
+        - script.execute: backlight_timer
+        - if:
+            condition:
+              switch.is_on: timer_ringing
+            then:
+              - switch.turn_off: timer_ringing
+
+# =============================================================================
+# OUTPUTS AND LIGHTS
+# =============================================================================
+output:
+  - platform: gpio
+    id: speaker_enable
+    pin: GPIO46
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO42
+    inverted: true
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    icon: "mdi:brightness-6"
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+
+  - platform: esp32_rmt_led_strip
+    id: led
+    name: none
+    disabled_by_default: false
+    entity_category: config
+    pin: GPIO48
+    default_transition_length: 0s
+    chipset: WS2812
+    num_leds: 1
+    rgb_order: grb
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 0%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - strobe:
+          name: "Ringing"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 300ms
+            - state: false
+              duration: 300ms
+      - strobe:
+          name: "Calling"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 50%
+              blue: 0%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+
+# =============================================================================
+# SWITCHES AND SELECTS
+# =============================================================================
+switch:
+  - platform: template
+    name: Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_off:
+      - microphone.unmute:
+          id: mic_aec
+      - microphone.unmute:
+          id: mic_raw
+      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+      - script.execute: request_redraw
+    on_turn_on:
+      - microphone.mute:
+          id: mic_aec
+      - microphone.mute:
+          id: mic_raw
+      - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+      - script.execute: request_redraw
+
+  - platform: template
+    id: timer_ringing
+    optimistic: true
+    internal: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      - lambda: |-
+              id(speaker_media_player)
+                ->make_call()
+                .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
+                .set_announcement(true)
+                .perform();
+              id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - media_player.stop:
+          announcement: true
+    on_turn_on:
+      - lambda: |-
+            id(speaker_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
+              .set_announcement(true)
+              .perform();
+            id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
+      - media_player.speaker.play_on_device_media_file:
+          media_file: timer_finished_sound
+          announcement: true
+      - delay: 15min
+      - switch.turn_off: timer_ringing
+
+  # Intercom switches
+  - platform: intercom_api
+    intercom_api_id: intercom
+    auto_answer:
+      id: auto_answer_switch
+      name: "Auto Answer"
+      restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
+    aec:
+      id: aec_switch
+      name: "Echo Cancellation"
+      restore_mode: RESTORE_DEFAULT_ON
+
+select:
+  - platform: template
+    entity_category: config
+    name: Wake word engine location
+    id: wake_word_engine_location
+    icon: "mdi:account-voice"
+    optimistic: true
+    restore_value: true
+    options:
+      - In Home Assistant
+      - On device
+    initial_option: On device
+    on_value:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - wait_until:
+                condition:
+                  lambda: return id(voice_assistant_phase) == ${voice_assist_muted_phase_id} || id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
+            - if:
+                condition:
+                  lambda: return x == "In Home Assistant";
+                then:
+                  - micro_wake_word.stop:
+                  - delay: 500ms
+                  - if:
+                      condition:
+                        switch.is_off: mute
+                      then:
+                        - lambda: id(va).set_use_wake_word(true);
+                        - voice_assistant.start_continuous:
+            - if:
+                condition:
+                  lambda: return x == "On device";
+                then:
+                  - lambda: id(va).set_use_wake_word(false);
+                  - voice_assistant.stop:
+                  - delay: 500ms
+                  - if:
+                      condition:
+                        switch.is_off: mute
+                      then:
+                        - micro_wake_word.start:
+
+# =============================================================================
+# NUMBERS
+# =============================================================================
+number:
+  - platform: intercom_api
+    intercom_api_id: intercom
+    mic_gain:
+      id: mic_gain
+      name: "Mic Gain"
+
+  - platform: template
+    id: speaker_volume
+    name: "Speaker Volume"
+    icon: "mdi:volume-high"
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    set_action:
+      - lambda: |-
+          float es8311_vol = 0.15 + (x / 100.0) * 0.60;
+          id(es8311_dac).set_volume(es8311_vol);
+          id(i2s_duplex).set_aec_reference_volume(es8311_vol);
+
+# =============================================================================
+# TEXT SENSORS
+# =============================================================================
+text_sensor:
+  - platform: homeassistant
+    id: ha_active_devices
+    entity_id: sensor.intercom_active_devices
+    on_value:
+      - intercom_api.set_contacts:
+          id: intercom
+          contacts_csv: !lambda 'return x;'
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: request_redraw
+
+  - id: text_request
+    platform: template
+    on_value:
+      then:
+        - lambda: |-
+            const std::string &text = x;
+            std::vector<std::string> words;
+            words.reserve(text.size()/5);
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i) {
+              if (i == text.size() || text[i] == ' ' || text[i] == '\n' || text[i] == '\r' || text[i] == '\t') {
+                if (i > start) {
+                  words.push_back(text.substr(start, i - start));
+                }
+                start = i + 1;
+              }
+            }
+            id(text_pages).clear();
+            if (!words.empty()) {
+              id(text_pages).push_back(words);
+            }
+
+  - id: text_response
+    platform: template
+    on_value:
+      then:
+        - lambda: |-
+            if (x == "..." && id(voice_assistant_phase) == ${voice_assist_replying_phase_id}) {
+              return;
+            }
+            const std::string &text = x;
+            std::vector<std::string> words;
+            words.reserve(text.size()/5);
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i) {
+              if (i == text.size() || text[i] == ' ' || text[i] == '\n' || text[i] == '\r' || text[i] == '\t') {
+                if (i > start) {
+                  words.push_back(text.substr(start, i - start));
+                }
+                start = i + 1;
+              }
+            }
+            id(text_pages).clear();
+            if (!words.empty()) {
+              id(text_pages).push_back(words);
+            }
+            id(text_page_index) = 0;
+
+# =============================================================================
+# GRAPHIC RESOURCES
+# =============================================================================
+image:
+  - file: ${error_illustration_file}
+    id: assistant_gui_error
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: ${listening_illustration_file}
+    id: assistant_gui_listening
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: ${thinking_illustration_file}
+    id: assistant_gui_thinking
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: ${timer_finished_illustration_file}
+    id: assistant_gui_timer_finished
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: ${loading_illustration_file}
+    id: assistant_gui_initializing
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: images/error-no-wifi.png
+    id: error_no_wifi
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+  - file: images/error-no-ha.png
+    id: error_no_ha
+    resize: 240x240
+    type: RGB565
+    transparency: alpha_channel
+
+animation:
+  - file: "gif/idle.gif"
+    id: idle_anim
+    type: RGB565
+    transparency: alpha_channel
+  - file: "gif/replying.gif"
+    id: replying_anim
+    type: RGB565
+    transparency: alpha_channel
+
+# =============================================================================
+# FONT
+# =============================================================================
+font:
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+      italic: true
+    id: font_request
+    size: 15
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+    id: font_response
+    size: 15
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+    id: font_timer
+    size: 30
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 600
+    id: font_clock
+    size: 20
+  # Intercom fonts
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: font_title
+    size: 24
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_state
+    size: 28
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_info
+    size: 20
+  - file:
+      type: gfonts
+      family: Roboto Mono
+      weight: 400
+    id: font_debug
+    size: 14
+
+# =============================================================================
+# COLORS
+# =============================================================================
+color:
+  - id: idle_color
+    hex: ${idle_illustration_background_color}
+  - id: listening_color
+    hex: ${listening_illustration_background_color}
+  - id: thinking_color
+    hex: ${thinking_illustration_background_color}
+  - id: replying_color
+    hex: ${replying_illustration_background_color}
+  - id: loading_color
+    hex: ${loading_illustration_background_color}
+  - id: error_color
+    hex: ${error_illustration_background_color}
+  - id: active_timer_color
+    hex: "26ed3a"
+  - id: paused_timer_color
+    hex: "3b89e3"
+  # Intercom colors
+  - id: color_white
+    red: 100%
+    green: 100%
+    blue: 100%
+  - id: color_black
+    red: 0%
+    green: 0%
+    blue: 0%
+  - id: color_red
+    red: 100%
+    green: 0%
+    blue: 0%
+  - id: color_green
+    red: 0%
+    green: 100%
+    blue: 0%
+  - id: color_blue
+    red: 0%
+    green: 0%
+    blue: 100%
+  - id: color_yellow
+    red: 100%
+    green: 100%
+    blue: 0%
+  - id: color_orange
+    red: 100%
+    green: 60%
+    blue: 0%
+
+# =============================================================================
+# SPI BUS (DISPLAY)
+# =============================================================================
+spi:
+  - id: spi_bus
+    clk_pin: 4
+    mosi_pin: 2
+
+# =============================================================================
+# DISPLAY - VA PAGES + INTERCOM PAGES
+# =============================================================================
+display:
+  - platform: ili9xxx
+    id: s3_box_lcd
+    model: GC9A01A
+    invert_colors: true
+    data_rate: 20MHz
+    cs_pin: 5
+    dc_pin: 47
+    reset_pin:
+      number: 38
+    update_interval: never
+    dimensions:
+        height: 240
+        width: 240
+    pages:
+      # ========================================================================
+      # INITIALIZATION PAGE - PRECOMPUTE GEOMETRY
+      # ========================================================================
+      - id: initializing_page
+        lambda: |-
+          it.fill(id(loading_color));
+          it.image(${display_center_x}, ${display_center_y}, id(assistant_gui_initializing), ImageAlign::CENTER);
+          if (id(x_metrics).empty()) {
+            id(x_metrics).clear();
+            id(x_metrics).reserve(3);
+            id(x_metrics).push_back(0);
+            id(x_metrics).push_back(${display_center_x});
+            id(x_metrics).push_back(${display_width});
+            id(y_metrics).clear();
+            id(y_metrics).reserve(20);
+            id(y_metrics).push_back(0);
+            id(y_metrics).push_back(${display_center_y});
+            id(y_metrics).push_back(${display_height});
+            const int line_h = 19;
+            const int line_spacing = 4;
+            const int top_pad = 10;
+            const int bottom_pad = 10;
+            int y = top_pad;
+            while (y + line_h <= id(y_metrics)[2] - bottom_pad) {
+              id(y_metrics).push_back(y);
+              y += (line_h + line_spacing);
+            }
+            id(chord_widths_cache).clear();
+            const int r = ${display_radius};
+            const int cx = id(x_metrics)[1];
+            const int cy = id(y_metrics)[1];
+            const int side_margin = 6;
+            for (size_t i = 3; i < id(y_metrics).size(); i++) {
+              int row_y = id(y_metrics)[i];
+              int mid_y = row_y + line_h/2;
+              int dy = abs(mid_y - cy);
+              int chord_w = 0;
+              if (dy < r) {
+                float chord = 2.0f * sqrtf(float(r*r - dy*dy));
+                chord_w = int(chord) - side_margin * 2;
+                if (chord_w < 0) chord_w = 0;
+              }
+              id(chord_widths_cache).push_back(chord_w);
+            }
+          }
+
+      # ========================================================================
+      # VA: IDLE PAGE
+      # ========================================================================
+      - id: idle_page
+        lambda: |-
+          it.fill(id(idle_color));
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          const int bottom = id(y_metrics).empty() ? ${display_height} : id(y_metrics)[2];
+          it.image(cx, cy, id(idle_anim), ImageAlign::CENTER);
+          if (!id(usb_connected).state && id(battery_percentage).has_state()) {
+            it.printf(cx, 0, id(font_clock), Color::WHITE, TextAlign::TOP_CENTER, "%.0f%%", id(battery_percentage).state);
+          }
+          it.strftime(cx, bottom, id(font_clock), TextAlign::BOTTOM_CENTER, "%H:%M", id(my_time).now());
+          id(draw_timer_ui).execute();
+
+      # ========================================================================
+      # VA: LISTENING PAGE
+      # ========================================================================
+      - id: listening_page
+        lambda: |-
+          it.fill(id(listening_color));
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          it.image(cx, cy, id(assistant_gui_listening), ImageAlign::CENTER);
+          id(draw_timer_ui).execute();
+
+      # ========================================================================
+      # VA: THINKING PAGE
+      # ========================================================================
+      - id: thinking_page
+        lambda: |-
+          it.fill(id(thinking_color));
+          it.image(id(x_metrics)[1], id(y_metrics)[1], id(assistant_gui_thinking), ImageAlign::CENTER);
+          if (!id(text_pages).empty() && !id(text_pages)[0].empty() && !id(x_metrics).empty()) {
+            const auto &words = id(text_pages)[0];
+            const int cx = id(x_metrics)[1];
+            const auto &chords = id(chord_widths_cache);
+            const auto &y_positions = id(y_metrics);
+            const size_t total_rows = chords.size();
+            const size_t words_count = words.size();
+            size_t row = total_rows / 2 - 3;
+            if (row >= total_rows) row = 0;
+            size_t word_idx = 0;
+            while (row < total_rows && word_idx < words_count) {
+              const int chord_w = chords[row];
+              if (chord_w <= 0) { row++; continue; }
+              const size_t start_word = word_idx;
+              std::string line;
+              line.reserve(chord_w / 7);
+              while (word_idx < words_count) {
+                const auto &word = words[word_idx];
+                std::string test = line.empty() ? word : (line + ' ' + word);
+                if (test.length() * 8 > chord_w) {
+                  int x1,y1,w,h;
+                  it.get_text_bounds(0,0,test.c_str(), id(font_request), TextAlign::TOP_LEFT, &x1,&y1,&w,&h);
+                  if (w > chord_w) {
+                    if (word_idx == start_word) {
+                      line = word;
+                      word_idx++;
+                    }
+                    break;
+                  }
+                }
+                line = test;
+                word_idx++;
+              }
+              if (word_idx > start_word) {
+                it.print(cx, y_positions[3 + row], id(font_request), TextAlign::TOP_CENTER, line.c_str());
+              }
+              row++;
+            }
+          }
+          id(draw_timer_ui).execute();
+
+      # ========================================================================
+      # VA: REPLYING PAGE
+      # ========================================================================
+      - id: replying_page
+        lambda: |-
+          it.fill(id(replying_color));
+          it.image(id(x_metrics)[1], id(y_metrics)[1], id(replying_anim), ImageAlign::CENTER);
+          if (!id(text_pages).empty() && !id(text_pages)[0].empty() && !id(x_metrics).empty()) {
+            const auto &words = id(text_pages)[0];
+            const int cx = id(x_metrics)[1];
+            const int bottom_y = id(y_metrics)[2] - 2;
+            const auto &chords = id(chord_widths_cache);
+            const auto &y_positions = id(y_metrics);
+            const size_t total_rows = chords.size();
+            const size_t words_count = words.size();
+            static std::vector<std::pair<size_t, size_t>> line_bounds;
+            line_bounds.clear();
+            line_bounds.reserve(words_count / 3);
+            size_t word_idx = 0;
+            size_t safety = 0;
+            while (word_idx < words_count && safety++ < words_count * 2) {
+              int row = line_bounds.size() % total_rows;
+              const int chord_w = chords[row];
+              if (chord_w <= 0) {
+                line_bounds.push_back({word_idx, word_idx});
+                continue;
+              }
+              const size_t start_word = word_idx;
+              std::string line;
+              line.reserve(chord_w / 7);
+              while (word_idx < words_count) {
+                const auto &word = words[word_idx];
+                std::string test = line.empty() ? word : (line + ' ' + word);
+                if (test.length() * 8 > chord_w) {
+                  int x1,y1,w,h;
+                  it.get_text_bounds(0,0,test.c_str(), id(font_response), TextAlign::TOP_LEFT, &x1,&y1,&w,&h);
+                  if (w > chord_w) {
+                    if (word_idx == start_word) {
+                      word_idx++;
+                    }
+                    break;
+                  }
+                }
+                line = test;
+                word_idx++;
+              }
+              if (word_idx > start_word) {
+                line_bounds.push_back({start_word, word_idx});
+              }
+            }
+            const size_t total_lines = line_bounds.size();
+            if (total_lines > 0) {
+              const size_t total_pages = (total_lines + total_rows - 1) / total_rows;
+              const size_t cur_page = id(text_page_index) % total_pages;
+              const size_t start_line = cur_page * total_rows;
+              const size_t end_line = std::min(start_line + total_rows, total_lines);
+              for (size_t i = start_line; i < end_line; i++) {
+                const auto &bounds = line_bounds[i];
+                const size_t local_row = i - start_line;
+                const int y = y_positions[3 + local_row];
+                std::string line;
+                line.reserve((bounds.second - bounds.first) * 8);
+                for (size_t j = bounds.first; j < bounds.second; j++) {
+                  if (j > bounds.first) line += ' ';
+                  line += words[j];
+                }
+                it.print(cx, y, id(font_response), TextAlign::TOP_CENTER, line.c_str());
+              }
+              if (total_pages > 1) {
+                static char buf[12];
+                snprintf(buf, sizeof(buf), "%d/%d", (int)(cur_page + 1), (int)total_pages);
+                it.print(cx, bottom_y, id(font_response), TextAlign::BOTTOM_CENTER, buf);
+              }
+            }
+          }
+
+      # ========================================================================
+      # VA: ERROR/STATUS PAGES
+      # ========================================================================
+      - id: timer_finished_page
+        lambda: |-
+          it.fill(id(idle_color));
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          it.image(cx, cy, id(assistant_gui_timer_finished), ImageAlign::CENTER);
+
+      - id: error_page
+        lambda: |-
+          it.fill(id(error_color));
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          it.image(cx, cy, id(assistant_gui_error), ImageAlign::CENTER);
+
+      - id: no_ha_page
+        lambda: |-
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          it.image(cx, cy, id(error_no_ha), ImageAlign::CENTER);
+
+      - id: no_wifi_page
+        lambda: |-
+          const int cx = id(x_metrics).empty() ? ${display_center_x} : id(x_metrics)[1];
+          const int cy = id(y_metrics).empty() ? ${display_center_y} : id(y_metrics)[1];
+          it.image(cx, cy, id(error_no_wifi), ImageAlign::CENTER);
+
+      - id: muted_page
+        lambda: |-
+          it.fill(Color::BLACK);
+          id(draw_timer_ui).execute();
+
+      # ========================================================================
+      # INTERCOM: IDLE PAGE
+      # ========================================================================
+      - id: ic_idle_page
+        lambda: |-
+          constexpr int cx = 120;
+          constexpr int h = 240;
+          it.fill(id(color_blue));
+          it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
+          it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Intercom:");
+          it.print(cx, 100, id(font_state), id(color_green), TextAlign::CENTER, "IDLE");
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Destination:");
+          it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, id(peer_name).c_str());
+          char contacts_buf[48];
+          auto csv = id(intercom).get_contacts_csv();
+          int count = csv.empty() ? 0 : std::count(csv.begin(), csv.end(), ',') + 1;
+          snprintf(contacts_buf, sizeof(contacts_buf), "Contacts: %d", count);
+          it.print(cx, 185, id(font_debug), id(color_white), TextAlign::CENTER, contacts_buf);
+          char buf[32];
+          snprintf(buf, sizeof(buf), "WiFi: %.0f%%", id(wifi_pct).state);
+          it.print(cx, h - 35, id(font_debug), id(color_white), TextAlign::CENTER, buf);
+          it.print(cx, h - 15, id(font_debug), id(color_white), TextAlign::CENTER,
+                   id(node_status).state ? "HA: OK" : "HA: --");
+
+      # ========================================================================
+      # INTERCOM: RINGING IN PAGE
+      # ========================================================================
+      - id: ic_ringing_in_page
+        lambda: |-
+          constexpr int cx = 120;
+          it.fill(id(color_red));
+          it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
+          it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
+          it.print(cx, 100, id(font_state), id(color_yellow), TextAlign::CENTER, "RINGING");
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Incoming call from:");
+          it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, id(peer_name).c_str());
+          it.print(cx, 200, id(font_debug), id(color_yellow), TextAlign::CENTER, "Press button to answer");
+
+      # ========================================================================
+      # INTERCOM: RINGING OUT PAGE
+      # ========================================================================
+      - id: ic_ringing_out_page
+        lambda: |-
+          constexpr int cx = 120;
+          it.fill(id(color_orange));
+          it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
+          it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
+          it.print(cx, 100, id(font_state), id(color_black), TextAlign::CENTER, "CALLING");
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Calling:");
+          it.print(cx, 160, id(font_info), id(color_white), TextAlign::CENTER, id(peer_name).c_str());
+          it.print(cx, 200, id(font_debug), id(color_white), TextAlign::CENTER, "Waiting for answer...");
+
+      # ========================================================================
+      # INTERCOM: IN CALL PAGE
+      # ========================================================================
+      - id: ic_in_call_page
+        lambda: |-
+          constexpr int cx = 120;
+          constexpr int h = 240;
+          it.fill(id(color_green));
+          it.print(cx, 30, id(font_title), id(color_white), TextAlign::CENTER, "${friendly_name}");
+          it.print(cx, 70, id(font_debug), id(color_white), TextAlign::CENTER, "Status:");
+          it.print(cx, 100, id(font_state), id(color_blue), TextAlign::CENTER, "IN CALL");
+          it.print(cx, 130, id(font_debug), id(color_white), TextAlign::CENTER, "Connected to:");
+          it.print(cx, 150, id(font_info), id(color_white), TextAlign::CENTER, id(peer_name).c_str());
+          it.print(cx, h - 15, id(font_debug), id(color_white), TextAlign::CENTER, "Press button to hang up");
+
+# =============================================================================
+# ANIMATION INTERVALS
+# =============================================================================
+interval:
+  - interval: 500ms
+    then:
+      # Animazione IDLE con ping-pong
+      - if:
+          condition:
+            and:
+              - light.is_on: backlight
+              - display.is_displaying_page:
+                  id: s3_box_lcd
+                  page_id: idle_page
+          then:
+            - lambda: |-
+                auto anim = id(idle_anim);
+                const int current = anim->get_current_frame();
+                const int total = anim->get_animation_frame_count();
+                if (id(anim_direction)) {
+                  if (current >= total - 1) {
+                    id(anim_direction) = false;
+                    anim->prev_frame();
+                  } else {
+                    anim->next_frame();
+                  }
+                } else {
+                  if (current <= 0) {
+                    id(anim_direction) = true;
+                    anim->next_frame();
+                  } else {
+                    anim->prev_frame();
+                  }
+                }
+            - component.update: s3_box_lcd
+
+      # Animazione REPLYING con ping-pong
+      - if:
+          condition:
+            display.is_displaying_page:
+              id: s3_box_lcd
+              page_id: replying_page
+          then:
+            - lambda: |-
+                auto anim = id(replying_anim);
+                const int current = anim->get_current_frame();
+                const int total = anim->get_animation_frame_count();
+                if (id(anim_direction)) {
+                  if (current >= total - 1) {
+                    id(anim_direction) = false;
+                    anim->prev_frame();
+                  } else {
+                    anim->next_frame();
+                  }
+                } else {
+                  if (current <= 0) {
+                    id(anim_direction) = true;
+                    anim->next_frame();
+                  } else {
+                    anim->prev_frame();
+                  }
+                }
+            - component.update: s3_box_lcd
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================

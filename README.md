@@ -32,6 +32,7 @@ A flexible intercom framework for ESP32 devices - from simple full-duplex doorbe
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
 - [Voice Assistant Coexistence & AEC Best Practices](#voice-assistant-coexistence--aec-best-practices)
+- [LVGL Display Coexistence](#lvgl-display-coexistence)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -796,6 +797,41 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 
 ---
 
+## LVGL Display Coexistence
+
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3.yaml` config demonstrates a proven approach using **LVGL** (Light and Versatile Graphics Library) instead of manual C++ rendering.
+
+### Why LVGL?
+
+The original display implementation used `ili9xxx` pages with hand-written C++ lambdas — over 14 page lambdas, 26 manual `component.update` calls, frame-by-frame animation scripts, and precomputed geometry for text wrapping on a round screen. LVGL replaces all of this with declarative YAML widgets:
+
+| Before (ili9xxx manual) | After (LVGL) |
+|---|---|
+| 14 C++ page lambdas | Declarative YAML widgets |
+| 26 `component.update` calls | Automatic dirty-region refresh |
+| `animate_display` script (40 lines) | `animimg` widget (built-in) |
+| `text_pagination_timer` script | `long_mode: SCROLL_CIRCULAR` |
+| Precomputed geometry (chord widths, x/y metrics) | LVGL layout engine |
+| Manual ping-pong frame logic | Duplicated frame list in `animimg src:` |
+
+### Key Benefits for VA + Intercom
+
+- **Lower CPU usage**: LVGL only redraws dirty regions, not the full 240x240 framebuffer every cycle. This leaves more CPU for AEC processing and MWW inference.
+- **No `component.update` contention**: Manual display updates compete with the main loop for CPU. LVGL's internal renderer runs cooperatively without blocking audio tasks.
+- **Simpler animation**: The `animimg` widget handles frame sequencing, timing, and looping natively — no FreeRTOS timers or script-based frame stepping.
+- **Mood-based backgrounds**: The LLM response is parsed for emoticon prefixes (`:-)` `:-(` `:-|`) and a background image is set dynamically via `lv_img_set_src()` — trivial with LVGL, complex with manual rendering.
+- **Text scrolling**: Long VA responses scroll automatically with `SCROLL_CIRCULAR`. No need for manual text pagination with timers.
+
+### Timer Overlay
+
+A top-layer timer bar (countdown + label) is shown/hidden via `lv_obj_add_flag`/`lv_obj_clear_flag` with `LV_OBJ_FLAG_HIDDEN`. The top layer renders above all pages, so the timer is visible regardless of which page is active (idle, listening, replying, intercom).
+
+### Media File Requirement
+
+Media files played through the announcement pipeline (timer sounds, notifications) **must match the configured sample rate** (16kHz for most setups). The mixer does not resample — incompatible files are silently rejected. Convert with: `ffmpeg -y -i input.flac -ar 16000 -ac 1 output.flac`
+
+---
+
 ## Troubleshooting
 
 ### Card shows "No devices found"
@@ -953,13 +989,15 @@ Complete working examples are provided in the repository. All files are tested a
 For devices that only need intercom functionality (no voice assistant, no wake word detection):
 
 - [`intercom-mini.yaml`](intercom-mini.yaml) - ESP32-S3 Mini with separate I2S buses (SPH0645 mic + MAX98357A speaker). Minimal intercom setup with LED status feedback.
-- [`intercom-xiaozhi.yaml`](intercom-xiaozhi.yaml) - Xiaozhi Ball V3 with ES8311 codec + round GC9A01A display. Intercom with display pages for call states.
+- [`intercom-va.yaml`](intercom-va.yaml) - Xiaozhi Ball V3 with ES8311 codec (intercom only, no display, no VA). Use this for Xiaozhi devices that serve purely as intercom endpoints.
 
-### Intercom + Voice Assistant + Micro Wake Word
+### Intercom + Voice Assistant + LVGL Display
 
-For devices running both intercom and ESPHome Voice Assistant with on-device wake word detection. These configs demonstrate full coexistence of intercom, VA, and MWW on a single ESP32-S3:
+For devices running intercom, ESPHome Voice Assistant, Micro Wake Word, and LVGL display on a single ESP32-S3:
 
-- [`intercom-va.yaml`](intercom-va.yaml) - **Xiaozhi Ball V3** (ES8311 codec, GC9A01A round display, dual I2C bus). Based on [RealDeco/xiaozhi-esphome](https://github.com/RealDeco/xiaozhi-esphome) Ball_v2.yaml with major additions: `i2s_audio_duplex` for true full-duplex I2S, `esp_aec` with ES8311 stereo digital feedback, mixer speaker, dual-mode UI (VA pages + intercom pages with GPIO0 switching), custom wake word, animated display with scrolling text, backlight auto-off timer. See the file header for a full list of changes from the original.
+- [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) - **Xiaozhi Ball V3** (ES8311 codec, GC9A01A 240x240 round display, dual I2C bus). The most complete config: `i2s_audio_duplex` for true full-duplex I2S, `esp_aec` with ES8311 stereo digital feedback, mixer speaker, LVGL declarative widgets (animated idle, mood-based replying backgrounds, scrolling text, timer overlay), dual-mode UI (VA pages + intercom pages with GPIO0 switching), custom wake word. See [LVGL Display Coexistence](#lvgl-display-coexistence) for details.
+
+### Intercom + Voice Assistant (headless)
 
 - [`intercom-mini-va.yaml`](intercom-mini-va.yaml) - **ESP32-S3 Mini** (SPH0645 mic, MAX98357A speaker, WS2812 LED). Uses standard `i2s_audio` with separate I2S buses and a `platform: mixer` speaker to share the hardware speaker between VA TTS and intercom audio. MWW barge-in support (interrupt TTS with wake word). LED feedback for both VA and intercom states.
 
@@ -967,7 +1005,16 @@ For devices running both intercom and ESPHome Voice Assistant with on-device wak
 
 ## Version History
 
-### v2.0.3 (Current)
+### v2.2.0 (Current)
+
+- **LVGL display migration**: Declarative LVGL widgets replace 14 manual C++ page lambdas, 26 `component.update` calls, and frame-by-frame animation scripts. Lower CPU usage and simpler maintenance.
+- **Mood-based replying**: LLM emoticon prefix (`:-)` `:-(` `:-|`) sets happy/neutral/angry background image during VA responses
+- **Timer alarm fix**: Replaced `REPEAT_ONE` media player mode (caused TTS repeat race condition) with explicit loop script. Fixed 48kHz→16kHz sample rate mismatch for announcement pipeline.
+- **Display fixes**: LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions
+- **YAML cleanup**: Removed legacy configs, renamed primary config to `xiaozhi-ball-v3.yaml`, `intercom-va.yaml` for intercom-only Xiaozhi devices
+- **i2s_audio_duplex fixes**: `audio_output_callback_` forwarding for mixer compatibility, atomic `listener_registered_` guard for speaker start/stop idempotency
+
+### v2.0.3
 
 - **Voice Assistant + Intercom coexistence**: Full dual-mode operation with MWW, VA, and intercom on the same ESP32-S3
 - **Ready-to-use YAML configs**: `intercom-va.yaml` (Xiaozhi Ball V3 + display) and `intercom-mini-va.yaml` (ESP32-S3 Mini headless)

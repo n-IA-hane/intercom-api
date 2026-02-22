@@ -303,6 +303,12 @@ i2s_audio_duplex:
 2. Reduce display update interval (500ms+) to avoid SPI bus contention
 3. Check free heap in logs after boot
 
+## Known Limitations
+
+- **Media files must match sample rate**: Files played through the ESPHome announcement pipeline (timer sounds, notifications via `media_player.speaker.play_on_device_media_file`) must be at the configured `sample_rate` (typically 16kHz). The mixer rejects incompatible streams with "Incompatible audio streams" error. Convert with: `ffmpeg -y -i input.flac -ar 16000 -ac 1 output.flac`
+- **No runtime sample rate conversion**: A future improvement could add resampling in the mixer or speaker layer so media files at any sample rate are accepted without manual conversion.
+- **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker is silent) is the workaround.
+
 ## License
 
 MIT License

@@ -1231,6 +1231,19 @@ script:
       - script.execute: update_replying_text
       - script.execute: reply_pagination_timer
 
+  # Timer alarm: play sound in a loop until timer_ringing is turned off
+  - id: timer_alarm_loop
+    mode: single
+    then:
+      - while:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: timer_finished_sound
+                announcement: true
+            - delay: 6s
+
   # Backlight timer
   - id: backlight_timer
     mode: restart
@@ -1607,26 +1620,13 @@ switch:
     internal: true
     restore_mode: ALWAYS_OFF
     on_turn_off:
-      - lambda: |-
-              id(speaker_media_player)
-                ->make_call()
-                .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
-                .set_announcement(true)
-                .perform();
-              id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - script.stop: timer_alarm_loop
       - media_player.stop:
           announcement: true
     on_turn_on:
-      - lambda: |-
-            id(speaker_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
-              .set_announcement(true)
-              .perform();
-            id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
-      - media_player.speaker.play_on_device_media_file:
-          media_file: timer_finished_sound
+      - media_player.stop:
           announcement: true
+      - script.execute: timer_alarm_loop
       - delay: 15min
       - switch.turn_off: timer_ringing
 
