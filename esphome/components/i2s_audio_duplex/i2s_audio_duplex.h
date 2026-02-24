@@ -249,6 +249,28 @@ class I2SAudioDuplex : public Component {
 
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};
+
+  // ┌──────────────────────────────────────────────────────────────────┐
+  // │ DEBUG_RT_DIAG — Real-time diagnostics for audio task profiling  │
+  // │ Set to 1 to enable, 0 to disable. When done debugging, search  │
+  // │ for "DEBUG_RT_DIAG" across all files and remove all blocks.     │
+  // │ Zero overhead when disabled (compiled out).                     │
+  // └──────────────────────────────────────────────────────────────────┘
+#define DEBUG_RT_DIAG 0
+
+#if DEBUG_RT_DIAG
+  // DEBUG_RT_DIAG — remove this entire block when done debugging
+  uint32_t diag_loop_count_{0};
+  uint32_t diag_loop_max_us_{0};
+  uint32_t diag_loop_sum_us_{0};
+  uint32_t diag_rx_max_us_{0};
+  uint32_t diag_tx_max_us_{0};
+  uint32_t diag_aec_max_us_{0};
+  uint32_t diag_underrun_count_{0};
+  uint32_t diag_spk_buf_min_{UINT32_MAX};
+  uint32_t diag_last_report_ms_{0};
+  static constexpr uint32_t DIAG_REPORT_INTERVAL_MS{2000};
+#endif
 };
 
 }  // namespace i2s_audio_duplex
