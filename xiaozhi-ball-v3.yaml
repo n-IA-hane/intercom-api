@@ -44,11 +44,11 @@ substitutions:
   friendly_name: Xiaozhi Ball V3 LVGL
 
   # Local image/animation files for each VA state
-  loading_illustration_file: images/loading.png
-  listening_illustration_file: images/listening.png
-  thinking_illustration_file: images/thinking.png
-  error_illustration_file: images/error.png
-  timer_finished_illustration_file: images/timer_finished.png
+  loading_illustration_file: images/assistant/loading.png
+  listening_illustration_file: images/assistant/listening.png
+  thinking_illustration_file: images/assistant/thinking.png
+  error_illustration_file: images/assistant/error.png
+  timer_finished_illustration_file: images/assistant/timer_finished.png
 
   # Voice assistant phase IDs
   voice_assist_idle_phase_id: "1"
@@ -1906,36 +1906,36 @@ image:
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: images/error-no-wifi.png
+  - file: images/assistant/error-no-wifi.png
     id: error_no_wifi
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: images/error-no-ha.png
+  - file: images/assistant/error-no-ha.png
     id: error_no_ha
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
 
   # Idle background (static)
-  - file: images/idle.png
+  - file: images/assistant/idle.png
     id: idle_bg
     resize: 240x240
     type: RGB565
     transparency: opaque
 
   # Mood backgrounds for replying page (set based on LLM emoticon prefix)
-  - file: images/happy.png
+  - file: images/assistant/happy.png
     id: mood_happy
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/neutral.png
+  - file: images/assistant/neutral.png
     id: mood_neutral
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/angry.png
+  - file: images/assistant/angry.png
     id: mood_angry
     resize: 240x240
     type: RGB565
