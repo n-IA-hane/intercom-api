@@ -10,13 +10,18 @@ which are more reliable across NAT/firewall scenarios.
 
 import logging
 
+import voluptuous as vol
+
 from homeassistant.core import HomeAssistant, CoreState, Event
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, EVENT_HOMEASSISTANT_STARTED
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.discovery import async_load_platform
 
 from .const import DOMAIN
 from .websocket_api import async_register_websocket_api
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LOGGER = logging.getLogger(__name__)
 
