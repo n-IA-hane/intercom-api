@@ -26,7 +26,17 @@
 #
 # Combines voice_assistant + micro_wake_word with intercom_api.
 # Uses i2s_audio_duplex (ES8311) + mixer speaker for concurrent audio.
+# I2S bus at 48kHz (ES8311 native), mic decimated to 16kHz via FIR filter.
 # Wake word ALWAYS active. Mode switching is UI-only (display + buttons).
+#
+# GPIO0 Button Behavior (page-aware):
+#   VA idle:           Click=start VA | Long press(1-3s)=switch to intercom
+#   VA active:         Click=stop VA
+#   IC idle:           Click=call | Double=next contact | Long=switch to VA
+#   IC ringing in:     Click=answer | Double=decline | Long=switch to VA
+#   IC ringing out:    Click=hangup | Long=switch to VA
+#   IC in call:        Click=hangup | Long=switch to VA
+#   Timer ringing:     Click=stop timer (any page)
 # =============================================================================
 
 substitutions:
@@ -145,9 +155,7 @@ psram:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source:
-      type: local
-      path: esphome_components
+  - source: esphome/components
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -191,6 +199,9 @@ logger:
     i2c: INFO
     esp32: INFO
 
+network:
+  enable_high_performance: true
+
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
@@ -228,7 +239,7 @@ audio_dac:
   - platform: es8311
     id: es8311_dac
     bits_per_sample: 16bit
-    sample_rate: 16000
+    sample_rate: 48000
     mic_gain: 24DB
 
 # =============================================================================
@@ -258,6 +269,8 @@ esp_aec:
 # I2S AUDIO DUPLEX (single bus for ES8311)
 # Full-duplex I2S: mic + speaker on same bus, managed by one FreeRTOS task.
 # audio_task runs on Core 1 at priority 9, processes AEC inline.
+# Bus runs at 48kHz (ES8311 native rate, better DAC quality).
+# Internal FIR decimation x3 produces 16kHz for mic/AEC/MWW/VA/intercom.
 # =============================================================================
 i2s_audio_duplex:
   id: i2s_duplex
@@ -266,7 +279,8 @@ i2s_audio_duplex:
   i2s_mclk_pin: GPIO16
   i2s_din_pin: GPIO10
   i2s_dout_pin: GPIO8
-  sample_rate: 16000
+  sample_rate: 48000             # I2S bus rate (ES8311 native)
+  output_sample_rate: 16000      # Mic/AEC/MWW/VA output rate (FIR decimation x3)
   aec_id: aec_component
   # ES8311 digital feedback: RX is stereo L=DAC(reference), R=ADC(mic).
   # Sample-accurate reference alignment, no ring buffer delay needed.
@@ -296,22 +310,37 @@ microphone:
 
 
 # =============================================================================
-# SPEAKERS (mixer topology: VA + Intercom -> hw_speaker)
+# SPEAKERS (mixer topology: sources -> resampler -> mixer 48kHz -> hw_speaker)
+# hw_speaker runs at 48kHz (bus rate). ResamplerSpeaker upsamples any input.
 # =============================================================================
 speaker:
   - platform: i2s_audio_duplex
     id: hw_speaker
     i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 48000
 
   - platform: mixer
     id: audio_mixer
     output_speaker: hw_speaker
     num_channels: 1
+    task_stack_in_psram: true
     source_speakers:
-      - id: va_speaker
+      - id: va_speaker_mix
         timeout: 10s
-      - id: intercom_speaker
+        buffer_duration: 500ms
+      - id: intercom_speaker_mix
         timeout: 10s
+        buffer_duration: 500ms
+
+  - platform: resampler
+    id: va_speaker
+    output_speaker: va_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: intercom_speaker
+    output_speaker: intercom_speaker_mix
+    task_stack_in_psram: true
 
 # =============================================================================
 # MEDIA PLAYER (VA TTS output through va_speaker)
@@ -325,7 +354,7 @@ media_player:
     announcement_pipeline:
       speaker: va_speaker
       format: FLAC
-      sample_rate: 16000
+      sample_rate: 48000
       num_channels: 1
     files:
       - id: timer_finished_sound
@@ -358,7 +387,8 @@ media_player:
             and:
               - not:
                   voice_assistant.is_running:
-              - lambda: return id(intercom).get_state_str() == "Idle";
+              - intercom_api.is_idle:
+                  id: intercom
           then:
             - script.execute: start_wake_word
             - script.execute: set_idle_or_mute_phase
@@ -450,7 +480,8 @@ voice_assistant:
         red: 0.00
         green: 0.00
         blue: 1.00
-    # Parse emoticon prefix, set mood background, strip from displayed text
+    # Parse emoticon prefix, set mood background, strip from displayed text.
+    # Word-wrap runs here (CPU only, no LVGL rendering yet — replying page is hidden).
     - lambda: |-
         std::string text = x;
         esphome::image::Image *mood = id(mood_neutral);
@@ -478,13 +509,13 @@ voice_assistant:
     - globals.set:
         id: reply_page_index
         value: '0'
-    - script.execute: update_replying_text
     - script.stop: reply_pagination_timer
-    - script.execute: reply_pagination_timer
     - script.stop: backlight_timer
     - light.turn_on:
         id: backlight
         brightness: 100%
+    - script.execute: update_replying_text
+    - script.execute: reply_pagination_timer
     - script.execute: draw_display
   on_end:
     - wait_until:
@@ -535,7 +566,9 @@ voice_assistant:
     - script.execute: set_idle_or_mute_phase
     - if:
         condition:
-          lambda: return id(intercom).get_state_str() != "Idle";
+          not:
+            intercom_api.is_idle:
+              id: intercom
         then:
           - globals.set:
               id: current_mode
@@ -600,24 +633,10 @@ intercom_api:
   speaker: intercom_speaker
   ringing_timeout: 30s
 
-  on_incoming_call:
-    - lambda: |-
-        id(peer_name) = id(intercom).get_caller();
-        id(previous_mode) = id(current_mode);
-    - globals.set:
-        id: current_mode
-        value: '1'
-    - script.execute: backlight_timer
-    - lvgl.label.update:
-        id: ic_ringing_in_peer_label
-        text: !lambda 'return id(peer_name);'
-    - lvgl.page.show: ic_ringing_in_page
-    - light.turn_on:
-        id: led
-        effect: "Ringing"
-
   on_outgoing_call:
-    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    - lambda: |-
+        id(peer_name) = id(intercom).get_current_destination();
+        id(previous_mode) = id(current_mode);
     - globals.set:
         id: current_mode
         value: '1'
@@ -628,7 +647,7 @@ intercom_api:
     - lvgl.label.update:
         id: ic_ringing_out_peer_label
         text: !lambda 'return id(peer_name);'
-    - lvgl.page.show: ic_ringing_out_page
+    - script.execute: draw_display
     - if:
         condition:
           lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
@@ -641,6 +660,17 @@ intercom_api:
                 type: "doorbell"
 
   on_ringing:
+    - lambda: |-
+        id(peer_name) = id(intercom).get_caller();
+        id(previous_mode) = id(current_mode);
+    - globals.set:
+        id: current_mode
+        value: '1'
+    - script.execute: backlight_timer
+    - lvgl.label.update:
+        id: ic_ringing_in_peer_label
+        text: !lambda 'return id(peer_name);'
+    - script.execute: draw_display
     - light.turn_on:
         id: led
         effect: "Ringing"
@@ -657,7 +687,7 @@ intercom_api:
         blue: 31%
         effect: none
     - lambda: |-
-        // Auto-answer skips on_incoming_call, so switch mode here if needed
+        // Auto-answer skips on_ringing, so switch mode here if needed
         if (id(current_mode) != 1) {
           id(previous_mode) = id(current_mode);
           id(current_mode) = 1;
@@ -671,7 +701,7 @@ intercom_api:
     - lvgl.label.update:
         id: ic_in_call_peer_label
         text: !lambda 'return id(peer_name);'
-    - lvgl.page.show: ic_in_call_page
+    - script.execute: draw_display
 
   on_idle:
     - light.turn_off: led
@@ -687,7 +717,6 @@ intercom_api:
               id: current_mode
               value: '1'
           - script.execute: update_ic_idle_labels
-          - lvgl.page.show: ic_idle_page
           - script.execute: draw_display
 
   on_hangup:
@@ -857,7 +886,7 @@ script:
           set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "RINGING"
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Incoming call from:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[9]);   // action hint
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
 
           // --- IC ringing out page (6 children) ---
           p = id(ic_ringing_out_page)->obj;
@@ -866,7 +895,7 @@ script:
           set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "CALLING"
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Calling:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[9]);   // action hint
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
 
           // --- IC in call page (6 children) ---
           p = id(ic_in_call_page)->obj;
@@ -875,7 +904,7 @@ script:
           set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "IN CALL"
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Connected to:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[11]);  // action hint
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
 
           // --- Thinking page: chord-width labels (10 children after image) ---
           lv_obj_t* think[] = {
@@ -910,6 +939,7 @@ script:
 
   # Main display rendering — single lambda for page routing + animation control
   - id: draw_display
+    mode: restart
     then:
       - lambda: |-
           // Determine target page
@@ -1791,12 +1821,7 @@ text_sensor:
     on_value:
       then:
         - lambda: |-
-            lv_obj_t* rlines[] = {
-              id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
-              id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
-            };
-            for (size_t i = 0; i < 10; i++) lv_label_set_text(rlines[i], "");
-            lv_label_set_text(id(reply_page_counter), "");
+            // Skip redundant "..." during replying phase (label text set by update_replying_text)
             if (x == "..." && id(voice_assistant_phase) == ${voice_assist_replying_phase_id}) {
               return;
             }
@@ -1984,7 +2009,7 @@ display:
     id: s3_box_lcd
     model: GC9A01A
     invert_colors: true
-    data_rate: 20MHz
+    data_rate: 40MHz
     cs_pin: 5
     dc_pin: 47
     reset_pin:

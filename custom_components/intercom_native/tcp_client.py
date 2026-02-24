@@ -38,7 +38,6 @@ class IntercomTcpClient:
         host: str,
         port: int = INTERCOM_PORT,
         on_audio: Optional[Callable[[bytes], None]] = None,
-        on_connected: Optional[Callable[[], None]] = None,
         on_disconnected: Optional[Callable[[], None]] = None,
         on_ringing: Optional[Callable[[], None]] = None,
         on_answered: Optional[Callable[[], None]] = None,
@@ -51,7 +50,6 @@ class IntercomTcpClient:
         self.host = host
         self.port = port
         self._on_audio = on_audio
-        self._on_connected = on_connected
         self._on_disconnected = on_disconnected
         self._on_ringing = on_ringing
         self._on_answered = on_answered
@@ -92,9 +90,6 @@ class IntercomTcpClient:
 
             self._receive_task = asyncio.create_task(self._receive_loop())
             self._ping_task = asyncio.create_task(self._ping_loop())
-
-            if self._on_connected:
-                self._on_connected()
 
             return True
 

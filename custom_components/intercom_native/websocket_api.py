@@ -58,6 +58,79 @@ class IntercomSession:
         self._tx_queue: asyncio.Queue = asyncio.Queue(maxsize=AUDIO_QUEUE_SIZE)
         self._tx_task: Optional[asyncio.Task] = None
 
+    # --- Callbacks for TCP client (shared by start() and answer_esp_call()) ---
+
+    def _on_audio(self, data: bytes) -> None:
+        """Handle audio from ESP - fire event to browser."""
+        if not self._active:
+            return
+        self.hass.bus.async_fire(
+            "intercom_audio",
+            {
+                "device_id": self.device_id,
+                "audio": base64.b64encode(data).decode("ascii"),
+            }
+        )
+
+    def _on_disconnected(self) -> None:
+        self._active = False
+        self._ringing = False
+        self.hass.bus.async_fire(
+            "intercom_state",
+            {"device_id": self.device_id, "state": "disconnected"}
+        )
+
+    def _on_ringing(self) -> None:
+        """ESP is ringing, waiting for local answer."""
+        self._ringing = True
+        self.hass.bus.async_fire(
+            "intercom_state",
+            {"device_id": self.device_id, "state": "ringing"}
+        )
+
+    def _on_answered(self) -> None:
+        """ESP answered the call, streaming started."""
+        self._ringing = False
+        self._active = True
+        self._tx_task = asyncio.create_task(self._tx_sender())
+        self.hass.bus.async_fire(
+            "intercom_state",
+            {"device_id": self.device_id, "state": "streaming"}
+        )
+
+    def _on_stop_received(self) -> None:
+        """ESP sent STOP (hangup from ESP side)."""
+        _LOGGER.info("Session received STOP from ESP: %s", self.device_id)
+        self._active = False
+        self._ringing = False
+        self.hass.bus.async_fire(
+            "intercom_state",
+            {"device_id": self.device_id, "state": "idle"}
+        )
+
+    def _on_error_received(self, code: int) -> None:
+        """ESP sent ERROR (decline/busy)."""
+        _LOGGER.info("Session received ERROR from ESP (code=%d): %s", code, self.device_id)
+        self._active = False
+        self._ringing = False
+        self.hass.bus.async_fire(
+            "intercom_state",
+            {"device_id": self.device_id, "state": "idle"}
+        )
+
+    def _create_tcp_client(self) -> IntercomTcpClient:
+        """Create a TCP client with standard callbacks."""
+        return IntercomTcpClient(
+            host=self.host,
+            port=INTERCOM_PORT,
+            on_audio=lambda data: self._on_audio(data),
+            on_disconnected=lambda: self._on_disconnected(),
+            on_ringing=lambda: self._on_ringing(),
+            on_answered=lambda: self._on_answered(),
+            on_stop_received=lambda: self._on_stop_received(),
+            on_error_received=lambda code: self._on_error_received(code),
+        )
+
     async def start(self) -> str:
         """Start the intercom session.
 
@@ -69,92 +142,7 @@ class IntercomSession:
         if self._active:
             return "streaming"
 
-        session = self
-
-        def on_audio(data: bytes) -> None:
-            """Handle audio from ESP - fire event to browser."""
-            if not session._active:
-                return
-            session.hass.bus.async_fire(
-                "intercom_audio",
-                {
-                    "device_id": session.device_id,
-                    "audio": base64.b64encode(data).decode("ascii"),
-                }
-            )
-
-        def on_disconnected() -> None:
-            session._active = False
-            session._ringing = False
-            # Notify browser of disconnection
-            session.hass.bus.async_fire(
-                "intercom_state",
-                {
-                    "device_id": session.device_id,
-                    "state": "disconnected",
-                }
-            )
-
-        def on_ringing() -> None:
-            """ESP is ringing, waiting for local answer."""
-            session._ringing = True
-            session.hass.bus.async_fire(
-                "intercom_state",
-                {
-                    "device_id": session.device_id,
-                    "state": "ringing",
-                }
-            )
-
-        def on_answered() -> None:
-            """ESP answered the call, streaming started."""
-            session._ringing = False
-            session._active = True
-            session._tx_task = asyncio.create_task(session._tx_sender())
-            session.hass.bus.async_fire(
-                "intercom_state",
-                {
-                    "device_id": session.device_id,
-                    "state": "streaming",
-                }
-            )
-
-        def on_stop_received() -> None:
-            """ESP sent STOP (hangup from ESP side)."""
-            _LOGGER.info("Session received STOP from ESP: %s", session.device_id)
-            session._active = False
-            session._ringing = False
-            session.hass.bus.async_fire(
-                "intercom_state",
-                {
-                    "device_id": session.device_id,
-                    "state": "idle",
-                }
-            )
-
-        def on_error_received(code: int) -> None:
-            """ESP sent ERROR (decline/busy)."""
-            _LOGGER.info("Session received ERROR from ESP (code=%d): %s", code, session.device_id)
-            session._active = False
-            session._ringing = False
-            session.hass.bus.async_fire(
-                "intercom_state",
-                {
-                    "device_id": session.device_id,
-                    "state": "idle",
-                }
-            )
-
-        self._tcp_client = IntercomTcpClient(
-            host=self.host,
-            port=INTERCOM_PORT,
-            on_audio=on_audio,
-            on_disconnected=on_disconnected,
-            on_ringing=on_ringing,
-            on_answered=on_answered,
-            on_stop_received=on_stop_received,
-            on_error_received=on_error_received,
-        )
+        self._tcp_client = self._create_tcp_client()
 
         if not await self._tcp_client.connect():
             return "error"
@@ -241,57 +229,7 @@ class IntercomSession:
         if self._active:
             return "streaming"
 
-        session = self
-
-        def on_audio(data: bytes) -> None:
-            if not session._active:
-                return
-            session.hass.bus.async_fire(
-                "intercom_audio",
-                {"device_id": session.device_id, "audio": base64.b64encode(data).decode("ascii")}
-            )
-
-        def on_disconnected() -> None:
-            session._active = False
-            session.hass.bus.async_fire(
-                "intercom_state", {"device_id": session.device_id, "state": "disconnected"}
-            )
-
-        def on_ringing() -> None:
-            pass  # Not expected in this flow
-
-        def on_answered() -> None:
-            # ESP confirmed our ANSWER with PONG
-            session._active = True
-            session._tx_task = asyncio.create_task(session._tx_sender())
-            session.hass.bus.async_fire(
-                "intercom_state", {"device_id": session.device_id, "state": "streaming"}
-            )
-
-        def on_stop_received() -> None:
-            _LOGGER.info("Session received STOP from ESP: %s", session.device_id)
-            session._active = False
-            session.hass.bus.async_fire(
-                "intercom_state", {"device_id": session.device_id, "state": "idle"}
-            )
-
-        def on_error_received(code: int) -> None:
-            _LOGGER.info("Session received ERROR (code=%d): %s", code, session.device_id)
-            session._active = False
-            session.hass.bus.async_fire(
-                "intercom_state", {"device_id": session.device_id, "state": "idle"}
-            )
-
-        self._tcp_client = IntercomTcpClient(
-            host=self.host,
-            port=INTERCOM_PORT,
-            on_audio=on_audio,
-            on_disconnected=on_disconnected,
-            on_ringing=on_ringing,
-            on_answered=on_answered,
-            on_stop_received=on_stop_received,
-            on_error_received=on_error_received,
-        )
+        self._tcp_client = self._create_tcp_client()
 
         if not await self._tcp_client.connect():
             return "error"
@@ -680,6 +618,35 @@ async def websocket_start(
         connection.send_error(msg_id, "exception", str(err))
 
 
+async def _stop_device_sessions(device_id: str) -> bool:
+    """Stop all sessions and bridges involving a device.
+
+    Returns True if any session or bridge was stopped.
+    """
+    stopped = False
+
+    # Stop P2P session if exists
+    session = _sessions.pop(device_id, None)
+    if session:
+        await session.stop()
+        _LOGGER.debug("Session stopped: %s", device_id)
+        stopped = True
+
+    # Stop any bridges involving this device
+    bridges_to_stop = [
+        bid for bid, bridge in _bridges.items()
+        if bridge.source_device_id == device_id or bridge.dest_device_id == device_id
+    ]
+    for bridge_id in bridges_to_stop:
+        bridge = _bridges.pop(bridge_id, None)
+        if bridge:
+            await bridge.stop()
+            _LOGGER.debug("Bridge stopped for device %s: %s", device_id, bridge_id)
+            stopped = True
+
+    return stopped
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): WS_TYPE_STOP,
@@ -695,32 +662,10 @@ async def websocket_stop(
     """Stop intercom session or bridge involving this device."""
     device_id = msg["device_id"]
     msg_id = msg["id"]
-    stopped = False
 
     _LOGGER.debug("websocket_stop called: device_id=%s", device_id)
-    _LOGGER.debug("  Active sessions: %s", list(_sessions.keys()))
-    _LOGGER.debug("  Active bridges: %s", list(_bridges.keys()))
 
-    # Stop P2P session if exists
-    session = _sessions.pop(device_id, None)
-    if session:
-        await session.stop()
-        _LOGGER.debug("Session stopped: %s", device_id)
-        stopped = True
-
-    # Also stop any bridges involving this device (for callee hangup)
-    bridges_to_stop = []
-    for bridge_id, bridge in list(_bridges.items()):
-        if bridge.source_device_id == device_id or bridge.dest_device_id == device_id:
-            bridges_to_stop.append(bridge_id)
-
-    for bridge_id in bridges_to_stop:
-        bridge = _bridges.pop(bridge_id, None)
-        if bridge:
-            await bridge.stop()
-            _LOGGER.debug("Bridge stopped via stop command: %s (device: %s)", bridge_id, device_id)
-            stopped = True
-
+    stopped = await _stop_device_sessions(device_id)
     connection.send_result(msg_id, {"success": True, "stopped": stopped})
 
 
@@ -1019,28 +964,6 @@ async def websocket_bridge(
         connection.send_error(msg_id, "exception", str(err))
 
 
-async def _set_incoming_caller(hass: HomeAssistant, device_id: str, caller_name: str) -> None:
-    """Set the incoming_caller text entity on an ESP device."""
-    from homeassistant.helpers import entity_registry as er
-
-    entity_registry = er.async_get(hass)
-
-    # Find the incoming_caller text entity for this device
-    for entity in entity_registry.entities.values():
-        if entity.device_id == device_id and "incoming_caller" in entity.entity_id:
-            try:
-                await hass.services.async_call(
-                    "text",
-                    "set_value",
-                    {"entity_id": entity.entity_id, "value": caller_name},
-                    blocking=True,  # Wait for ESP to receive the value
-                )
-                _LOGGER.info("Set incoming_caller on %s to %s", entity.entity_id, caller_name)
-            except Exception as err:
-                _LOGGER.warning("Failed to set incoming_caller: %s", err)
-            break
-
-
 @websocket_api.websocket_command(
     {
         vol.Required("type"): WS_TYPE_BRIDGE_STOP,
@@ -1091,30 +1014,10 @@ async def websocket_decline(
     """
     device_id = msg["device_id"]
     msg_id = msg["id"]
-    stopped = False
 
     _LOGGER.debug("Decline request for device: %s", device_id)
 
-    # Check P2P sessions first
-    session = _sessions.pop(device_id, None)
-    if session:
-        await session.stop()
-        _LOGGER.debug("Declined P2P session for device: %s", device_id)
-        stopped = True
-
-    # Check bridges - find any where this device is source or dest
-    bridges_to_stop = []
-    for bridge_id, bridge in list(_bridges.items()):
-        if bridge.source_device_id == device_id or bridge.dest_device_id == device_id:
-            bridges_to_stop.append(bridge_id)
-
-    for bridge_id in bridges_to_stop:
-        bridge = _bridges.pop(bridge_id, None)
-        if bridge:
-            await bridge.stop()
-            _LOGGER.debug("Declined bridge %s for device: %s", bridge_id, device_id)
-            stopped = True
-
+    stopped = await _stop_device_sessions(device_id)
     connection.send_result(msg_id, {"success": True, "stopped": stopped})
 
 

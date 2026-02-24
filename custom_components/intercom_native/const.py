@@ -15,7 +15,6 @@ URL_BASE = "/intercom-native"
 
 # TCP Protocol
 INTERCOM_PORT = 6054
-PROTOCOL_VERSION = 1
 
 # Message types
 MSG_AUDIO = 0x01
@@ -55,7 +54,3 @@ CONNECT_TIMEOUT = 5.0
 PING_INTERVAL = 5.0
 PING_TIMEOUT = 10.0
 
-# Events
-EVENT_AUDIO_RECEIVED = f"{DOMAIN}_audio_received"
-EVENT_CONNECTED = f"{DOMAIN}_connected"
-EVENT_DISCONNECTED = f"{DOMAIN}_disconnected"

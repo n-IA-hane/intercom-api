@@ -22,12 +22,6 @@ class RecorderProcessor extends AudioWorkletProcessor {
     this._resampleRatio = sampleRate / TARGET_SAMPLE_RATE;
     this._resampleAccum = 0;
 
-    // Log initialization
-    console.log("[IntercomProcessor] === INITIALIZED v2.3.0 ===");
-    console.log("[IntercomProcessor] sampleRate:", sampleRate, "-> target:", TARGET_SAMPLE_RATE);
-    console.log("[IntercomProcessor] resampleRatio:", this._resampleRatio.toFixed(4));
-    console.log("[IntercomProcessor] targetSamples:", this._targetSamples);
-
     // Send init message to main thread
     this.port.postMessage({
       type: "debug",
@@ -40,33 +34,16 @@ class RecorderProcessor extends AudioWorkletProcessor {
 
     // Check input validity
     if (!inputList || inputList.length === 0) {
-      if (this._frameCount % 500 === 0) {
-        console.log("[IntercomProcessor] Frame", this._frameCount, "- no inputList");
-      }
       return true;
     }
 
     if (!inputList[0] || inputList[0].length === 0) {
-      if (this._frameCount % 500 === 0) {
-        console.log("[IntercomProcessor] Frame", this._frameCount, "- no channels in inputList[0]");
-      }
       return true;
     }
 
     const float32Data = inputList[0][0]; // First channel of first input
     if (!float32Data || float32Data.length === 0) {
-      if (this._frameCount % 500 === 0) {
-        console.log("[IntercomProcessor] Frame", this._frameCount, "- no data in channel 0");
-      }
       return true;
-    }
-
-    // Log periodically
-    if (this._frameCount % 200 === 1) {
-      console.log("[IntercomProcessor] Frame", this._frameCount,
-                  "- samples:", float32Data.length,
-                  "bufferLen:", this._buffer.length,
-                  "chunksSent:", this._chunksSent);
     }
 
     // Resample to 16kHz using fractional accumulator
@@ -94,13 +71,6 @@ class RecorderProcessor extends AudioWorkletProcessor {
 
       this._chunksSent++;
 
-      // Log chunk send
-      if (this._chunksSent <= 5 || this._chunksSent % 50 === 0) {
-        console.log("[IntercomProcessor] Sending chunk", this._chunksSent,
-                    "- samples:", int16Data.length,
-                    "- bytes:", int16Data.buffer.byteLength);
-      }
-
       // Send to main thread (transferable for performance)
       try {
         this.port.postMessage({
@@ -117,4 +87,3 @@ class RecorderProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor("intercom-processor", RecorderProcessor);
-console.log("[IntercomProcessor] Processor registered");

@@ -31,7 +31,6 @@ class IntercomCard extends HTMLElement {
     this._gainNode = null;
     this._nextPlayTime = 0;
     this._unsubscribeAudio = null;
-    this._unsubscribeState = null;
     this._chunksSent = 0;
     this._chunksReceived = 0;
 
@@ -701,7 +700,6 @@ class IntercomCard extends HTMLElement {
 
   async _cleanup() {
     if (this._unsubscribeAudio) { this._unsubscribeAudio(); this._unsubscribeAudio = null; }
-    if (this._unsubscribeState) { this._unsubscribeState(); this._unsubscribeState = null; }
     if (this._mediaStream) { this._mediaStream.getTracks().forEach(t => t.stop()); this._mediaStream = null; }
     if (this._workletNode) { this._workletNode.disconnect(); this._workletNode = null; }
     if (this._source) { this._source.disconnect(); this._source = null; }

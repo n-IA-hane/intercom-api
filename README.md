@@ -97,7 +97,7 @@ This component was born from the limitations of [esphome-intercom](https://githu
 
 ### Bundled Components
 
-This repo also provides **[i2s_audio_duplex](esphome_components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration, dual mic paths (raw + AEC-processed), and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome_components/i2s_audio_duplex/README.md) for full details.
+This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration, dual mic paths (raw + AEC-processed), and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome/components/i2s_audio_duplex/README.md) for full details.
 
 ---
 
@@ -127,7 +127,7 @@ graph TB
     API <-->|TCP :6054<br/>Binary PCM| TCP
 ```
 
-### Audio Format
+### Intercom Audio Format (TCP Protocol)
 
 | Parameter | Value |
 |-----------|-------|
@@ -136,7 +136,25 @@ graph TB
 | Channels | Mono |
 | ESP Chunk Size | 512 bytes (256 samples = 16ms) |
 | Browser Chunk Size | 2048 bytes (1024 samples = 64ms) |
-| Round-trip Latency | < 500ms |
+
+### i2s_audio_duplex Audio Pipeline
+
+When using `i2s_audio_duplex` (for single-bus codecs like ES8311), the I2S bus runs at a higher rate for better DAC/ADC quality, with internal FIR decimation to produce 16kHz for processing:
+
+| Parameter | Value |
+|-----------|-------|
+| I2S Bus Rate | Configurable (`sample_rate`, e.g. 48000 Hz) |
+| Output Rate | Configurable (`output_sample_rate`, e.g. 16000 Hz) |
+| Decimation | FIR filter, ratio = bus/output (e.g. ×3 for 48→16kHz) |
+| FIR Filter | 31-tap, Kaiser beta=8.0, ~60dB stopband, linear phase |
+| Speaker Input | Bus rate (48kHz) — ESPHome resampler upsamples before play |
+| Mic Output | Output rate (16kHz) — for MWW, Voice Assistant, Intercom |
+
+MWW, Voice Assistant STT, and Intercom operate at 16kHz internally. The I2S bus runs at 48kHz (the codec's native rate), so:
+- **TTS** via `announcement_pipeline` with `sample_rate: 48000` arrives at 48kHz from HA (HA asks the TTS engine for 48kHz, or uses ffmpeg to resample). Full 48kHz quality to the DAC.
+- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player — 48kHz when configured as such.
+- **Media files** (timer sounds, notifications) at native 48kHz are played directly without resampling.
+- **Intercom audio** is sent/received at 16kHz over TCP and upsampled to 48kHz for local playback via the resampler speaker.
 
 ### TCP Protocol (Port 6054)
 
@@ -202,7 +220,6 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/intercom-api
       ref: main
-      path: esphome_components
     components: [intercom_api, esp_aec]
 ```
 
@@ -273,7 +290,7 @@ intercom_api:
   ringing_timeout: 30s        # Auto-decline unanswered calls
 
   # FSM event callbacks
-  on_incoming_call:
+  on_ringing:
     - light.turn_on:
         id: status_led
         effect: "Ringing"
@@ -363,6 +380,10 @@ mode: full  # or 'simple'
 
 The card automatically discovers ESPHome devices with the `intercom_api` component.
 
+The Lovelace card provides **full-duplex bidirectional audio** with the ESP device — you can talk and listen simultaneously through your browser or the Home Assistant Companion app. The card captures audio from your microphone via `getUserMedia()` and plays incoming audio from the ESP in real-time.
+
+> **Important: HTTPS required** — Browser microphone access (`getUserMedia`) requires a secure context. You need HTTPS to use the card's audio features. Solutions: [Nabu Casa](https://www.nabucasa.com/), Let's Encrypt, reverse proxy with SSL, or self-signed certificate. Exception: `localhost` works without HTTPS.
+
 > **Note**: Devices must be added to Home Assistant via the ESPHome integration before they appear in the card.
 
 ![ESPHome Add Device](readme-img/esphome-add-device.png)
@@ -400,7 +421,7 @@ graph LR
 6. Bidirectional audio streaming begins
 
 **Use Simple mode when:**
-- You only have one intercom device
+- You want a simple doorbell with full-duplex audio
 - You need browser-to-ESP **and** ESP-to-browser communication
 - You want minimal configuration
 
@@ -436,11 +457,9 @@ graph TB
 
 ### ESP calling Home Assistant (Doorbell)
 
-When an ESP device has "Home Assistant" selected as destination and initiates a call, it fires an event for notifications:
+When an ESP device has "Home Assistant" selected as destination and initiates a call (via GPIO button press or template button), it fires an `esphome.intercom_call` event for notifications and the Lovelace card goes into ringing state with Answer/Decline buttons:
 
-![ESP calling Home Assistant](readme-img/call-from-esp-to-homeassistant.png)
-
-![Destination selector](readme-img/destination-homeassistant.png)
+![ESP calling Home Assistant — Card ringing](readme-img/call-from-esp-to-homeassistant.png)
 
 ---
 
@@ -463,14 +482,13 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 
 | Callback | Trigger | Use Case |
 |----------|---------|----------|
-| `on_incoming_call` | Received START with ring | Turn on ringing LED/sound |
+| `on_ringing` | Incoming call (auto_answer OFF) | Turn on ringing LED/sound, show display page |
 | `on_outgoing_call` | User initiated call | Show "Calling..." status |
-| `on_ringing` | Waiting for answer | Blink LED pattern |
-| `on_answered` | Call was answered | Log event |
+| `on_answered` | Call was answered (local or remote) | Log event |
 | `on_streaming` | Audio streaming active | Solid LED, enable amp |
-| `on_idle` | Call ended | Turn off LED, disable amp |
-| `on_hangup` | Call terminated | Log with reason |
-| `on_call_failed` | Call failed | Show error |
+| `on_idle` | State returns to idle | Turn off LED, disable amp |
+| `on_hangup` | Call ended normally | Log with reason string |
+| `on_call_failed` | Call failed (unreachable, busy, etc.) | Show error with reason string |
 
 ### Actions
 
@@ -508,12 +526,12 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 
 | Mode | CPU | Memory | Use Case |
 |------|-----|--------|----------|
-| `voip_low_cost` | Low | Low | Intercom-only, no VA/MWW. Best for resource-constrained setups |
+| `voip_low_cost` | Low | Low | **Recommended** — sufficient for all setups including VA + MWW |
 | `voip` | Medium | Medium | General purpose |
-| `voip_high_perf` | Medium | Medium | Recommended when coexisting with Voice Assistant + MWW |
-| `sr_high_perf` | High | **Very High** | Best cancellation. May exhaust DMA memory on ESP32-S3 causing SPI errors |
+| `voip_high_perf` | Medium | Medium | Better filter quality, try if not using display/heavy workloads |
+| `sr_high_perf` | High | **Very High** | Best cancellation but may exhaust DMA memory on ESP32-S3 |
 
-> **Note**: All modes have similar CPU cost per frame (~7ms). The difference is primarily in memory allocation and adaptive filter quality. See [Voice Assistant Coexistence](#voice-assistant-coexistence--aec-best-practices) for detailed recommendations.
+> **Note**: All modes have similar CPU cost per frame (~7ms). The difference is primarily in memory allocation and adaptive filter quality.
 
 ---
 
@@ -637,7 +655,6 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/intercom-api
       ref: main
-      path: esphome_components
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 i2s_audio_duplex:
@@ -647,7 +664,8 @@ i2s_audio_duplex:
   i2s_mclk_pin: GPIO16
   i2s_din_pin: GPIO10
   i2s_dout_pin: GPIO8
-  sample_rate: 16000
+  sample_rate: 48000           # I2S bus rate (codec native)
+  output_sample_rate: 16000    # Mic/AEC/MWW/VA rate (FIR decimation ×3)
 
 microphone:
   - platform: i2s_audio_duplex
@@ -660,7 +678,7 @@ speaker:
     i2s_audio_duplex_id: i2s_duplex
 ```
 
-See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md) for detailed configuration.
+See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md) for detailed configuration.
 
 ---
 
@@ -670,40 +688,23 @@ See the [i2s_audio_duplex README](esphome_components/i2s_audio_duplex/README.md)
 
 The intercom can run alongside ESPHome's **Voice Assistant** (VA) and **Micro Wake Word** (MWW) on the same device. This combination is powerful but pushes the ESP32-S3 hardware to its limits. This section documents what we learned from extensive testing.
 
-### AEC Performance Impact
-
-AEC uses Espressif's closed-source ESP-SR library. It has a **fixed CPU cost per audio frame** regardless of `filter_length`:
-
-| Metric | Value |
-|--------|-------|
-| Processing time per frame | ~7ms avg, ~10ms peak (out of 16ms budget) |
-| CPU usage | ~42% of one core |
-| `filter_length` impact on CPU | None (4 vs 8 = identical processing time) |
-
-This is significant on ESP32-S3 hardware. With AEC active during TTS responses, you may observe:
-- **Display slowdowns**: UI rendering takes longer (display updates delayed) because the main loop gets less CPU time
-- **Audio remains unaffected**: The FreeRTOS task priorities ensure audio processing (priority 9) always runs before display (priority 1)
-
-The `audio_task` uses `vTaskDelay(3)` after each frame to yield 3ms of CPU to lower-priority tasks. Without this yield, MWW inference and display rendering starve completely.
-
 ### Choosing the Right AEC Mode
 
-**If you use intercom only (no Voice Assistant/MWW):**
-- Use `voip_low_cost` or `voip` — lightest on resources, sufficient echo cancellation for voice calls
-- `filter_length: 4` (64ms) is enough for integrated codecs like ES8311
+AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU cost per frame (~7ms out of 16ms budget). The difference is primarily in memory allocation and adaptive filter quality.
 
-**If you use Voice Assistant + MWW + intercom:**
-- Use `voip_high_perf` — best balance of cancellation quality and resource usage
-- `filter_length: 8` (128ms) provides more margin for acoustic path variations
-- **Avoid `sr_high_perf`**: While it offers the best cancellation, it allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability
+**Recommended: `voip_low_cost`** for devices with integrated codecs (ES8311, ES8388). This is more than sufficient for echo cancellation in voice calls and intercom, while keeping CPU free for Voice Assistant, MWW, and display rendering.
 
 ```yaml
-# Recommended for VA + MWW coexistence
+# Recommended for most setups
 esp_aec:
   sample_rate: 16000
-  filter_length: 8       # 128ms tail
-  mode: voip_high_perf   # Good quality without memory exhaustion
+  filter_length: 4       # 64ms tail — sufficient for integrated codecs
+  mode: voip_low_cost    # Light on resources, good echo cancellation
 ```
+
+If you are **not** using a display or AEC-heavy workloads, and want to experiment with better cancellation quality, you can try `voip_high_perf` with `filter_length: 8`. But `voip_low_cost` is the safe default.
+
+**Avoid `sr_high_perf`**: It allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability.
 
 ### ES8311 Stereo L/R Reference: The Best Configuration
 
@@ -737,15 +738,13 @@ Without stereo feedback, the component falls back to a **ring buffer reference**
 
 ### Wake Word During TTS Playback
 
-MWW can detect wake words **even while TTS is playing** — useful for "barge-in" scenarios (e.g., interrupt a long response with your wake word, or intent scripts like "shut up!").
+MWW can detect wake words **even while TTS is playing** — useful for "barge-in" scenarios (e.g., interrupt a long response with your wake word). The `i2s_audio_duplex` component provides a dual mic path that makes this work reliably:
 
-However, there are caveats:
-- **MWW should use raw (pre-AEC) mic audio**: AEC suppresses everything that correlates with the speaker output, including your voice when you speak over TTS. In our tests, MWW on AEC-processed audio detected wake words only ~10% of the time during TTS. On raw mic audio, the neural model handles speaker echo much better.
-- **Detection accuracy is reduced during TTS**: The mic captures both your voice and the speaker output simultaneously. The MWW neural model is resilient but not perfect — expect occasional missed detections during loud TTS. This is a fundamental hardware limitation.
-- **CPU contention**: With AEC + TTS + MWW all active, the ESP32-S3 is running at near capacity. The `vTaskDelay(3)` yield gives MWW inference enough CPU, but the timing is tight.
+- **MWW uses raw (pre-AEC) mic audio** — the neural model handles speaker echo well
+- **VA STT uses AEC-processed audio** — clean speech recognition without echo
 
 ```yaml
-# Dual mic path for best MWW + VA experience
+# Dual mic path for MWW + VA
 microphone:
   - platform: i2s_audio_duplex
     id: mic_aec                    # AEC-processed: for VA STT + intercom TX
@@ -828,7 +827,7 @@ A top-layer timer bar (countdown + label) is shown/hidden via `lv_obj_add_flag`/
 
 ### Media File Requirement
 
-Media files played through the announcement pipeline (timer sounds, notifications) **must match the configured sample rate** (16kHz for most setups). The mixer does not resample — incompatible files are silently rejected. Convert with: `ffmpeg -y -i input.flac -ar 16000 -ac 1 output.flac`
+When using a `platform: resampler` speaker in the mixer pipeline, media files are automatically resampled to the bus rate. For best quality, use files at the bus rate natively (e.g. 48kHz with `sample_rate: 48000`). Without a resampler, files must match the speaker's sample rate.
 
 ---
 
@@ -995,7 +994,15 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.0.5 (Current)
+### v2.1.0 (Current)
+
+- **48kHz I2S bus with FIR decimation** — I2S bus runs at 48kHz (ES8311 native rate) for better TTS/media quality. Internal 31-tap FIR decimation (Kaiser beta=8.0) produces 16kHz for AEC, MWW, VA STT, and intercom. Speaker path stays at 48kHz with ESPHome resampler for upsampling. Configurable via `sample_rate` / `output_sample_rate`. Backward compatible (omit `output_sample_rate` = no change).
+- **Code cleanup & trigger unification** — Removed dead code (`PROTOCOL_VERSION`, unused HA events/constants), extracted shared helpers (`prefill_aec_ref_buffer_()`, `_stop_device_sessions()`), refactored duplicated TCP callbacks into instance methods, consolidated `MAX_LISTENERS` in shared header. Unified triggers: removed `on_incoming_call` (merged into `on_ringing`) and `on_call_end` (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer/AEC switches.
+- **WiFi high performance** — Added `enable_high_performance: true` to all WiFi configs (512KB TCP windows, improved TCP throughput for audio streaming).
+- **Display improvements** — SPI 40MHz, LVGL buffer_size 50%, instant page transitions via `draw_display`. Removed redundant label clearing and deferred rendering. LVGL replaces manual C++ monitor code for significantly better CPU utilization.
+- **Fixes** — Speaker sample_rate default (was hardcoded 16kHz, now inherits bus rate at runtime), timer sound restored to native 48kHz (was downsampled to 16kHz in v2.0.5), intercom UI page transitions, previous_mode save on outgoing calls.
+
+### v2.0.5
 
 - **i2s_audio_duplex: mixer compatibility fix** — Added `audio_output_callback_` forwarding from the I2S audio task to the duplex speaker. Without this, `platform: mixer` source speakers (va_speaker, intercom_speaker) never detect that audio has been played, staying stuck in `STATE_RUNNING` forever. This caused `media_player.is_announcing` to stay true indefinitely after TTS playback.
 - **i2s_audio_duplex: speaker start/stop idempotency** — `start()` now uses an atomic `listener_registered_` guard with `compare_exchange_strong` to prevent multiple `xSemaphoreTake()` per stream session. Previously, `play()` calling `start()` before `loop()` set `STATE_RUNNING` caused the semaphore count to leak (N takes, 1 give), preventing the speaker from ever stopping.
