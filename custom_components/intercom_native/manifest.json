@@ -1,7 +1,7 @@
 {
   "domain": "intercom_native",
   "name": "Intercom Native",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "codeowners": ["@n-IA-hane"],
   "config_flow": true,
   "dependencies": ["esphome", "http", "lovelace"],
