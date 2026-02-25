@@ -345,17 +345,10 @@ void IntercomApi::stop() {
 
   ESP_LOGI(TAG, "Hanging up");
 
-  // Send STOP message to client (HA) before closing
-  int sock = this->client_.socket.load();
-  if (sock >= 0) {
-    this->send_message_(sock, MessageType::STOP);
-    ESP_LOGD(TAG, "Sent STOP to client");
-  }
-
   // set_active_(false) handles synchronization: waits for tasks, then stops hardware
   this->set_active_(false);
 
-  // Close client connection (buffers already reset in set_streaming_(false))
+  // Close client connection — close_client_socket_() sends STOP before closing
   this->close_client_socket_();
 
   this->state_ = ConnectionState::DISCONNECTED;
@@ -693,6 +686,7 @@ void IntercomApi::set_streaming_(bool on) {
     if (this->speaker_buffer_) {
       this->speaker_buffer_->reset();
     }
+    this->dc_offset_ = 0;  // Reset DC filter state for new session
 
 #ifdef USE_ESP_AEC
     // Reset AEC state for new call - critical for proper echo cancellation
@@ -716,7 +710,7 @@ void IntercomApi::set_call_state_(CallState new_state) {
   // Fire appropriate trigger
   switch (new_state) {
     case CallState::IDLE:
-      this->idle_trigger_.trigger();  // legacy
+      this->idle_trigger_.trigger();
       break;
     case CallState::OUTGOING:
       this->outgoing_call_trigger_.trigger();
@@ -724,7 +718,7 @@ void IntercomApi::set_call_state_(CallState new_state) {
     case CallState::INCOMING:
       break;
     case CallState::RINGING:
-      this->ringing_trigger_.trigger();  // legacy
+      this->ringing_trigger_.trigger();
       break;
     case CallState::ANSWERING:
       this->answered_trigger_.trigger();
@@ -798,17 +792,18 @@ void IntercomApi::server_task_() {
     }
 
     // Handle existing client
-    if (this->client_.socket.load() >= 0) {
+    int client_fd = this->client_.socket.load();
+    if (client_fd >= 0) {
       // Check for incoming data
       fd_set read_fds;
       FD_ZERO(&read_fds);
-      FD_SET(this->client_.socket.load(), &read_fds);
+      FD_SET(client_fd, &read_fds);
       struct timeval tv = {.tv_sec = 0, .tv_usec = 10000};  // 10ms
 
-      int ret = ::select(this->client_.socket.load() + 1, &read_fds, nullptr, nullptr, &tv);
-      if (ret > 0 && FD_ISSET(this->client_.socket.load(), &read_fds)) {
+      int ret = ::select(client_fd + 1, &read_fds, nullptr, nullptr, &tv);
+      if (ret > 0 && FD_ISSET(client_fd, &read_fds)) {
         MessageHeader header;
-        if (this->receive_message_(this->client_.socket.load(), header, this->rx_buffer_, MAX_MESSAGE_SIZE)) {
+        if (this->receive_message_(client_fd, header, this->rx_buffer_, MAX_MESSAGE_SIZE)) {
           this->handle_message_(header, this->rx_buffer_ + HEADER_SIZE);
         } else {
           // Connection closed or error
@@ -1363,6 +1358,14 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
     case MessageType::ERROR:
       if (header.length > 0) {
         ESP_LOGE(TAG, "Received ERROR: %d", data[0]);
+        // Close connection and fail the call — e.g. BUSY means remote device rejected us
+        this->close_client_socket_();
+        this->set_active_(false);
+        this->state_ = ConnectionState::DISCONNECTED;
+        CallEndReason err_reason = (data[0] == static_cast<uint8_t>(ErrorCode::BUSY))
+                                       ? CallEndReason::BUSY
+                                       : CallEndReason::PROTOCOL_ERROR;
+        this->end_call_(err_reason);
       }
       break;
 
@@ -1467,8 +1470,9 @@ void IntercomApi::accept_client_() {
 
   // Check if we're in a state that shouldn't accept new connections
   // Allow IDLE (normal) and OUTGOING (ESP called someone, waiting for answer)
-  if (this->call_state_ != CallState::IDLE && this->call_state_ != CallState::OUTGOING) {
-    reject_busy(call_state_to_str(this->call_state_));
+  CallState cs = this->call_state_.load(std::memory_order_acquire);
+  if (cs != CallState::IDLE && cs != CallState::OUTGOING) {
+    reject_busy(call_state_to_str(cs));
     return;
   }
 

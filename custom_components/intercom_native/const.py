@@ -28,23 +28,7 @@ MSG_ANSWER = 0x08    # ESP→HA: call answered locally, start stream
 
 # Message flags
 FLAG_NONE = 0x00
-FLAG_END = 0x01
 FLAG_NO_RING = 0x02  # START flag: skip ringing, start streaming directly (for caller in bridge)
-
-# Error codes
-ERR_OK = 0x00
-ERR_BUSY = 0x01
-ERR_INVALID = 0x02
-ERR_NOT_READY = 0x03
-ERR_INTERNAL = 0xFF
-
-# Audio format
-SAMPLE_RATE = 16000
-BITS_PER_SAMPLE = 16
-CHANNELS = 1
-AUDIO_CHUNK_SIZE = 512  # bytes
-SAMPLES_PER_CHUNK = 256
-CHUNK_DURATION_MS = 16
 
 # Header size
 HEADER_SIZE = 4
@@ -52,5 +36,4 @@ HEADER_SIZE = 4
 # Timeouts
 CONNECT_TIMEOUT = 5.0
 PING_INTERVAL = 5.0
-PING_TIMEOUT = 10.0
 

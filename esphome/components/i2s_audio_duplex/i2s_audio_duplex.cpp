@@ -2,7 +2,6 @@
 
 #ifdef USE_ESP32
 
-#include <cmath>
 #include <esp_timer.h>
 
 #include "esphome/core/defines.h"

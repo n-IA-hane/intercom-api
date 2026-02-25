@@ -16,7 +16,7 @@
 #   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
 #   - Custom wake word model (hey_trowyayoh) instead of built-in models
 #   - All images, animations, and sounds stored locally (no external downloads)
-#   - Removed battery monitoring, touchscreen, captive_portal, startup/wake sounds
+#   - Removed battery monitoring, touchscreen, startup/wake sounds
 #   - Removed wake_word_engine_location select (always on-device MWW)
 #   - Removed show_text, show_battery_status switches
 #   - Added backlight auto-off timer with configurable timeout
@@ -2028,7 +2028,7 @@ display:
 lvgl:
   displays:
     - s3_box_lcd
-  buffer_size: 25%
+  buffer_size: 50%
   color_depth: 16
   log_level: WARN
   top_layer:

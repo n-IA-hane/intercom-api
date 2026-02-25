@@ -1,6 +1,5 @@
 """Sensor platform for Intercom Native integration."""
 import logging
-from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant, callback

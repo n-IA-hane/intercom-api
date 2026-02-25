@@ -9,23 +9,15 @@ from esphome.const import (
     CONF_ICON,
     CONF_NAME,
     CONF_MODE,
-    ENTITY_CATEGORY_CONFIG,
-    CONF_INTERNAL,
     CONF_DISABLED_BY_DEFAULT,
 )
 from esphome.components import microphone, speaker, switch, text_sensor
-from esphome.core import coroutine_with_priority, CORE
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
 AUTO_LOAD = ["switch", "number", "text_sensor"]
 
-# Config keys for auto-generated sensors
-CONF_STATE_SENSOR = "state_sensor"
-CONF_DESTINATION_SENSOR = "destination_sensor"
-
 CONF_INTERCOM_API_ID = "intercom_api_id"
-CONF_AUTO_ANSWER = "auto_answer"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 
 CONF_AEC_ID = "aec_id"
@@ -45,11 +37,6 @@ MODE_FULL = "full"      # Full: contacts, destination, ESP↔ESP calls via HA br
 
 intercom_api_ns = cg.esphome_ns.namespace("intercom_api")
 IntercomApi = intercom_api_ns.class_("IntercomApi", cg.Component)
-IntercomApiAutoAnswer = intercom_api_ns.class_(
-    "IntercomApiAutoAnswer", switch.Switch, cg.Parented.template(IntercomApi)
-)
-# Note: State and Destination sensors are created as plain TextSensor via new_text_sensor()
-# No custom classes needed - just wire them up with set_state_sensor/set_destination_sensor
 
 # === Action classes (for YAML: intercom_api.next_contact, etc.) ===
 NextContactAction = intercom_api_ns.class_("NextContactAction", automation.Action)

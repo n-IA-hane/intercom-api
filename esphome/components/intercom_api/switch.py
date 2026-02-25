@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import switch
-from esphome.const import CONF_ID, CONF_RESTORE_MODE, ENTITY_CATEGORY_CONFIG
+from esphome.const import CONF_ID, ENTITY_CATEGORY_CONFIG
 
 from . import intercom_api_ns, IntercomApi, CONF_INTERCOM_API_ID
 

@@ -2,7 +2,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import audio, speaker
-from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
+from esphome.const import CONF_ID, CONF_NUM_CHANNELS
 from .. import (
     i2s_audio_duplex_ns,
     I2SAudioDuplex,

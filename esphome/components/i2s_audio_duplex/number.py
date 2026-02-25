@@ -2,14 +2,9 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import number
-from esphome.const import (
-    CONF_ID,
-    ENTITY_CATEGORY_CONFIG,
-)
+from esphome.const import ENTITY_CATEGORY_CONFIG
 
-from . import i2s_audio_duplex_ns, I2SAudioDuplex
-
-CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
+from . import i2s_audio_duplex_ns, I2SAudioDuplex, CONF_I2S_AUDIO_DUPLEX_ID
 CONF_MIC_GAIN = "mic_gain"
 CONF_SPEAKER_VOLUME = "speaker_volume"
 

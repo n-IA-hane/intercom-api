@@ -1022,9 +1022,9 @@ async def websocket_decline(
 
 
 async def start_auto_bridge(hass: HomeAssistant, intercom_state_entity_id: str) -> None:
-    """Auto-start bridge when ESP goes to 'calling' state.
+    """Auto-start bridge when ESP goes to 'outgoing' state.
 
-    Called from __init__.py when an ESP's intercom_state changes to 'calling'.
+    Called from sensor.py when an ESP's intercom_state changes to 'outgoing'.
     This enables ESP button-initiated calls without needing the card.
     """
     from homeassistant.helpers import entity_registry as er
