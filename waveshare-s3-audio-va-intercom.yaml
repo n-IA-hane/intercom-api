@@ -1,0 +1,736 @@
+# =============================================================================
+# Waveshare ESP32-S3-AUDIO-Board — VA + Intercom + MWW (no display)
+# =============================================================================
+#
+# Hardware:
+#   - ESP32-S3R8 (16MB Flash, 8MB PSRAM octal)
+#   - ES8311 Audio DAC (speaker) + ES7210 Audio ADC (dual mic array)
+#   - NS4150 3W mono Class-D speaker amp (via TCA9555 EXIO pin 8)
+#   - 7x WS2812 addressable RGB LEDs (GPIO38)
+#   - 3 user buttons via TCA9555 (EXIO 9/10/11) + BOOT button (GPIO0)
+#   - Battery: MX1.25 3.7V Li-ion connector + charging IC
+#
+# Pin Map:
+#   I2S: MCLK=GPIO12 BCLK=GPIO13 LRCLK=GPIO14 DIN=GPIO15 DOUT=GPIO16
+#   I2C: SDA=GPIO11 SCL=GPIO10 (ES8311@0x18, ES7210@0x40, TCA9555@0x20)
+#   LEDs: GPIO38 (WS2812 x7)
+#   BOOT: GPIO0
+#
+# Audio pipeline:
+#   ES7210 mic → I2S DIN → mic_component (left channel = mic 0)
+#                                ├── MWW (hey_trowyayoh)
+#                                ├── VA (noise_suppression + auto_gain)
+#                                └── Intercom (+ AEC via esp_aec)
+#
+#   TTS (16kHz) → va_speaker ──┐
+#                               ├── audio_mixer → hw_speaker → I2S DOUT → ES8311 DAC
+#   Intercom    → ic_speaker ──┘
+#
+# Buttons:
+#   GPIO0 (BOOT): Single click = call_toggle / VA start-stop
+#   KEY1 (EXIO9): Call toggle (call/answer/hangup)
+#   KEY2 (EXIO10): Next contact
+#   KEY3 (EXIO11): Decline / Previous contact (double click)
+#
+# =============================================================================
+
+substitutions:
+  name: waveshare-s3-audio
+  friendly_name: Waveshare S3 Audio
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.2.0
+  platformio_options:
+    board_build.flash_mode: dio
+  on_boot:
+    priority: 600
+    then:
+      # Enable speaker amplifier via TCA9555
+      - switch.turn_on: speaker_enable
+      - delay: 500ms
+      # Brief LED flash to indicate boot
+      - light.turn_on:
+          id: status_led
+          red: 0%
+          green: 0%
+          blue: 100%
+          brightness: 50%
+          effect: none
+      - delay: 500ms
+      - light.turn_off: status_led
+      # MWW started by api.on_client_connected (needs HA connection first)
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      # PSRAM optimizations for wake word performance
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      # Network
+      CONFIG_LWIP_MAX_SOCKETS: "16"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+api:
+  on_client_connected:
+    - lambda: |-
+        // Publish entity states once (not on every log viewer connect)
+        static bool published = false;
+        if (!published) {
+          id(intercom).publish_entity_states();
+          published = true;
+        }
+    # Start MWW on HA connection
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+
+ota:
+  - platform: esphome
+
+logger:
+  level: INFO
+
+network:
+  enable_high_performance: true
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${name} Fallback"
+    password: !secret wifi_password
+
+external_components:
+  - source:
+      type: local
+      path: esphome/components
+    components: [intercom_api, esp_aec]
+
+# =============================================================================
+# I2C Bus (shared: ES8311, ES7210, TCA9555)
+# =============================================================================
+i2c:
+  - id: internal_i2c
+    sda: GPIO11
+    scl: GPIO10
+    scan: false
+
+# TCA9555 IO Expander (speaker amp, buttons)
+tca9555:
+  - id: io_expander
+    address: 0x20
+    i2c_id: internal_i2c
+
+# =============================================================================
+# Audio: I2S Bus + Codecs
+# =============================================================================
+# ES8311 and ES7210 share BCLK/LRCLK/MCLK with separate data pins.
+# Same architecture as ESP32-S3-BOX-3.
+
+i2s_audio:
+  - id: audio_bus
+    i2s_lrclk_pin: GPIO14
+    i2s_bclk_pin: GPIO13
+    i2s_mclk_pin: GPIO12
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: internal_i2c
+    address: 0x18
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    use_mclk: true
+    mic_gain: 24DB     # ES8311 ADC gain (unused — ES7210 handles mic)
+
+audio_adc:
+  - platform: es7210
+    id: es7210_adc
+    i2c_id: internal_i2c
+    address: 0x40
+    bits_per_sample: 16bit
+    sample_rate: 16000
+    mic_gain: 24dB     # 0-37.5dB. Increase if audio too quiet.
+
+# =============================================================================
+# Microphone (ES7210 ADC, left channel = mic 0)
+# =============================================================================
+# Dual MEMS mic array, but ESPHome uses single channel (no beamforming).
+# Test both 'left' and 'right' to find the mic with better placement.
+microphone:
+  - platform: i2s_audio
+    id: mic_component
+    i2s_audio_id: audio_bus
+    i2s_din_pin: GPIO15
+    adc_type: external
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    channel: left       # Channel 0 = left mic
+
+# =============================================================================
+# Speaker Pipeline: mixer with VA + Intercom sources
+# =============================================================================
+speaker:
+  - platform: i2s_audio
+    id: hw_speaker
+    i2s_audio_id: audio_bus
+    i2s_dout_pin: GPIO16
+    dac_type: external
+    audio_dac: es8311_dac
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    channel: left
+    timeout: never
+
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    source_speakers:
+      - id: va_speaker
+        timeout: 10s
+      - id: intercom_speaker
+        timeout: 10s
+
+# =============================================================================
+# Media Player (TTS via VA speaker)
+# =============================================================================
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: Media Player
+    internal: false
+    announcement_pipeline:
+      speaker: va_speaker
+      sample_rate: 16000
+      format: FLAC
+    on_announcement:
+      # Restart MWW for barge-in support during TTS
+      - if:
+          condition:
+            and:
+              - switch.is_off: mute
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - micro_wake_word.start:
+    on_idle:
+      # Restart MWW after media finishes
+      - if:
+          condition:
+            and:
+              - switch.is_off: mute
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - micro_wake_word.start:
+
+# =============================================================================
+# AEC (for intercom calls — separate I2S, no duplex stereo reference)
+# =============================================================================
+esp_aec:
+  id: aec_processor
+  mode: voip_low_cost
+  filter_length: 4
+
+# =============================================================================
+# Micro Wake Word
+# =============================================================================
+micro_wake_word:
+  id: mww
+  microphone: mic_component
+  on_wake_word_detected:
+    # Barge-in: interrupt TTS if playing
+    - if:
+        condition:
+          media_player.is_announcing:
+        then:
+          - media_player.stop:
+          - voice_assistant.stop:
+          - delay: 100ms
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+    - light.turn_on:
+        id: status_led
+        red: 30%
+        green: 30%
+        blue: 70%
+        brightness: 60%
+        effect: "Fast Pulse"
+  models:
+    - model: "wakewords/hey_trowyayoh.json"
+
+# =============================================================================
+# Voice Assistant
+# =============================================================================
+voice_assistant:
+  id: va
+  microphone: mic_component
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+
+  on_listening:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 100%
+        blue: 0%
+        brightness: 70%
+        effect: "Slow Pulse"
+
+  on_stt_vad_end:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 55%
+        blue: 0%
+        brightness: 70%
+        effect: "Fast Pulse"
+
+  on_tts_start:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 0%
+        blue: 100%
+        brightness: 100%
+        effect: none
+
+  on_end:
+    # Wait for TTS to finish playing
+    - wait_until:
+        condition:
+          not:
+            media_player.is_announcing:
+        timeout: 30s
+    # Restart MWW (resilience: always restart unless muted)
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+    # Restore intercom LED if call active
+    - if:
+        condition:
+          not:
+            - intercom_api.is_idle: intercom
+        then:
+          - light.turn_on:
+              id: status_led
+              red: 0%
+              green: 100%
+              blue: 0%
+              brightness: 100%
+              effect: none
+        else:
+          - light.turn_off: status_led
+
+  on_error:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 0%
+        blue: 0%
+        brightness: 70%
+        effect: none
+    - delay: 1s
+    # Restart MWW after error (resilience)
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+    - light.turn_off: status_led
+
+  on_client_connected:
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+
+  on_client_disconnected:
+    - micro_wake_word.stop:
+
+# =============================================================================
+# Intercom API
+# =============================================================================
+intercom_api:
+  id: intercom
+  mode: full
+  microphone: mic_component
+  speaker: intercom_speaker
+  dc_offset_removal: false    # ES7210 ADC handles DC internally
+  aec_id: aec_processor
+  ringing_timeout: 30s
+
+  on_outgoing_call:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 50%
+        blue: 0%
+        brightness: 100%
+        effect: "Calling"
+
+  on_ringing:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 0%
+        blue: 0%
+        brightness: 100%
+        effect: "Ringing"
+
+  on_answered:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 100%
+        blue: 0%
+        brightness: 100%
+        effect: none
+
+  on_streaming:
+    - light.turn_on:
+        id: status_led
+        red: 0%
+        green: 100%
+        blue: 0%
+        brightness: 100%
+        effect: none
+
+  on_idle:
+    - light.turn_off: status_led
+    # Restart MWW when intercom call ends (resilience)
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+
+  on_hangup:
+    - light.turn_off: status_led
+
+  on_call_failed:
+    - light.turn_on:
+        id: status_led
+        red: 100%
+        green: 0%
+        blue: 0%
+        brightness: 70%
+        effect: none
+    - delay: 2s
+    - light.turn_off: status_led
+
+# =============================================================================
+# Template Buttons (exposed to HA card)
+# =============================================================================
+button:
+  - platform: template
+    name: Call
+    id: call_button
+    icon: mdi:phone
+    on_press:
+      - intercom_api.call_toggle: intercom
+
+  - platform: template
+    name: Next Contact
+    id: next_contact_button
+    icon: mdi:skip-next
+    on_press:
+      - intercom_api.next_contact: intercom
+
+  - platform: template
+    name: Previous Contact
+    id: prev_contact_button
+    icon: mdi:skip-previous
+    on_press:
+      - intercom_api.prev_contact: intercom
+
+  - platform: template
+    name: Decline
+    id: decline_button
+    icon: mdi:phone-hangup
+    on_press:
+      - intercom_api.decline_call: intercom
+
+  - platform: template
+    name: Refresh Contacts
+    id: refresh_contacts_button
+    icon: mdi:refresh
+    on_press:
+      - lambda: |-
+          auto devices = id(ha_active_devices).state;
+          if (!devices.empty()) {
+            id(intercom).set_contacts(devices);
+          }
+
+  - platform: restart
+    name: Restart
+
+# =============================================================================
+# Physical Buttons
+# =============================================================================
+binary_sensor:
+  - platform: status
+    name: Status
+
+  # BOOT button (GPIO0) — multi-click
+  - platform: gpio
+    name: Boot Button
+    id: boot_button
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_multi_click:
+      # Single click: call toggle if intercom active, otherwise VA start/stop
+      - timing:
+          - ON for at most 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                not:
+                  - intercom_api.is_idle: intercom
+              then:
+                - intercom_api.call_toggle: intercom
+              else:
+                - if:
+                    condition:
+                      voice_assistant.is_running:
+                    then:
+                      - voice_assistant.stop:
+                    else:
+                      - voice_assistant.start:
+      # Double click: next contact
+      - timing:
+          - ON for 50ms to 500ms
+          - OFF for at most 300ms
+          - ON for 50ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - intercom_api.next_contact: intercom
+      # Long press (1-3s): toggle mute
+      - timing:
+          - ON for 1s to 3s
+          - OFF for at least 300ms
+        then:
+          - switch.toggle: mute
+
+  # KEY1 (TCA9555 EXIO9) — Call/Answer/Hangup
+  - platform: gpio
+    name: Key 1
+    id: key1
+    internal: true
+    pin:
+      tca9555: io_expander
+      number: 9
+      inverted: true
+      mode:
+        input: true
+    on_press:
+      - intercom_api.call_toggle: intercom
+
+  # KEY2 (TCA9555 EXIO10) — Next contact
+  - platform: gpio
+    name: Key 2
+    id: key2
+    internal: true
+    pin:
+      tca9555: io_expander
+      number: 10
+      inverted: true
+      mode:
+        input: true
+    on_press:
+      - intercom_api.next_contact: intercom
+
+  # KEY3 (TCA9555 EXIO11) — Decline / Previous contact
+  - platform: gpio
+    name: Key 3
+    id: key3
+    internal: true
+    pin:
+      tca9555: io_expander
+      number: 11
+      inverted: true
+      mode:
+        input: true
+    on_press:
+      - if:
+          condition:
+            intercom_api.is_ringing: intercom
+          then:
+            - intercom_api.decline_call: intercom
+          else:
+            - intercom_api.prev_contact: intercom
+
+# =============================================================================
+# Switches
+# =============================================================================
+switch:
+  # Speaker amplifier enable (TCA9555 EXIO8)
+  - platform: gpio
+    id: speaker_enable
+    internal: true
+    restore_mode: ALWAYS_ON
+    pin:
+      tca9555: io_expander
+      number: 8
+      mode:
+        output: true
+
+  # Mute (stops MWW)
+  - platform: template
+    name: Mute
+    id: mute
+    icon: mdi:microphone-off
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - micro_wake_word.stop:
+      - light.turn_on:
+          id: status_led
+          red: 100%
+          green: 0%
+          blue: 0%
+          brightness: 60%
+          effect: "Fast Pulse"
+      - delay: 2s
+      - light.turn_on:
+          id: status_led
+          red: 100%
+          green: 0%
+          blue: 0%
+          brightness: 30%
+          effect: none
+    on_turn_off:
+      # Restart MWW on unmute (resilience)
+      - micro_wake_word.start:
+      - light.turn_on:
+          id: status_led
+          red: 0%
+          green: 100%
+          blue: 0%
+          brightness: 60%
+          effect: "Fast Pulse"
+      - delay: 2s
+      - light.turn_off: status_led
+
+  # Intercom switches
+  - platform: intercom_api
+    intercom_api_id: intercom
+    auto_answer:
+      name: Auto Answer
+      icon: mdi:phone-in-talk
+    aec:
+      name: AEC
+      icon: mdi:ear-hearing
+
+# =============================================================================
+# Number Entities
+# =============================================================================
+number:
+  - platform: intercom_api
+    intercom_api_id: intercom
+    speaker_volume:
+      name: Speaker Volume
+    mic_gain:
+      name: Mic Gain
+
+# =============================================================================
+# WS2812 RGB LED Ring (7 LEDs)
+# =============================================================================
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    name: Status LED
+    pin: GPIO38
+    num_leds: 7
+    rgb_order: GRB
+    chipset: WS2812
+    default_transition_length: 200ms
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 1200ms
+          update_interval: 1200ms
+          min_brightness: 20%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 400ms
+          update_interval: 400ms
+          min_brightness: 20%
+          max_brightness: 100%
+      - strobe:
+          name: "Ringing"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      - strobe:
+          name: "Calling"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 300ms
+            - state: false
+              duration: 700ms
+
+# =============================================================================
+# Text Sensors
+# =============================================================================
+text_sensor:
+  # Contact list from HA integration
+  - platform: homeassistant
+    id: ha_active_devices
+    entity_id: sensor.intercom_active_devices
+    attribute: device_list
+    on_value:
+      then:
+        - lambda: |-
+            if (!x.empty()) {
+              id(intercom).set_contacts(x);
+            }
+
+# =============================================================================
+# Sensors
+# =============================================================================
+sensor:
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: Uptime
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: internal_temperature
+    name: CPU Temperature
+    update_interval: 60s
+    entity_category: diagnostic
