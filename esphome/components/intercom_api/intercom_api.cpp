@@ -15,6 +15,14 @@
 namespace esphome {
 namespace intercom_api {
 
+// Scale a 16-bit sample by a float gain with saturation clamping
+static inline int16_t scale_sample(int16_t sample, float gain) {
+  int32_t s = static_cast<int32_t>(sample * gain);
+  if (s > 32767) return 32767;
+  if (s < -32768) return -32768;
+  return static_cast<int16_t>(s);
+}
+
 static const char *const TAG = "intercom_api";
 
 void IntercomApi::setup() {
@@ -183,6 +191,7 @@ void IntercomApi::loop() {
         ESP_LOGI(TAG, "Outgoing call timeout after %u ms - sending STOP", this->ringing_timeout_ms_);
         // close_client_socket_() sends STOP before closing
         this->close_client_socket_();
+        this->set_active_(false);  // Stop mic/speaker (start() enabled them)
         this->state_ = ConnectionState::DISCONNECTED;
         this->end_call_(CallEndReason::TIMEOUT);
       }
@@ -744,8 +753,8 @@ void IntercomApi::end_call_(CallEndReason reason) {
     this->hangup_trigger_.trigger(reason_str);
   }
 
-  // Also fire legacy stop trigger
-  this->stop_trigger_.trigger();
+  // NOTE: stop_trigger_ is NOT fired here — set_active_(false) already fires it.
+  // Callers must ensure set_active_(false) is called before end_call_().
 
   this->set_call_state_(CallState::IDLE);
 }
@@ -1066,10 +1075,7 @@ void IntercomApi::speaker_task_() {
             const int16_t *src = reinterpret_cast<const int16_t *>(audio_chunk);
             size_t num_samples = read / sizeof(int16_t);
             for (size_t i = 0; i < num_samples; i++) {
-              int32_t scaled = static_cast<int32_t>(src[i] * this->volume_);
-              if (scaled > 32767) scaled = 32767;
-              if (scaled < -32768) scaled = -32768;
-              ref_scaled[i] = static_cast<int16_t>(scaled);
+              ref_scaled[i] = scale_sample(src[i], this->volume_);
             }
             this->spk_ref_buffer_->write(ref_scaled, read);
           } else {
@@ -1518,15 +1524,12 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
     int16_t converted[MAX_SAMPLES];
 
     for (size_t i = 0; i < num_samples; i++) {
-      int32_t sample = src[i];
+      int16_t s = src[i];
       if (this->dc_offset_removal_) {
-        this->dc_offset_ = ((this->dc_offset_ * 255) >> 8) + sample;
-        sample -= (this->dc_offset_ >> 8);
+        this->dc_offset_ = ((this->dc_offset_ * 255) >> 8) + s;
+        s = static_cast<int16_t>(s - (this->dc_offset_ >> 8));
       }
-      sample = static_cast<int32_t>(sample * this->mic_gain_);
-      if (sample > 32767) sample = 32767;
-      if (sample < -32768) sample = -32768;
-      converted[i] = static_cast<int16_t>(sample);
+      converted[i] = scale_sample(s, this->mic_gain_);
     }
 
     this->mic_buffer_->write(converted, num_samples * sizeof(int16_t));

@@ -18,6 +18,14 @@ namespace i2s_audio_duplex {
 
 static constexpr size_t BYTES_PER_SAMPLE = 2;
 
+// Scale a 16-bit sample by a float gain with saturation clamping
+static inline int16_t scale_sample(int16_t sample, float gain) {
+  int32_t s = static_cast<int32_t>(sample * gain);
+  if (s > 32767) return 32767;
+  if (s < -32768) return -32768;
+  return static_cast<int16_t>(s);
+}
+
 static const char *const TAG = "i2s_duplex";
 
 // Audio parameters
@@ -554,10 +562,7 @@ void I2SAudioDuplex::audio_task_() {
           // Apply pre-AEC mic attenuation for hot mics (ES8311)
           if (this->mic_attenuation_ != 1.0f) {
             for (size_t i = 0; i < out_frame_size; i++) {
-              int32_t s = static_cast<int32_t>(mic_buffer[i] * this->mic_attenuation_);
-              if (s > 32767) s = 32767;
-              if (s < -32768) s = -32768;
-              mic_buffer[i] = static_cast<int16_t>(s);
+              mic_buffer[i] = scale_sample(mic_buffer[i], this->mic_attenuation_);
             }
           }
 
@@ -595,10 +600,7 @@ void I2SAudioDuplex::audio_task_() {
               float ref_scale = this->aec_ref_volume_ * this->mic_attenuation_;
               if (ref_scale != 1.0f) {
                 for (size_t i = 0; i < out_frame_size; i++) {
-                  int32_t s = static_cast<int32_t>(spk_ref_buffer[i] * ref_scale);
-                  if (s > 32767) s = 32767;
-                  if (s < -32768) s = -32768;
-                  spk_ref_buffer[i] = static_cast<int16_t>(s);
+                  spk_ref_buffer[i] = scale_sample(spk_ref_buffer[i], ref_scale);
                 }
               }
             }
@@ -612,10 +614,7 @@ void I2SAudioDuplex::audio_task_() {
           // Apply mic gain
           if (this->mic_gain_ != 1.0f) {
             for (size_t i = 0; i < out_frame_size; i++) {
-              int32_t sample = static_cast<int32_t>(output_buffer[i] * this->mic_gain_);
-              if (sample > 32767) sample = 32767;
-              if (sample < -32768) sample = -32768;
-              output_buffer[i] = static_cast<int16_t>(sample);
+              output_buffer[i] = scale_sample(output_buffer[i], this->mic_gain_);
             }
           }
 
@@ -650,10 +649,7 @@ void I2SAudioDuplex::audio_task_() {
             // Apply speaker volume
             if (this->speaker_volume_ != 1.0f) {
               for (size_t i = 0; i < got_samples; i++) {
-                int32_t sample = static_cast<int32_t>(spk_buffer[i] * this->speaker_volume_);
-                if (sample > 32767) sample = 32767;
-                if (sample < -32768) sample = -32768;
-                spk_buffer[i] = static_cast<int16_t>(sample);
+                spk_buffer[i] = scale_sample(spk_buffer[i], this->speaker_volume_);
               }
             }
 

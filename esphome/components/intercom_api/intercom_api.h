@@ -41,7 +41,6 @@ namespace intercom_api {
 // TCP connection state (low-level)
 enum class ConnectionState : uint8_t {
   DISCONNECTED,
-  CONNECTING,
   CONNECTED,
   STREAMING,
 };
@@ -58,7 +57,6 @@ enum class CallState : uint8_t {
 
 // Hangup/failure reasons
 enum class CallEndReason : uint8_t {
-  NONE,
   LOCAL_HANGUP,
   REMOTE_HANGUP,
   DECLINED,
@@ -83,7 +81,6 @@ inline const char *call_state_to_str(CallState state) {
 
 inline const char *call_end_reason_to_str(CallEndReason reason) {
   switch (reason) {
-    case CallEndReason::NONE: return "";
     case CallEndReason::LOCAL_HANGUP: return "local_hangup";
     case CallEndReason::REMOTE_HANGUP: return "remote_hangup";
     case CallEndReason::DECLINED: return "declined";
@@ -199,15 +196,16 @@ class IntercomApi : public Component {
   std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
   std::string get_contacts_csv() const;
 
-  // Legacy triggers (backward compatible)
+  // Internal triggers (TCP lifecycle)
   Trigger<> *get_connect_trigger() { return &this->connect_trigger_; }
   Trigger<> *get_disconnect_trigger() { return &this->disconnect_trigger_; }
   Trigger<> *get_start_trigger() { return &this->start_trigger_; }
   Trigger<> *get_stop_trigger() { return &this->stop_trigger_; }
+
+  // Call state triggers (exposed to YAML)
   Trigger<> *get_ringing_trigger() { return &this->ringing_trigger_; }
   Trigger<> *get_streaming_trigger() { return &this->streaming_trigger_; }
   Trigger<> *get_idle_trigger() { return &this->idle_trigger_; }
-  // New FSM triggers
   Trigger<> *get_outgoing_call_trigger() { return &this->outgoing_call_trigger_; }
   Trigger<> *get_answered_trigger() { return &this->answered_trigger_; }
   Trigger<std::string> *get_hangup_trigger() { return &this->hangup_trigger_; }
@@ -377,19 +375,20 @@ class IntercomApi : public Component {
   size_t aec_mic_fill_{0};      // Current fill level in aec_mic_
 #endif
 
-  // Legacy triggers (backward compatible)
+  // Internal triggers (TCP lifecycle)
   Trigger<> connect_trigger_;
   Trigger<> disconnect_trigger_;
   Trigger<> start_trigger_;
   Trigger<> stop_trigger_;
+
+  // Call state triggers (exposed to YAML)
   Trigger<> ringing_trigger_;
   Trigger<> streaming_trigger_;
   Trigger<> idle_trigger_;
-  // New FSM triggers
-  Trigger<> outgoing_call_trigger_;   // We initiated a call
-  Trigger<> answered_trigger_;        // Call was answered (local or remote)
-  Trigger<std::string> hangup_trigger_;      // Call ended normally (reason string)
-  Trigger<std::string> call_failed_trigger_; // Call failed (reason string)
+  Trigger<> outgoing_call_trigger_;
+  Trigger<> answered_trigger_;
+  Trigger<std::string> hangup_trigger_;
+  Trigger<std::string> call_failed_trigger_;
 };
 
 // Switch for on/off control (simple - ESPHome handles restore)
