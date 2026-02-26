@@ -16,7 +16,8 @@ __pycache__/
 *.pyo
 
 # Private idle animation frames (offensive gesture)
-images/assistant/idle_*.png
+images/assistant/idle_[0-9]*.png
+images/idle_[0-9]*.png
 
 # Private YAML config (uses animated idle)
 xiaozhi-ball-v3-local.yaml
