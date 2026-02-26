@@ -1007,19 +1007,11 @@ Working configs tested on real hardware are included in the repository:
   - TOCTOU fixes: single atomic load of `client_.socket` in select loop and `call_state_` in accept condition
   - Removed duplicate `STOP` send in `stop()` (already sent by `close_client_socket_()`)
 
-- **intercom_native brand icons (HA 2026.3+)** — Brand icons now ship directly inside `custom_components/intercom_native/brand/` (`icon.png` 256×256, `icon@2x.png` 512×512). No longer depends on the `home-assistant/brands` CDN — works fully offline and in isolated networks as of Home Assistant 2026.3.
+- **Code cleanup & trigger unification** — Removed `client_mode_` and the connect/disconnect client-mode branch (never used in production). Unified triggers: `on_incoming_call` merged into `on_ringing`, `on_call_end` removed (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer and AEC switches.
 
-- **HACS support** — Repository is now compatible with HACS default store. Added `hacs.json`, GitHub Actions workflows for `hassfest` and `validate`, manifest key ordering and `iot_class` field.
-
-- **Code cleanup & trigger unification** — Removed dead code (`PROTOCOL_VERSION`, unused HA events/constants, `client_mode_` and connect/disconnect client-mode branch never used in production). Extracted shared helpers. Refactored duplicated TCP callbacks into instance methods. Unified triggers: `on_incoming_call` merged into `on_ringing`, `on_call_end` removed (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer and AEC switches.
-
-- **MWW sensitivity tuning** — Wake word model `hey_trowyayoh` tuned: `probability_cutoff` 0.80→0.15, `sliding_window_size` 5→3. Significantly better detection rate in real-world conditions with background noise.
-
-- **WiFi high performance** — `enable_high_performance: true` on all configs (512KB TCP windows, reduced latency for audio streaming).
+- **intercom_native HA integration refactor** — `websocket_api.py` restructured: 6 TCP session callbacks extracted from nested closures into `IntercomSession` instance methods (`_on_audio`, `_on_disconnected`, `_on_ringing`, `_on_answered`, `_on_stop_received`, `_on_error_received`); `_create_tcp_client()` factory and `_stop_device_sessions()` helper extracted (eliminates duplicate stop/decline logic in `websocket_stop` and `websocket_decline`). Dead code removed: `_set_incoming_caller()` function, `on_connected` callback from `tcp_client.py`, unused protocol/audio constants from `const.py` (`PROTOCOL_VERSION`, `FLAG_END`, `ERR_*`, `SAMPLE_RATE`, `BITS_PER_SAMPLE`, `PING_TIMEOUT`, `EVENT_*`). Frontend cleanup: all `console.log` debug output removed from `intercom-processor.js`, dead `_unsubscribeState` subscription removed from `intercom-card.js`. Manifest bumped to 2.0.5 with `hassfest`-compliant key ordering.
 
 - **Display & UI fixes** — SPI clock 40MHz (halves GC9A01A flush time), LVGL `buffer_size` 50%, instant page transitions via `lv_disp_load_scr()`. Fixed stale VA response text persisting on screen when media player starts later: LVGL reply labels now explicitly cleared when `text_response` is set to empty, preventing previous conversation text from reappearing hours later.
-
-- **Timer sound** — `timer_finished.flac` restored to native 48kHz (was accidentally downsampled to 16kHz in v2.0.5).
 
 ### v2.0.5
 
