@@ -19,8 +19,10 @@ __pycache__/
 images/assistant/idle_[0-9]*.png
 images/idle_[0-9]*.png
 
-# Private YAML config (uses animated idle)
+# Private YAML configs (WIP / local-only)
 xiaozhi-ball-v3-local.yaml
+waveshare-s3-audio-va-intercom.yaml
+waveshare-p4-touch-lcd-va-intercom.yaml
 
 # Brand images (submitted to home-assistant/brands repo)
 brands/
