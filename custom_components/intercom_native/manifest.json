@@ -1,13 +1,13 @@
 {
   "domain": "intercom_native",
   "name": "Intercom Native",
-  "version": "2.0.4",
   "codeowners": ["@n-IA-hane"],
   "config_flow": true,
   "dependencies": ["esphome", "http", "lovelace"],
   "documentation": "https://github.com/n-IA-hane/intercom-api",
-  "issue_tracker": "https://github.com/n-IA-hane/intercom-api/issues",
-  "iot_class": "local_push",
   "integration_type": "service",
-  "requirements": []
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/n-IA-hane/intercom-api/issues",
+  "requirements": [],
+  "version": "2.0.5"
 }
