@@ -1013,6 +1013,14 @@ Working configs tested on real hardware are included in the repository:
 
 - **Display & UI fixes** — SPI clock 40MHz (halves GC9A01A flush time), LVGL `buffer_size` 50%, instant page transitions via `lv_disp_load_scr()`. Fixed stale VA response text persisting on screen when media player starts later: LVGL reply labels now explicitly cleared when `text_response` is set to empty, preventing previous conversation text from reappearing hours later.
 
+**What's next — v2.2.0 and beyond**
+
+Two new Waveshare ESP32-S3 devices arrived, which opens up testing on a different hardware platform and codec. Upcoming work:
+
+- **Waveshare codec support** — Bring up the Waveshare audio codec and produce a ready-to-use YAML config, extending hardware coverage beyond the Xiaozhi Ball V3.
+- **ESP-AFE integration** — Replace the current `esp_aec` component with Espressif's full Audio Front-End pipeline, which bundles beamforming, noise suppression, and echo cancellation in a single optimized block. Initial attempts were not encouraging — ESP-AFE has strict memory layout requirements and interacts badly with FreeRTOS task pinning in ways that are not yet fully understood. This will take time to get right.
+- **ESP32-P4 testing** — The P4 has a dedicated audio DSP and significantly more RAM. Once the Waveshare bring-up is stable, testing will extend to P4 to explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
+
 ### v2.0.5
 
 - **i2s_audio_duplex: mixer compatibility fix** — Added `audio_output_callback_` forwarding from the I2S audio task to the duplex speaker. Without this, `platform: mixer` source speakers (va_speaker, intercom_speaker) never detect that audio has been played, staying stuck in `STATE_RUNNING` forever. This caused `media_player.is_announcing` to stay true indefinitely after TTS playback.
