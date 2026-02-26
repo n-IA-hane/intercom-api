@@ -224,33 +224,116 @@ i2s_audio_duplex:
 - L channel = DAC loopback (reference signal), R channel = ADC (microphone) — configurable via `reference_channel`
 - Reference is **sample-accurate** (same I2S frame as mic) → best possible AEC
 
-### Multi-Rate (48kHz Bus + 16kHz Processing)
+### Multi-Rate: 48kHz I2S Bus with FIR Decimation
 
-For codecs like ES8311 that work best at 48kHz, run the I2S bus at high rate while keeping mic/AEC/VA at 16kHz:
+Many audio codecs (ES8311, ES7210, WM8960) operate **natively at 48kHz**. Running the I2S bus at 16kHz forces the codec's internal PLL to generate a non-standard clock, which often results in audible artifacts, worse SNR, and suboptimal DAC/ADC performance. At 48kHz the codec produces noticeably cleaner audio — lower noise floor, better high-frequency response for TTS and media playback.
+
+The challenge: AEC (ESP-SR), Micro Wake Word (TFLite Micro), Voice Assistant STT, and intercom all require **16kHz** input. The solution is to run the I2S bus at 48kHz and internally decimate the mic path to 16kHz using a FIR anti-alias filter.
+
+#### Signal Flow
+
+```
+                    ┌─── Speaker path ──────────────────────────────→ I2S TX (48kHz)
+                    │    (native rate, no resampling)
+I2S bus: 48kHz ─────┤
+                    │    ┌─ FIR decimate ×3 ─┐
+                    └─── Mic path (48kHz) ───┘──→ 16kHz ──→ AEC / MWW / VA / intercom
+```
+
+The FIR decimator uses a **31-tap lowpass filter** (Kaiser window β=8.0, cutoff 7.5kHz, ~60dB stopband attenuation) implemented in **float32** on the ESP32-S3 hardware FPU. It is applied separately to the mic channel and the AEC reference channel. CPU overhead at ratio=3 is approximately **0.5% of Core 0** per frame — negligible.
+
+If `output_sample_rate` is omitted the decimation ratio is 1 and the FIR code is **completely bypassed** — zero overhead, fully backward compatible.
+
+| Parameter | Value |
+|-----------|-------|
+| FIR taps | 31 |
+| Window | Kaiser β=8.0 |
+| Cutoff | 7.5kHz (below Nyquist @ 16kHz) |
+| Stopband attenuation | ~60dB |
+| Arithmetic | float32 (hardware FPU) |
+| Supported ratios | 2, 3, 4, 5, 6 |
+| CPU overhead (ratio=3) | ~0.5% of Core 0 per frame |
+| Memory per decimator | 31 × 4 = 124 bytes delay line |
+
+#### i2s_audio_duplex Config
 
 ```yaml
 i2s_audio_duplex:
   id: i2s_duplex
-  sample_rate: 48000             # I2S bus rate (DAC quality)
-  output_sample_rate: 16000      # Mic/AEC/MWW/VA rate (FIR decimation x3)
+  # ... pins ...
+  sample_rate: 48000           # I2S bus rate — ES8311/ES7210 native, best DAC quality
+  output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR filter
+  aec_id: aec_component
   use_stereo_aec_reference: true
   aec_reference_delay_ms: 10
+
+esp_aec:
+  id: aec_component
+  sample_rate: 16000           # AEC always operates on 16kHz audio
+  filter_length: 4
+  mode: voip_low_cost
 ```
 
-The speaker receives 48kHz audio (via `resampler` speaker), while the microphone output is internally decimated to 16kHz using a 31-tap FIR anti-alias filter. AEC, MWW, VA, and intercom all receive 16kHz as before.
+#### Speaker Path: ResamplerSpeaker + Mixer
 
-If `output_sample_rate` is omitted, no decimation occurs — fully backward compatible.
+Since the I2S bus runs at 48kHz the speaker must also receive 48kHz audio. ESPHome's `resampler` speaker platform transparently converts any input rate to the target rate:
+
+```yaml
+speaker:
+  # Hardware output — writes 48kHz PCM to the I2S bus
+  - platform: i2s_audio_duplex
+    id: hw_speaker
+    i2s_audio_duplex_id: i2s_duplex
+
+  # Mixer combines VA TTS and intercom at 48kHz
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    source_speakers:
+      - id: va_speaker_mix
+        timeout: 10s
+      - id: intercom_speaker_mix
+        timeout: 10s
+
+  # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
+  - platform: resampler
+    id: va_speaker               # VA TTS and media player output here
+    output_speaker: va_speaker_mix
+
+  - platform: resampler
+    id: intercom_speaker         # 16kHz intercom RX upsampled → 48kHz
+    output_speaker: intercom_speaker_mix
+```
+
+The `resampler` platform uses polyphase interpolation. For 16kHz→48kHz with default settings (`filters: 16, taps: 16`), CPU overhead on ESP32-S3 is approximately 2% of Core 1 during playback. If you see `[W] component took a long time` warnings for `resampler.speaker` you can try `filters: 8, taps: 8` to reduce CPU at a minimal quality cost, or `filters: 4, taps: 4` for minimal CPU.
+
+#### How Home Assistant Knows to Send 48kHz
+
+HA reads the `sample_rate` from the `announcement_pipeline` in the `media_player` config and transcodes audio accordingly via `ffmpeg_proxy`:
+
+```yaml
+media_player:
+  - platform: speaker
+    announcement_pipeline:
+      speaker: va_speaker        # Points to the resampler speaker
+      format: FLAC
+      sample_rate: 48000         # HA will transcode TTS and media to FLAC 48kHz
+      num_channels: 1
+```
+
+For TTS, HA requests the TTS engine at 48kHz directly. For radio/media streams, `ffmpeg_proxy` transcodes the source to FLAC 48kHz before sending it to the device. In both cases audio arrives at the ESP at 48kHz and goes to the speaker without any intermediate downsampling.
 
 **Configure ES8311 register in on_boot:**
 ```yaml
 esphome:
   on_boot:
     - lambda: |-
-        uint8_t data[2] = {0x44, 0x48};  // ADCDAT_SEL = DACL+ADC
+        uint8_t data[2] = {0x44, 0x48};  // ADCDAT_SEL = DACL+ADC (stereo AEC ref)
         id(i2c_bus).write(0x18, data, 2);
 ```
 
-> **Note**: Without `use_stereo_aec_reference`, the component uses a ring buffer with configurable delay (`aec_reference_delay_ms`, default 80ms) for the reference signal. The stereo mode eliminates timing issues entirely.
+> **Note**: Without `use_stereo_aec_reference`, the component uses a ring buffer with configurable delay (`aec_reference_delay_ms`, default 80ms) for the AEC reference signal. The stereo mode eliminates timing issues and is strongly recommended for ES8311.
 
 ## Pin Mapping by Codec
 
