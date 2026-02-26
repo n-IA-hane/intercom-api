@@ -996,11 +996,30 @@ Working configs tested on real hardware are included in the repository:
 
 ### v2.1.0 (Current)
 
-- **48kHz I2S bus with FIR decimation** — I2S bus runs at 48kHz (ES8311 native rate) for better TTS/media quality. Internal 31-tap FIR decimation (Kaiser beta=8.0) produces 16kHz for AEC, MWW, VA STT, and intercom. Speaker path stays at 48kHz with ESPHome resampler for upsampling. Configurable via `sample_rate` / `output_sample_rate`. Backward compatible (omit `output_sample_rate` = no change).
-- **Code cleanup & trigger unification** — Removed dead code (`PROTOCOL_VERSION`, unused HA events/constants), extracted shared helpers (`prefill_aec_ref_buffer_()`, `_stop_device_sessions()`), refactored duplicated TCP callbacks into instance methods, consolidated `MAX_LISTENERS` in shared header. Unified triggers: removed `on_incoming_call` (merged into `on_ringing`) and `on_call_end` (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer/AEC switches.
-- **WiFi high performance** — Added `enable_high_performance: true` to all WiFi configs (512KB TCP windows, improved TCP throughput for audio streaming).
-- **Display improvements** — SPI 40MHz, LVGL buffer_size 50%, instant page transitions via `draw_display`. Removed redundant label clearing and deferred rendering. LVGL replaces manual C++ monitor code for significantly better CPU utilization.
-- **Fixes** — Speaker sample_rate default (was hardcoded 16kHz, now inherits bus rate at runtime), timer sound restored to native 48kHz (was downsampled to 16kHz in v2.0.5), intercom UI page transitions, previous_mode save on outgoing calls.
+- **48kHz I2S bus with FIR decimation** — I2S bus now runs at 48kHz (ES8311 native rate) for noticeably better TTS and media audio quality. Internal 32-tap FIR anti-alias filter (Kaiser β=8.0, ~60dB stopband attenuation, float arithmetic on ESP32-S3 hardware FPU) decimates mic/AEC/VA/intercom paths to 16kHz. Speaker path stays at 48kHz end-to-end: HA transcodes media via ffmpeg_proxy directly to FLAC 48kHz, ESPHome resampler handles any other source rate. New `output_sample_rate` config option; fully backward compatible (omitting it = no change, ratio=1 = zero-overhead memcpy path).
+
+- **FreeRTOS task layout overhaul — MWW detection fully restored** — Audio task (`i2s_duplex`) moved from Core 1 (priority 9) to **Core 0 (priority 19)**, matching the canonical Espressif AEC pattern. MWW inference (unpinned, priority 3) now naturally schedules to Core 1, completely free from AEC interference. Result: **10/10 wake word detection during TTS** (was 1/10). AEC CPU cost is ~42% of Core 0 per 16ms frame regardless — the fix is architectural separation, not mode change. LVGL/display rendering on Core 1 is also no longer preempted by AEC every 16ms. Intercom task priorities aligned to canonical values (srv: 5, tx: 5, spk: 4).
+
+- **Audio reliability fixes (code audit)** — Several race conditions and stuck-state bugs eliminated:
+  - `ERROR` message handler now properly closes socket, resets FSM, and fires `on_call_failed` (was a no-op, leaving ESP stuck in OUTGOING state)
+  - `OUTGOING` timeout now calls `set_active_(false)` before `end_call_()`, stopping mic/speaker on timeout
+  - `dc_offset_` IIR state reset between call sessions (was accumulating across sessions, causing audio startup glitch on radio streams)
+  - TOCTOU fixes: single atomic load of `client_.socket` in select loop and `call_state_` in accept condition
+  - Removed duplicate `STOP` send in `stop()` (already sent by `close_client_socket_()`)
+
+- **intercom_native brand icons (HA 2026.3+)** — Brand icons now ship directly inside `custom_components/intercom_native/brand/` (`icon.png` 256×256, `icon@2x.png` 512×512). No longer depends on the `home-assistant/brands` CDN — works fully offline and in isolated networks as of Home Assistant 2026.3.
+
+- **HACS support** — Repository is now compatible with HACS default store. Added `hacs.json`, GitHub Actions workflows for `hassfest` and `validate`, manifest key ordering and `iot_class` field.
+
+- **Code cleanup & trigger unification** — Removed dead code (`PROTOCOL_VERSION`, unused HA events/constants, `client_mode_` and connect/disconnect client-mode branch never used in production). Extracted shared helpers. Refactored duplicated TCP callbacks into instance methods. Unified triggers: `on_incoming_call` merged into `on_ringing`, `on_call_end` removed (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer and AEC switches.
+
+- **MWW sensitivity tuning** — Wake word model `hey_trowyayoh` tuned: `probability_cutoff` 0.80→0.15, `sliding_window_size` 5→3. Significantly better detection rate in real-world conditions with background noise.
+
+- **WiFi high performance** — `enable_high_performance: true` on all configs (512KB TCP windows, reduced latency for audio streaming).
+
+- **Display & UI fixes** — SPI clock 40MHz (halves GC9A01A flush time), LVGL `buffer_size` 50%, instant page transitions via `lv_disp_load_scr()`. Fixed stale VA response text persisting on screen when media player starts later: LVGL reply labels now explicitly cleared when `text_response` is set to empty, preventing previous conversation text from reappearing hours later.
+
+- **Timer sound** — `timer_finished.flac` restored to native 48kHz (was accidentally downsampled to 16kHz in v2.0.5).
 
 ### v2.0.5
 
