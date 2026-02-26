@@ -295,9 +295,9 @@ void I2SAudioDuplex::start() {
       "i2s_duplex",
       8192,
       this,
-      9,
+      19,  // Match ESPHome stock speaker prio; above lwIP(18), below Event Loop(20)
       &this->audio_task_handle_,
-      1
+      0   // Core 0: canonical Espressif AEC pattern; frees Core 1 for MWW inference
   );
 
   ESP_LOGI(TAG, "Duplex audio started");
@@ -502,21 +502,11 @@ void I2SAudioDuplex::audio_task_() {
 
     while (this->duplex_running_) {
 
-#if DEBUG_RT_DIAG
-      // DEBUG_RT_DIAG — remove this entire block when done debugging
-      uint32_t diag_loop_start = esp_timer_get_time();
-      uint32_t diag_rx_start, diag_tx_start, diag_aec_start;
-      uint32_t diag_rx_us = 0, diag_tx_us = 0, diag_aec_us = 0;
-#endif
-
       // ══════════════════════════════════════════════════════════════════
       // MICROPHONE READ (RX)
       // Bus rate: reads bus_frame_size samples (mono) or bus_frame_size*2 (stereo)
       // Output: out_frame_size samples at output rate after decimation
       // ══════════════════════════════════════════════════════════════════
-#if DEBUG_RT_DIAG
-      diag_rx_start = esp_timer_get_time();  // DEBUG_RT_DIAG
-#endif
       if (this->rx_handle_) {
         esp_err_t err = i2s_channel_read(this->rx_handle_, rx_buffer, rx_frame_bytes,
                                           &bytes_read, I2S_IO_TIMEOUT_MS);
@@ -572,11 +562,6 @@ void I2SAudioDuplex::audio_task_() {
             }
           }
 
-#if DEBUG_RT_DIAG
-          diag_rx_us = esp_timer_get_time() - diag_rx_start;  // DEBUG_RT_DIAG
-          diag_aec_start = esp_timer_get_time();               // DEBUG_RT_DIAG
-#endif
-
 #ifdef USE_ESP_AEC
           if (this->aec_ != nullptr && this->aec_enabled_ && this->aec_->is_initialized() &&
               spk_ref_buffer != nullptr && aec_output != nullptr && this->speaker_running_ &&
@@ -626,11 +611,6 @@ void I2SAudioDuplex::audio_task_() {
         }
       }
 
-#if DEBUG_RT_DIAG
-      diag_aec_us = esp_timer_get_time() - diag_aec_start;  // DEBUG_RT_DIAG
-      diag_tx_start = esp_timer_get_time();                  // DEBUG_RT_DIAG
-#endif
-
       // ══════════════════════════════════════════════════════════════════
       // SPEAKER WRITE (TX)
       // Read bus-rate data from ring buffer, apply volume, write to I2S
@@ -678,51 +658,6 @@ void I2SAudioDuplex::audio_task_() {
           }
         }
       }
-
-#if DEBUG_RT_DIAG
-      // DEBUG_RT_DIAG — remove this entire block when done debugging
-      // Track speaker buffer occupancy and underruns
-      if (this->speaker_buffer_ && this->speaker_running_) {
-        uint32_t spk_avail = this->speaker_buffer_->available();
-        if (spk_avail < this->diag_spk_buf_min_) this->diag_spk_buf_min_ = spk_avail;
-        if (spk_avail == 0) this->diag_underrun_count_++;
-      }
-
-      // Accumulate loop timing
-      diag_tx_us = esp_timer_get_time() - diag_tx_start;
-      uint32_t diag_loop_us = esp_timer_get_time() - diag_loop_start;
-      if (diag_loop_us > this->diag_loop_max_us_) this->diag_loop_max_us_ = diag_loop_us;
-      if (diag_rx_us > this->diag_rx_max_us_) this->diag_rx_max_us_ = diag_rx_us;
-      if (diag_tx_us > this->diag_tx_max_us_) this->diag_tx_max_us_ = diag_tx_us;
-      if (diag_aec_us > this->diag_aec_max_us_) this->diag_aec_max_us_ = diag_aec_us;
-      this->diag_loop_sum_us_ += diag_loop_us;
-      this->diag_loop_count_++;
-
-      // Report every 2 seconds
-      uint32_t now_ms = millis();
-      if (now_ms - this->diag_last_report_ms_ >= DIAG_REPORT_INTERVAL_MS && this->diag_loop_count_ > 0) {
-        uint32_t avg_us = this->diag_loop_sum_us_ / this->diag_loop_count_;
-        uint32_t spk_buf_size = this->speaker_buffer_ ? this->speaker_buffer_->free() + this->speaker_buffer_->available() : 0;
-        ESP_LOGW(TAG, "[DIAG] loop: avg=%luus max=%luus | rx_max=%luus aec_max=%luus tx_max=%luus | "
-                      "underruns=%lu spk_buf_min=%lu/%lu | loops=%lu",
-                 (unsigned long) avg_us, (unsigned long) this->diag_loop_max_us_,
-                 (unsigned long) this->diag_rx_max_us_, (unsigned long) this->diag_aec_max_us_,
-                 (unsigned long) this->diag_tx_max_us_,
-                 (unsigned long) this->diag_underrun_count_,
-                 (unsigned long) this->diag_spk_buf_min_, (unsigned long) spk_buf_size,
-                 (unsigned long) this->diag_loop_count_);
-        // Reset for next interval
-        this->diag_loop_max_us_ = 0;
-        this->diag_loop_sum_us_ = 0;
-        this->diag_loop_count_ = 0;
-        this->diag_rx_max_us_ = 0;
-        this->diag_tx_max_us_ = 0;
-        this->diag_aec_max_us_ = 0;
-        this->diag_underrun_count_ = 0;
-        this->diag_spk_buf_min_ = UINT32_MAX;
-        this->diag_last_report_ms_ = now_ms;
-      }
-#endif
 
       // Yield to lower-priority tasks
       delay(1);

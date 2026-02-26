@@ -60,15 +60,23 @@ Speaker buffer ──→ volume scaling ──→ I2S TX (speaker)
 
 | Task | Core | Priority | Role |
 |------|------|----------|------|
-| `audio_task` | Core 1 | 9 | I2S read/write + AEC processing |
+| `i2s_duplex` (audio_task) | **Core 0** | **19** | I2S read/write + FIR decimation + AEC |
+| `intercom_tx` | Core 0 | 5 | Mic→network + AEC during intercom calls |
+| `intercom_spk` | Core 0 | 4 | Network→speaker, AEC reference feed |
+| `intercom_srv` | Core 1 | 5 | TCP RX, call FSM (stays Core 1 for LVGL callback safety) |
 | `mixer` (ESPHome) | Any | 10 | Mix VA + intercom audio to speaker |
-| `MWW inference` (ESPHome) | Any | 3 | Wake word TFLite micro inference |
-| ESPHome main loop | Core 0 | 1 | Switches, sensors, display, etc. |
+| `MWW inference` (ESPHome) | Unpinned | 3 | Wake word TFLite micro inference |
+| ESPHome main loop / LVGL | Core 1 | 1 | Switches, sensors, display, etc. |
+| WiFi driver (ESP-IDF) | Core 0 | 23 | System — can briefly preempt audio_task |
+
+**Core allocation rationale:**
+- **Core 0**: All real-time audio (I2S + AEC + intercom processing). WiFi (prio 23) can briefly preempt `i2s_duplex` (prio 19) for sub-millisecond bursts — acceptable for 16ms frames with DMA buffering.
+- **Core 1**: LVGL display rendering + ESPHome main loop + intercom TCP. MWW (unpinned, prio 3) naturally schedules here since Core 0 is occupied by audio tasks, giving wake word inference a dedicated core free from AEC interference.
 
 **CPU budget** (256 samples @ 16kHz = 16ms per frame):
-- Without AEC: ~300µs processing (< 2% CPU)
-- With AEC active: ~7ms processing (~42% of Core 1)
-- `vTaskDelay(3)` after each frame yields 3ms to MWW and main loop
+- Without AEC: ~300µs processing (< 2% of a core)
+- With AEC active: ~7ms per frame (~42% of Core 0)
+- `vTaskDelay(3)` after each frame yields Core 0 to `intercom_tx` and `intercom_spk`
 
 ## Requirements
 
@@ -178,16 +186,25 @@ voice_assistant:
 
 ### AEC CPU Impact
 
-The ESP-SR AEC (closed-source Espressif library) has a **fixed CPU cost per frame** regardless of `filter_length`:
+The ESP-SR AEC (closed-source Espressif library) has a **fixed CPU cost per frame** regardless of `filter_length`. Costs vary significantly by mode (official ESP-SR benchmark on ESP32-S3):
+
+| Mode | CPU Feed task | CPU Fetch task | Notes |
+|------|--------------|----------------|-------|
+| `sr_low_cost` | 8.4% | 15.0% | For speech recognition only (no speaker playing) |
+| `sr_high_perf` | 9.4% | 14.9% | **AVOID on ESP32-S3**: exhausts DMA memory → SPI err 101 |
+| `voip_low_cost` | ~60% | 8.2% | ✅ Recommended — full VoIP echo cancellation, least memory |
+| `voip_high_perf` | ~64% | 8.2% | Full VoIP, slightly heavier — no benefit over low_cost on S3 |
+
+**Use `voip_low_cost`** for any setup where the speaker plays while the mic is active (VA, intercom, radio). The SR modes are designed for noise suppression only (no active speaker) and have better CPU numbers but inadequate echo cancellation for full-duplex use.
 
 | Metric | Value |
 |--------|-------|
 | Frame size | 256 samples (16ms at 16kHz) |
 | AEC processing time | ~7ms avg, ~10ms peak |
-| CPU per core | ~42% of Core 1 |
+| CPU per core | ~42% of Core 0 |
 | `filter_length` impact on CPU | None (tested: 4 vs 8 = identical) |
 
-The `audio_task` uses `vTaskDelay(3)` after each frame to yield 3ms of CPU to lower-priority tasks (MWW inference at priority 3, ESPHome main loop at priority 1). Without this yield, MWW cannot detect wake words during TTS and switches/display become unresponsive.
+**MWW + AEC coexistence**: With `i2s_duplex` on Core 0 (prio 19), MWW (unpinned, prio 3) naturally schedules to Core 1 where it has no competition from AEC. This achieves 10/10 wake word detection even during active TTS — no vTaskDelay tricks needed. The `vTaskDelay(3)` in `audio_task` still runs to yield Core 0 to intercom tasks.
 
 ### ES8311 Digital Feedback AEC (Recommended)
 
@@ -366,8 +383,8 @@ binary_sensor:
 - **Sample Format**: 16-bit signed PCM, mono TX / stereo RX (ES8311 feedback mode)
 - **DMA Buffers**: 8 buffers x 512 frames for smooth streaming (~256ms total)
 - **Speaker Buffer**: 8192 bytes ring buffer (~256ms at 16kHz mono), scales with decimation ratio (24576 bytes at 48kHz)
-- **Task Priority**: 9 (below WiFi/BLE at ~18, below mixer at 10)
-- **Core Affinity**: Pinned to Core 1 (same core as WiFi and main loop for I2S ISR locality)
+- **Task Priority**: 19 (matches ESPHome stock i2s_audio speaker; above lwIP at 18, below WiFi at 23)
+- **Core Affinity**: Pinned to Core 0 (canonical Espressif AEC pattern; frees Core 1 for MWW inference and LVGL)
 - **AEC Gating**: Processes AEC only when speaker had real audio within last 250ms
 - **Thread Safety**: `speaker_running_` and `aec_enabled_` are `std::atomic<bool>`, `mic_ref_count_` is `std::atomic<int>`
 
@@ -389,14 +406,12 @@ binary_sensor:
 3. Adjust `filter_length` (4 for integrated codec, 8 for separate speaker)
 
 ### MWW Not Detecting During TTS
-1. Use `pre_aec: true` microphone for MWW (raw mic, not AEC-processed)
-2. AEC suppresses voice during TTS — MWW needs raw audio
-3. Check `vTaskDelay` in audio_task (3ms minimum for MWW inference headroom)
+1. Use `pre_aec: true` microphone for MWW (raw mic, not AEC-processed) — AEC suppresses voice during TTS
+2. Verify `i2s_duplex` task is on **Core 0** (prio 19). MWW (unpinned, prio 3) will then schedule to Core 1, away from AEC. With the wrong core assignment, MWW gets starved for 7ms out of every 16ms frame → ~1/10 detection rate.
+3. Do NOT use `sr_high_perf` AEC mode — it causes SPI errors and the lighter CPU cost is not worth the loss of echo cancellation during TTS.
 
 ### Switches/Display Slow With AEC On
-1. AEC uses ~42% of Core 1 CPU. The `vTaskDelay(3)` in audio_task yields CPU to the main loop.
-2. ESPHome mixer runs at priority 10 (unpinned) and can starve lower-priority tasks.
-3. This is expected during heavy TTS playback with AEC active.
+With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Core 1. This issue is resolved by correct core assignment. If you still see display slowness, check that no other high-priority task is pinned to Core 1.
 
 ### SPI Errors (err 101) With AEC
 1. Use `mode: voip_low_cost` — `sr_high_perf` exhausts DMA memory on ESP32-S3
@@ -405,9 +420,9 @@ binary_sensor:
 
 ## Known Limitations
 
-- **Media files should match bus sample rate**: For best quality, use media files at the bus `sample_rate` (e.g. 48kHz). The `resampler` speaker handles conversion, but native rate avoids resampling artifacts.
-- **AEC startup glitch on streaming**: With AEC active, radio/media streams may stutter for ~1s at startup then stabilize. AEC CPU overhead causes speaker buffer underrun during pipeline warmup. Workaround: under investigation.
-- **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker is silent) is the workaround.
+- **Media files should match bus sample rate**: For best quality, use media files at the bus `sample_rate` (e.g. 48kHz). The `resampler` speaker handles conversion from any rate, but native rate avoids resampling artifacts.
+- **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless** — these components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
+- **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker has been silent for >250ms) is the workaround.
 
 ## License
 

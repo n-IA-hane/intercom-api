@@ -94,16 +94,16 @@ void IntercomApi::setup() {
 #endif
 
   // Create server task (Core 1) - handles TCP connections and receiving
-  // Highest priority (7) - RX must never starve, data must flow immediately
-  // 8KB stack: callbacks trigger YAML automations that may do LVGL operations
+  // Priority 5: i2s_duplex moved to Core 0, so Core 1 is audio-free; prio 5 sufficient
+  // 8KB stack: callbacks trigger YAML automations that may do LVGL operations (must stay Core 1)
   BaseType_t ok = xTaskCreatePinnedToCore(
       IntercomApi::server_task,
       "intercom_srv",
       8192,
       this,
-      7,  // Highest priority - RX must win always
+      5,  // Core 1 now audio-free; lower prio gives MWW (prio 3) and LVGL better headroom
       &this->server_task_handle_,
-      1  // Core 1
+      1  // Core 1 - must stay here: YAML callbacks may call LVGL (not thread-safe across cores)
   );
 
   if (ok != pdPASS) {
@@ -113,16 +113,16 @@ void IntercomApi::setup() {
   }
 
   // Create TX task (Core 0) - handles mic capture, AEC processing, and sending
-  // High priority (6) for low latency mic→network
+  // Priority 5: matches Espressif canonical AEC feed-task priority (esp-skainet pattern)
   // Stack increased to 12KB for AEC processing (uses FFT internally)
   ok = xTaskCreatePinnedToCore(
       IntercomApi::tx_task,
       "intercom_tx",
       12288,  // 12KB stack for AEC processing
       this,
-      6,  // High priority for low latency
+      5,  // Canonical AEC priority; i2s_duplex(19) on Core 0 handles real-time, TX is best-effort
       &this->tx_task_handle_,
-      0  // Core 0
+      0  // Core 0 - same as i2s_duplex; intercom AEC and main AEC are mutually exclusive
   );
 
   if (ok != pdPASS) {
@@ -132,15 +132,15 @@ void IntercomApi::setup() {
   }
 
   // Create speaker task (Core 0) - handles playback
-  // Lower priority (4) - if speaker blocks, it shouldn't starve TX
+  // Lower priority (4) - if speaker blocks, it shouldn't starve TX or i2s_duplex
   ok = xTaskCreatePinnedToCore(
       IntercomApi::speaker_task,
       "intercom_spk",
       8192,  // Larger stack for audio buffer
       this,
-      4,  // Lower priority than TX
+      4,  // Lower priority than TX(5) and i2s_duplex(19)
       &this->speaker_task_handle_,
-      0  // Core 0 - same as TX, keeps Core 1 free for RX
+      0  // Core 0 - same as i2s_duplex and TX; Core 1 reserved for LVGL and MWW
   );
 
   if (ok != pdPASS) {
