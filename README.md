@@ -1015,11 +1015,11 @@ Working configs tested on real hardware are included in the repository:
 
 **What's next — v2.2.0 and beyond**
 
-Two new Waveshare ESP32-S3 devices arrived, which opens up testing on a different hardware platform and codec. Upcoming work:
+Two new Waveshare devices arrived: the [ESP32-S3-AUDIO-Board](https://www.waveshare.com/esp32-s3-audio-board.htm) (dedicated AI smart speaker devkit with dual-mic array) and the [ESP32-P4-WiFi6-Touch-LCD](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm) (RISC-V dual-core, 32MB PSRAM, 32MB Flash, large touch display). Both happen to use the same codec pair — **ES8311** (DAC) + **ES7210** (4-ch ADC/echo cancellation) — which means codec driver work done for one will carry over to the other. Upcoming work:
 
-- **Waveshare codec support** — Bring up the Waveshare audio codec and produce a ready-to-use YAML config, extending hardware coverage beyond the Xiaozhi Ball V3.
+- **Waveshare ES8311/ES7210 support** — Bring up the ES7210 4-channel ADC (not currently used in the Xiaozhi Ball V3 config) and produce ready-to-use YAML configs for both boards, extending hardware coverage beyond the Xiaozhi Ball V3.
 - **ESP-AFE integration** — Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component — both will remain supported. Initial attempts were not encouraging: ESP-AFE has strict memory layout requirements and interacts badly with FreeRTOS task pinning in ways that are not yet fully understood. This will take time to get right.
-- **ESP32-P4 testing** — The P4 has a dedicated audio DSP and significantly more RAM. Once the Waveshare bring-up is stable, testing will extend to P4 to explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
+- **ESP32-P4 testing** — The P4 has a dedicated audio DSP and significantly more RAM than the S3. Testing will explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
 
 ### v2.0.5
 
