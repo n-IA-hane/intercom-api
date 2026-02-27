@@ -647,7 +647,7 @@ sequenceDiagram
 
 ### Single-Bus Codecs (ES8311, ES8388, WM8960)
 
-Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this**. Use the included `i2s_audio_duplex` component:
+Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use the included `i2s_audio_duplex` component:
 
 ```yaml
 external_components:
