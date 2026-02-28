@@ -25,7 +25,6 @@ images/assistant/idle.mp4
 
 # Private YAML configs (WIP / local-only)
 xiaozhi-ball-v3-local.yaml
-waveshare-s3-audio-va-intercom.yaml
 waveshare-p4-touch-lcd-va-intercom.yaml
 
 # Brand images (submitted to home-assistant/brands repo)
