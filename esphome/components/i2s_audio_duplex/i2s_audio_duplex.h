@@ -118,8 +118,8 @@ class I2SAudioDuplex : public Component {
 
   // AEC setter
   void set_aec(esp_aec::EspAec *aec);
-  void set_aec_enabled(bool enabled) { this->aec_enabled_ = enabled; }
-  bool is_aec_enabled() const { return this->aec_enabled_; }
+  void set_aec_enabled(bool enabled) { this->aec_enabled_.store(enabled, std::memory_order_relaxed); }
+  bool is_aec_enabled() const { return this->aec_enabled_.load(std::memory_order_relaxed); }
 
   // Volume control (0.0 - 1.0)
   void set_mic_gain(float gain) { this->mic_gain_ = gain; }
@@ -158,22 +158,22 @@ class I2SAudioDuplex : public Component {
   void add_raw_mic_data_callback(MicDataCallback callback) { this->raw_mic_callbacks_.push_back(callback); }
   void start_mic();
   void stop_mic();
-  bool is_mic_running() const { return this->mic_ref_count_.load() > 0; }
+  bool is_mic_running() const { return this->mic_ref_count_.load(std::memory_order_relaxed) > 0; }
 
   // Speaker interface — data arrives at bus rate (from mixer/resampler)
   size_t play(const uint8_t *data, size_t len, TickType_t ticks_to_wait = portMAX_DELAY);
   void start_speaker();
   void stop_speaker();
-  bool is_speaker_running() const { return this->speaker_running_; }
-  void set_speaker_paused(bool paused) { this->speaker_paused_ = paused; }
-  bool is_speaker_paused() const { return this->speaker_paused_; }
+  bool is_speaker_running() const { return this->speaker_running_.load(std::memory_order_relaxed); }
+  void set_speaker_paused(bool paused) { this->speaker_paused_.store(paused, std::memory_order_relaxed); }
+  bool is_speaker_paused() const { return this->speaker_paused_.load(std::memory_order_relaxed); }
 
   // Full duplex control
   void start();  // Start both mic and speaker
   void stop();   // Stop both
 
-  bool is_running() const { return this->duplex_running_; }
-  bool has_i2s_error() const { return this->has_i2s_error_; }
+  bool is_running() const { return this->duplex_running_.load(std::memory_order_relaxed); }
+  bool has_i2s_error() const { return this->has_i2s_error_.load(std::memory_order_relaxed); }
 
   // Speaker output callback registration (for mixer pending_playback_frames tracking)
   void add_speaker_output_callback(SpeakerOutputCallback callback) {

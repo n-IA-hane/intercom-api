@@ -27,14 +27,13 @@
 #   10.1": model: WAVESHARE-P4-NANO-10.1                  (800x1280, backlight GPIO26)
 #
 # Audio pipeline:
-#   ES7210 mic → I2S DIN → mic_component (left channel = mic 0)
-#                                ├── MWW (hey_trowyayoh)
-#                                ├── VA (noise_suppression + auto_gain)
-#                                └── Intercom (+ AEC via esp_aec)
+#   ES7210 mic → I2S DIN (48kHz) → FIR decimate x3 ─┐
+#                                                     ├─ mic_raw (pre-AEC)  → MWW
+#                                                     └─ AEC → mic_aec → VA / Intercom TX
 #
-#   TTS (16kHz) → va_speaker ──┐
-#                               ├── audio_mixer → hw_speaker → I2S DOUT → ES8311
-#   Intercom    → ic_speaker ──┘
+#   TTS/media (48kHz FLAC) → va_speaker (resampler) ──┐
+#                                                       ├── audio_mixer (48kHz) → hw_speaker → I2S DOUT → ES8311
+#   Intercom RX → intercom_speaker (resampler) ────────┘
 #
 # Touch UI:
 #   VA pages:      Status display (idle, listening, thinking, replying, error)
@@ -173,7 +172,7 @@ external_components:
   - source:
       type: local
       path: esphome/components
-    components: [intercom_api, esp_aec]
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
 # I2C Bus (shared: ES8311, ES7210, GT9271)
@@ -186,15 +185,19 @@ i2c:
     scan: false
 
 # =============================================================================
-# Audio Codecs
+# Audio: i2s_audio_duplex (48kHz bus, FIR decimation to 16kHz for mic/AEC/VA)
 # =============================================================================
+# ES8311 (DAC) and ES7210 (ADC) share BCLK/LRCLK/MCLK with separate data pins.
+# ES7210 is a standalone ADC chip — no digital loopback possible.
+# AEC reference comes from ring buffer (use_stereo_aec_reference: false).
+
 audio_dac:
   - platform: es8311
     id: es8311_dac
     i2c_id: internal_i2c
     address: 0x18
     bits_per_sample: 16bit
-    sample_rate: 16000
+    sample_rate: 48000           # Match I2S bus rate
     use_mclk: true
     mic_gain: 24DB       # ES8311 ADC gain (unused — ES7210 handles mic)
 
@@ -204,52 +207,66 @@ audio_adc:
     i2c_id: internal_i2c
     address: 0x40
     bits_per_sample: 16bit
-    sample_rate: 16000
+    sample_rate: 48000           # Match I2S bus rate
     mic_gain: 24dB       # 0-37.5dB. Increase if too quiet.
 
-# =============================================================================
-# I2S Audio Bus + Microphone + Speaker Pipeline
-# =============================================================================
-# ES8311 and ES7210 share BCLK/LRCLK/MCLK with separate data pins.
-i2s_audio:
-  - id: audio_bus
-    i2s_lrclk_pin: GPIO10
-    i2s_bclk_pin: GPIO12
-    i2s_mclk_pin: GPIO13
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000       # AEC always at 16kHz (= output_sample_rate)
+  mode: voip_low_cost
+  filter_length: 4         # 64ms tail — sufficient for integrated codec path
 
-# Microphone (ES7210 ADC, left channel = mic 0)
-# Dual MEMS mic array, but ESPHome uses single channel (no beamforming).
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO10
+  i2s_bclk_pin: GPIO12
+  i2s_mclk_pin: GPIO13
+  i2s_din_pin: GPIO9           # From ES7210 ADC
+  i2s_dout_pin: GPIO11         # To ES8311 DAC
+  sample_rate: 48000           # I2S bus at ES8311/ES7210 native rate
+  output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
+  aec_id: aec_processor
+  use_stereo_aec_reference: false  # ES7210 is a separate ADC — no digital loopback
+  aec_reference_delay_ms: 80       # Ring buffer delay (tune if echo remains)
+
+# mic_aec: post-AEC, for VA STT and intercom TX
+# mic_raw: pre-AEC, for MWW (neural model handles speaker echo better)
 microphone:
-  - platform: i2s_audio
-    id: mic_component
-    i2s_audio_id: audio_bus
-    i2s_din_pin: GPIO9
-    adc_type: external
-    sample_rate: 16000
-    bits_per_sample: 16bit
-    channel: left
+  - platform: i2s_audio_duplex
+    id: mic_aec
+    i2s_audio_duplex_id: i2s_duplex
+  - platform: i2s_audio_duplex
+    id: mic_raw
+    i2s_audio_duplex_id: i2s_duplex
+    pre_aec: true
 
-# Speaker pipeline: mixer with VA + Intercom sources
+# Speaker pipeline: i2s_audio_duplex → resampler → mixer (all at 48kHz)
 speaker:
-  - platform: i2s_audio
+  # Hardware output — writes 48kHz PCM to I2S bus
+  - platform: i2s_audio_duplex
     id: hw_speaker
-    i2s_audio_id: audio_bus
-    i2s_dout_pin: GPIO11
-    dac_type: external
-    audio_dac: es8311_dac
-    sample_rate: 16000
-    bits_per_sample: 16bit
-    channel: left
-    timeout: never
+    i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 48000
 
+  # Mixer combines VA TTS and intercom at 48kHz
   - platform: mixer
     id: audio_mixer
     output_speaker: hw_speaker
+    num_channels: 1
     source_speakers:
-      - id: va_speaker
+      - id: va_speaker_mix
         timeout: 10s
-      - id: intercom_speaker
+      - id: intercom_speaker_mix
         timeout: 10s
+
+  # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
+  - platform: resampler
+    id: va_speaker
+    output_speaker: va_speaker_mix
+
+  - platform: resampler
+    id: intercom_speaker         # Intercom RX (16kHz) upsampled → 48kHz
+    output_speaker: intercom_speaker_mix
 
 # =============================================================================
 # Media Player (TTS via VA speaker)
@@ -261,7 +278,7 @@ media_player:
     internal: false
     announcement_pipeline:
       speaker: va_speaker
-      sample_rate: 16000
+      sample_rate: 48000
       format: FLAC
     on_announcement:
       - if:
@@ -286,19 +303,11 @@ media_player:
             - script.execute: draw_display
 
 # =============================================================================
-# AEC (for intercom calls)
-# =============================================================================
-esp_aec:
-  id: aec_processor
-  mode: voip_low_cost
-  filter_length: 4
-
-# =============================================================================
 # Micro Wake Word
 # =============================================================================
 micro_wake_word:
   id: mww
-  microphone: mic_component
+  microphone: mic_raw
   on_wake_word_detected:
     - light.turn_on:
         id: display_backlight
@@ -321,7 +330,7 @@ micro_wake_word:
 # =============================================================================
 voice_assistant:
   id: va
-  microphone: mic_component
+  microphone: mic_aec
   media_player: speaker_media_player
   micro_wake_word: mww
   noise_suppression_level: 2
@@ -452,10 +461,8 @@ voice_assistant:
 intercom_api:
   id: intercom
   mode: full
-  microphone: mic_component
+  microphone: mic_aec          # Post-AEC: no echo in transmitted audio
   speaker: intercom_speaker
-  dc_offset_removal: false      # ES7210 ADC handles DC internally
-  aec_id: aec_processor
   ringing_timeout: 30s
 
   on_outgoing_call:
@@ -1619,8 +1626,12 @@ switch:
     auto_answer:
       name: Auto Answer
       icon: mdi:phone-in-talk
+
+  # AEC switch via i2s_audio_duplex (avoids double-processing with mic_aec)
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     aec:
-      name: AEC
+      name: Echo Cancellation
       icon: mdi:ear-hearing
 
 # =============================================================================

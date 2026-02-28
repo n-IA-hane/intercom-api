@@ -1,6 +1,6 @@
 # ESPHome Intercom API
 
-A flexible intercom framework for ESP32 devices - from simple full-duplex doorbell to PBX-like multi-device system.
+A complete voice assistant + intercom solution for ESP32 devices. This repository provides everything needed for a fully functional experience: full-duplex intercom, Voice Assistant with wake word detection, echo cancellation, LVGL display with animations, and ready-to-flash YAML configs for tested hardware — from simple doorbell to PBX-like multi-device system.
 
 ![Dashboard Preview](readme-img/dashboard.png)
 
@@ -97,7 +97,7 @@ This component was born from the limitations of [esphome-intercom](https://githu
 
 ### Bundled Components
 
-This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration, dual mic paths (raw + AEC-processed), and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome/components/i2s_audio_duplex/README.md) for full details.
+This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration (stereo digital feedback, TDM hardware reference, or ring buffer), dual mic paths (raw + AEC-processed), FIR decimation for multi-rate operation, and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome/components/i2s_audio_duplex/README.md) for full details.
 
 ---
 
@@ -631,10 +631,11 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | Microphone | Speaker | I2S Mode | Component | VA/MWW |
-|--------|------------|---------|----------|-----------|--------|
-| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Yes (mixer speaker) |
-| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | Yes (dual mic path) |
+| Device | Microphone | Speaker | I2S Mode | Component | AEC Reference | VA/MWW |
+|--------|------------|---------|----------|-----------|---------------|--------|
+| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) |
+| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) |
+| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
 
@@ -985,8 +986,9 @@ Working configs tested on real hardware are included in the repository:
 
 | File | Device | Features |
 |------|--------|----------|
-| [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display |
+| [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
 | [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
+| [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
 | [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
 | [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
 
@@ -994,7 +996,19 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.1.0 (Current)
+### v2.1.1 (Current)
+
+- **Waveshare ESP32-S3-AUDIO-Board support** — Full VA + MWW + Intercom on the Waveshare ESP32-S3-AUDIO-Board (ES8311 DAC + ES7210 4-ch ADC). Ready-to-flash YAML config included (`waveshare-s3-audio-va-intercom.yaml`).
+
+- **TDM hardware AEC reference** — New `use_tdm_reference` mode for boards with ES7210 multi-channel ADC. ES7210 operates in TDM mode with one slot carrying the voice mic and another carrying the DAC analog output (via MIC3). Reference is sample-aligned from the same I2S frame — no ring buffer delay needed. I2S uses `I2S_SLOT_MODE_STEREO` for TDM (MONO only puts slot 0 in DMA). ES8311 reads/writes slot 0 as standard I2S.
+
+- **AEC reference volume fix** — Research confirmed that both ES8311 digital feedback (stereo loopback) and ES7210 TDM analog capture provide reference signals that already include hardware DAC volume. The previous `aec_reference_volume` scaling was double-attenuating the reference in these modes, degrading echo cancellation. Now: `aec_reference_volume` is only applied in ring buffer mode (raw PCM before DAC). Stereo and TDM modes apply only `mic_attenuation` for level matching.
+
+- **Robustness improvements** — Ring buffer race condition fix (atomic request flags for deferred reset), AEC buffer allocation checks, task deletion UB fix (`task_exited_` atomic flag), I2S persistent error recovery (consecutive error counter), speaker ref buffer allocation guard for stereo/TDM modes (saves 25-32KB RAM).
+
+- **Relaxed atomics** — All `std::atomic` operations use `memory_order_relaxed` (safe on ESP32-S3 cache-coherent Xtensa, eliminates unnecessary MEMW fence instructions in the audio hot loop).
+
+### v2.1.0
 
 - **48kHz I2S bus with FIR decimation** — I2S bus now runs at 48kHz (ES8311 native rate) for noticeably better TTS and media audio quality. Internal 32-tap FIR anti-alias filter (Kaiser β=8.0, ~60dB stopband attenuation, float arithmetic on ESP32-S3 hardware FPU) decimates mic/AEC/VA/intercom paths to 16kHz. Speaker path stays at 48kHz end-to-end: HA transcodes media via ffmpeg_proxy directly to FLAC 48kHz, ESPHome resampler handles any other source rate. New `output_sample_rate` config option; fully backward compatible (omitting it = no change, ratio=1 = zero-overhead memcpy path).
 
@@ -1015,11 +1029,8 @@ Working configs tested on real hardware are included in the repository:
 
 **What's next — v2.2.0 and beyond**
 
-Two new Waveshare devices arrived: the [ESP32-S3-AUDIO-Board](https://www.waveshare.com/esp32-s3-audio-board.htm) (dedicated AI smart speaker devkit with dual-mic array) and the [ESP32-P4-WiFi6-Touch-LCD](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm) (RISC-V dual-core, 32MB PSRAM, 32MB Flash, large touch display). Both happen to use the same codec pair — **ES8311** (DAC) + **ES7210** (4-ch ADC/echo cancellation) — which means codec driver work done for one will carry over to the other. Upcoming work:
-
-- **Waveshare ES8311/ES7210 support** — Bring up the ES7210 4-channel ADC (not currently used in the Xiaozhi Ball V3 config) and produce ready-to-use YAML configs for both boards, extending hardware coverage beyond the Xiaozhi Ball V3.
-- **ESP-AFE integration** — Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component — both will remain supported. Initial attempts were not encouraging: ESP-AFE has strict memory layout requirements and interacts badly with FreeRTOS task pinning in ways that are not yet fully understood. This will take time to get right.
-- **ESP32-P4 testing** — The P4 has a dedicated audio DSP and significantly more RAM than the S3. Testing will explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
+- **ESP-AFE integration** — Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component — both will remain supported. Noise suppression would particularly benefit analog reference setups (Waveshare ES7210 TDM) where ADC noise floor is higher than digital feedback (ES8311 stereo).
+- **ESP32-P4 testing** — The [ESP32-P4-WiFi6-Touch-LCD](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm) (RISC-V dual-core, 32MB PSRAM, 32MB Flash, large touch display) uses the same ES8311 + ES7210 codec pair as the Waveshare S3 Audio. The P4 has significantly more RAM and a dedicated audio DSP. Testing will explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
 
 ### v2.0.5
 
