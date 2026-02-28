@@ -15,10 +15,12 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Private idle animation frames (offensive gesture, two-digit suffix: idle_0X.png)
+# Private idle animation frames (offensive gesture)
 images/assistant/idle_0[0-9].png
 images/idle_0[0-9].png
+images/assistant/f_off_*.png
 # Source video (not needed in repo)
+images/assistant/idle_off.mp4
 images/assistant/idle.mp4
 
 # Private YAML configs (WIP / local-only)

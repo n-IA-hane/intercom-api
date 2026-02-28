@@ -133,7 +133,7 @@ speaker:
 | `sample_rate` | int | 16000 | I2S bus sample rate (8000-48000) |
 | `output_sample_rate` | int | - | Mic/AEC output rate. If set, enables FIR decimation (must divide `sample_rate` evenly, max ratio 6) |
 | `aec_id` | ID | - | Reference to `esp_aec` component for echo cancellation |
-| `aec_reference_delay_ms` | int | 80 | AEC reference delay in ms (10 for stereo feedback, 80 for ring buffer) |
+| `aec_reference_delay_ms` | int | 80 | AEC reference delay in ms for ring buffer mode (typically 60-100ms). Ignored when `use_stereo_aec_reference` is enabled. |
 | `mic_attenuation` | float | 1.0 | Pre-AEC mic attenuation (0.01-1.0, for hot mics like ES8311) |
 | `use_stereo_aec_reference` | bool | false | ES8311 digital feedback mode (see below) |
 | `reference_channel` | string | left | Which stereo channel carries AEC reference: `left` or `right` |
@@ -160,8 +160,7 @@ i2s_audio_duplex:
   id: i2s_duplex
   # ... pins ...
   aec_id: aec_component
-  use_stereo_aec_reference: true   # ES8311 only
-  aec_reference_delay_ms: 10       # Stereo feedback = sample-aligned
+  use_stereo_aec_reference: true   # ES8311 only — reference is sample-aligned, no delay needed
 
 microphone:
   # Post-AEC: echo-cancelled audio for VA STT and intercom
@@ -216,13 +215,13 @@ i2s_audio_duplex:
   # ... pins ...
   aec_id: aec_component
   use_stereo_aec_reference: true  # ES8311 digital feedback
-  aec_reference_delay_ms: 10      # Minimal delay (sample-aligned)
 ```
 
 **How it works:**
 - ES8311 register 0x44 is configured to output DAC+ADC on ASDOUT as stereo
 - L channel = DAC loopback (reference signal), R channel = ADC (microphone) — configurable via `reference_channel`
 - Reference is **sample-accurate** (same I2S frame as mic) → best possible AEC
+- `aec_reference_delay_ms` is **ignored** in this mode — the reference comes directly from the I2S RX deinterleave, not from the ring buffer
 
 ### Multi-Rate: 48kHz I2S Bus with FIR Decimation
 
@@ -264,8 +263,7 @@ i2s_audio_duplex:
   sample_rate: 48000           # I2S bus rate — ES8311/ES7210 native, best DAC quality
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR filter
   aec_id: aec_component
-  use_stereo_aec_reference: true
-  aec_reference_delay_ms: 10
+  use_stereo_aec_reference: true    # Reference from I2S RX stereo deinterleave (no delay needed)
 
 esp_aec:
   id: aec_component

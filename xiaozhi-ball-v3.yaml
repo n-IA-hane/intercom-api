@@ -1950,104 +1950,104 @@ image:
     type: RGB565
     transparency: alpha_channel
 
-  # Idle animation frames (20 frames, ~80ms each, yawn @ 6.67fps)
-  - file: images/assistant/idle_0.png
-    id: idle_0
+  # Idle animation frames (20 frames, yawn @ 5fps)
+  - file: images/assistant/yawn_00.png
+    id: yawn_00
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_1.png
-    id: idle_1
+  - file: images/assistant/yawn_01.png
+    id: yawn_01
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_2.png
-    id: idle_2
+  - file: images/assistant/yawn_02.png
+    id: yawn_02
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_3.png
-    id: idle_3
+  - file: images/assistant/yawn_03.png
+    id: yawn_03
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_4.png
-    id: idle_4
+  - file: images/assistant/yawn_04.png
+    id: yawn_04
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_5.png
-    id: idle_5
+  - file: images/assistant/yawn_05.png
+    id: yawn_05
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_6.png
-    id: idle_6
+  - file: images/assistant/yawn_06.png
+    id: yawn_06
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_7.png
-    id: idle_7
+  - file: images/assistant/yawn_07.png
+    id: yawn_07
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_8.png
-    id: idle_8
+  - file: images/assistant/yawn_08.png
+    id: yawn_08
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_9.png
-    id: idle_9
+  - file: images/assistant/yawn_09.png
+    id: yawn_09
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_10.png
-    id: idle_10
+  - file: images/assistant/yawn_10.png
+    id: yawn_10
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_11.png
-    id: idle_11
+  - file: images/assistant/yawn_11.png
+    id: yawn_11
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_12.png
-    id: idle_12
+  - file: images/assistant/yawn_12.png
+    id: yawn_12
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_13.png
-    id: idle_13
+  - file: images/assistant/yawn_13.png
+    id: yawn_13
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_14.png
-    id: idle_14
+  - file: images/assistant/yawn_14.png
+    id: yawn_14
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_15.png
-    id: idle_15
+  - file: images/assistant/yawn_15.png
+    id: yawn_15
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_16.png
-    id: idle_16
+  - file: images/assistant/yawn_16.png
+    id: yawn_16
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_17.png
-    id: idle_17
+  - file: images/assistant/yawn_17.png
+    id: yawn_17
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_18.png
-    id: idle_18
+  - file: images/assistant/yawn_18.png
+    id: yawn_18
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/idle_19.png
-    id: idle_19
+  - file: images/assistant/yawn_19.png
+    id: yawn_19
     resize: 240x240
     type: RGB565
     transparency: opaque
@@ -2206,67 +2206,67 @@ lvgl:
     - id: idle_page
       bg_color: 0x000000
       widgets:
-        # Yawn: fwd 0→19 + 2s hold (17×idle_19) + bwd 18→0 = 55 frames @ 120ms = 6.6s
+        # Yawn: fwd 0→19 + 2s hold (17×yawn_19) + bwd 18→0 = 55 frames @ 120ms = 6.6s
         - animimg:
             id: idle_anim
             align: CENTER
             width: 240
             height: 240
             src:
-              - idle_0
-              - idle_1
-              - idle_2
-              - idle_3
-              - idle_4
-              - idle_5
-              - idle_6
-              - idle_7
-              - idle_8
-              - idle_9
-              - idle_10
-              - idle_11
-              - idle_12
-              - idle_13
-              - idle_14
-              - idle_15
-              - idle_16
-              - idle_17
-              - idle_18
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_19
-              - idle_18
-              - idle_17
-              - idle_16
-              - idle_15
-              - idle_14
-              - idle_13
-              - idle_12
-              - idle_11
-              - idle_10
-              - idle_9
-              - idle_8
-              - idle_7
-              - idle_6
-              - idle_5
-              - idle_4
-              - idle_3
-              - idle_2
-              - idle_1
+              - yawn_00
+              - yawn_01
+              - yawn_02
+              - yawn_03
+              - yawn_04
+              - yawn_05
+              - yawn_06
+              - yawn_07
+              - yawn_08
+              - yawn_09
+              - yawn_10
+              - yawn_11
+              - yawn_12
+              - yawn_13
+              - yawn_14
+              - yawn_15
+              - yawn_16
+              - yawn_17
+              - yawn_18
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_19
+              - yawn_18
+              - yawn_17
+              - yawn_16
+              - yawn_15
+              - yawn_14
+              - yawn_13
+              - yawn_12
+              - yawn_11
+              - yawn_10
+              - yawn_09
+              - yawn_08
+              - yawn_07
+              - yawn_06
+              - yawn_05
+              - yawn_04
+              - yawn_03
+              - yawn_02
+              - yawn_01
             duration: 6600ms
             auto_start: false
         - label:
