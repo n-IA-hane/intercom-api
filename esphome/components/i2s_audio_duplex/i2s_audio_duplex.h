@@ -6,6 +6,7 @@
 #include "esphome/core/ring_buffer.h"
 
 #include <driver/i2s_std.h>
+#include <driver/i2s_tdm.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -146,6 +147,12 @@ class I2SAudioDuplex : public Component {
   void set_reference_channel_right(bool right) { this->ref_channel_right_ = right; }
   bool get_reference_channel_right() const { return this->ref_channel_right_; }
 
+  // TDM hardware reference: ES7210 in TDM mode with one slot carrying DAC feedback
+  void set_use_tdm_reference(bool use) { this->use_tdm_ref_ = use; }
+  void set_tdm_total_slots(uint8_t n) { this->tdm_total_slots_ = n; }
+  void set_tdm_mic_slot(uint8_t slot) { this->tdm_mic_slot_ = slot; }
+  void set_tdm_ref_slot(uint8_t slot) { this->tdm_ref_slot_ = slot; }
+
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
   void add_raw_mic_data_callback(MicDataCallback callback) { this->raw_mic_callbacks_.push_back(callback); }
@@ -242,6 +249,12 @@ class I2SAudioDuplex : public Component {
   uint32_t aec_ref_delay_ms_{80}; // AEC reference delay in ms (80 for separate I2S, 20-40 for ES8311)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
+
+  // TDM hardware reference (ES7210 in TDM mode)
+  bool use_tdm_ref_{false};
+  uint8_t tdm_total_slots_{4};
+  uint8_t tdm_mic_slot_{0};    // TDM slot index for voice mic
+  uint8_t tdm_ref_slot_{1};    // TDM slot index for AEC reference
 
   // AEC gating: only run echo canceller while speaker has recent real audio.
   uint32_t last_speaker_audio_ms_{0};

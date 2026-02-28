@@ -28,6 +28,10 @@ CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
+CONF_USE_TDM_REFERENCE = "use_tdm_reference"
+CONF_TDM_TOTAL_SLOTS = "tdm_total_slots"
+CONF_TDM_MIC_SLOT = "tdm_mic_slot"
+CONF_TDM_REF_SLOT = "tdm_ref_slot"
 CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
@@ -53,6 +57,36 @@ def _validate_sample_rates(config):
             raise cv.Invalid(
                 f"Decimation ratio {ratio} (={sr}/{osr}) exceeds maximum of 6"
             )
+    return config
+
+
+def _validate_tdm_config(config):
+    """Validate TDM reference configuration."""
+    use_tdm = config.get(CONF_USE_TDM_REFERENCE, False)
+    use_stereo = config.get(CONF_USE_STEREO_AEC_REF, False)
+
+    if use_tdm and use_stereo:
+        raise cv.Invalid(
+            "use_tdm_reference and use_stereo_aec_reference are mutually exclusive"
+        )
+
+    if use_tdm:
+        total_slots = config.get(CONF_TDM_TOTAL_SLOTS, 4)
+        mic_slot = config.get(CONF_TDM_MIC_SLOT, 0)
+        ref_slot = config.get(CONF_TDM_REF_SLOT, 1)
+
+        if mic_slot == ref_slot:
+            raise cv.Invalid(
+                f"tdm_mic_slot ({mic_slot}) and tdm_ref_slot ({ref_slot}) must differ"
+            )
+
+        max_slot = max(mic_slot, ref_slot)
+        if total_slots <= max_slot:
+            raise cv.Invalid(
+                f"tdm_total_slots ({total_slots}) must be > {max_slot} "
+                f"(highest slot index)"
+            )
+
     return config
 
 
@@ -87,8 +121,14 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_USE_STEREO_AEC_REF, default=False): cv.boolean,
         # Which stereo channel carries the AEC reference (default: left)
         cv.Optional(CONF_REFERENCE_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
+        # TDM hardware reference: ES7210 in TDM mode with one slot carrying DAC feedback
+        cv.Optional(CONF_USE_TDM_REFERENCE, default=False): cv.boolean,
+        cv.Optional(CONF_TDM_TOTAL_SLOTS, default=4): cv.int_range(min=2, max=8),
+        cv.Optional(CONF_TDM_MIC_SLOT, default=0): cv.int_range(min=0, max=7),
+        cv.Optional(CONF_TDM_REF_SLOT, default=1): cv.int_range(min=0, max=7),
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
+    _validate_tdm_config,
 )
 
 
@@ -121,6 +161,13 @@ async def to_code(config):
 
     # Reference channel selection (left or right)
     cg.add(var.set_reference_channel_right(config[CONF_REFERENCE_CHANNEL] == "right"))
+
+    # TDM hardware reference configuration
+    if config[CONF_USE_TDM_REFERENCE]:
+        cg.add(var.set_use_tdm_reference(True))
+        cg.add(var.set_tdm_total_slots(config[CONF_TDM_TOTAL_SLOTS]))
+        cg.add(var.set_tdm_mic_slot(config[CONF_TDM_MIC_SLOT]))
+        cg.add(var.set_tdm_ref_slot(config[CONF_TDM_REF_SLOT]))
 
     # Link AEC if configured
     if CONF_AEC_ID in config:
