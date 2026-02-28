@@ -34,7 +34,7 @@ using MicDataCallback = std::function<void(const uint8_t *data, size_t len)>;
 using SpeakerOutputCallback = std::function<void(uint32_t frames, int64_t timestamp)>;
 
 // FIR coefficients: 32-tap (31 original + 1 zero pad), cutoff=7500Hz, fs=48kHz, Kaiser beta=8.0
-// Unity DC gain, ~60dB stopband attenuation, symmetric (linear phase)
+// Unity DC gain, ~35dB stopband attenuation (adequate for speech), symmetric (linear phase)
 // Padded to power-of-2 so modulo can use bitmask (& 0x1F) instead of division
 static constexpr size_t FIR_NUM_TAPS = 32;
 static constexpr float FIR_COEFFS[FIR_NUM_TAPS] = {
@@ -223,7 +223,12 @@ class I2SAudioDuplex : public Component {
   std::atomic<int> mic_ref_count_{0};  // Reference-counted mic (multiple microphone instances)
   std::atomic<bool> speaker_running_{false};
   std::atomic<bool> speaker_paused_{false};
+  std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
   TaskHandle_t audio_task_handle_{nullptr};
+
+  // Cross-thread buffer operation requests (main thread → audio task, avoids concurrent ring buffer access)
+  std::atomic<bool> request_speaker_reset_{false};
+  std::atomic<bool> request_ref_prefill_{false};
 
   // Mic data callbacks
   std::vector<MicDataCallback> mic_callbacks_;       // Post-AEC (for VA/STT)
