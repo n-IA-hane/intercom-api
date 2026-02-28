@@ -794,6 +794,21 @@ globals:
 # SCRIPTS
 # =============================================================================
 script:
+  # Yawn: 38 frames at 120ms = 4.56s animation, then 25s pause. Repeat while idle.
+  - id: yawn_loop
+    mode: single
+    then:
+      - lambda: |-
+          lv_animimg_set_repeat_count(id(idle_anim), 0);
+          lv_animimg_start(id(idle_anim));
+          lv_anim_del(id(idle_anim), nullptr);
+      - while:
+          condition:
+            binary_sensor.is_on: is_idle_screen
+          then:
+            - lambda: lv_animimg_start(id(idle_anim));
+            - delay: 25s
+
   # Compute chord widths and text row positions from display dimensions (once at boot)
   - id: compute_layout_metrics
     then:
@@ -944,7 +959,6 @@ script:
       - lambda: |-
           // Determine target page
           lv_obj_t* target = nullptr;
-
           if (id(init_in_progress)) {
             target = id(initializing_page)->obj;
           } else if (!wifi::global_wifi_component->is_connected()) {
@@ -993,12 +1007,10 @@ script:
             lv_disp_load_scr(target);
           }
 
-      # Update dynamic labels after page routing (only when needed)
+      # Update dynamic labels when on idle page
       - if:
           condition:
-            lambda: |-
-              return id(current_mode) == 0 && id(voice_assistant_phase) == ${voice_assist_idle_phase_id}
-                     && !id(init_in_progress);
+            binary_sensor.is_on: is_idle_screen
           then:
             - script.execute: update_idle_labels
       # Self-heal: ensure MWW is active when in VA idle (catches any missed restarts)
@@ -1432,6 +1444,27 @@ binary_sensor:
   - platform: status
     id: node_status
     name: "Status"
+
+  # True when the VA idle page is the active screen
+  - platform: template
+    id: is_idle_screen
+    lambda: |-
+      return id(current_mode) == 0 &&
+             id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
+             !id(init_in_progress);
+    on_state:
+      then:
+        - if:
+            condition:
+              binary_sensor.is_on: is_idle_screen
+            then:
+              - script.execute: yawn_loop
+            else:
+              - script.stop: yawn_loop
+              - lambda: |-
+                  lv_anim_del(id(idle_anim), nullptr);
+                  lv_animimg_start(id(idle_anim));
+                  lv_anim_del(id(idle_anim), nullptr);
 
   # Physical GPIO0 button - PAGE AWARE (uses mode/state checks instead of display.is_displaying_page)
   - platform: gpio
@@ -1917,9 +1950,104 @@ image:
     type: RGB565
     transparency: alpha_channel
 
-  # Idle background (static)
-  - file: images/assistant/idle.png
-    id: idle_bg
+  # Idle animation frames (20 frames, ~80ms each, yawn @ 6.67fps)
+  - file: images/assistant/idle_0.png
+    id: idle_0
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_1.png
+    id: idle_1
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_2.png
+    id: idle_2
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_3.png
+    id: idle_3
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_4.png
+    id: idle_4
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_5.png
+    id: idle_5
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_6.png
+    id: idle_6
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_7.png
+    id: idle_7
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_8.png
+    id: idle_8
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_9.png
+    id: idle_9
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_10.png
+    id: idle_10
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_11.png
+    id: idle_11
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_12.png
+    id: idle_12
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_13.png
+    id: idle_13
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_14.png
+    id: idle_14
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_15.png
+    id: idle_15
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_16.png
+    id: idle_16
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_17.png
+    id: idle_17
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_18.png
+    id: idle_18
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  - file: images/assistant/idle_19.png
+    id: idle_19
     resize: 240x240
     type: RGB565
     transparency: opaque
@@ -2078,10 +2206,69 @@ lvgl:
     - id: idle_page
       bg_color: 0x000000
       widgets:
-        - image:
-            id: idle_image
+        # Yawn: fwd 0→19 + 2s hold (17×idle_19) + bwd 18→0 = 55 frames @ 120ms = 6.6s
+        - animimg:
+            id: idle_anim
             align: CENTER
-            src: idle_bg
+            width: 240
+            height: 240
+            src:
+              - idle_0
+              - idle_1
+              - idle_2
+              - idle_3
+              - idle_4
+              - idle_5
+              - idle_6
+              - idle_7
+              - idle_8
+              - idle_9
+              - idle_10
+              - idle_11
+              - idle_12
+              - idle_13
+              - idle_14
+              - idle_15
+              - idle_16
+              - idle_17
+              - idle_18
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_19
+              - idle_18
+              - idle_17
+              - idle_16
+              - idle_15
+              - idle_14
+              - idle_13
+              - idle_12
+              - idle_11
+              - idle_10
+              - idle_9
+              - idle_8
+              - idle_7
+              - idle_6
+              - idle_5
+              - idle_4
+              - idle_3
+              - idle_2
+              - idle_1
+            duration: 6600ms
+            auto_start: false
         - label:
             id: idle_battery_label
             align: TOP_MID
@@ -2625,6 +2812,7 @@ interval:
   - interval: 30s
     then:
       - script.execute: update_idle_labels
+
 
 # =============================================================================
 # END OF CONFIGURATION
