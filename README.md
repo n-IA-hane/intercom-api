@@ -89,6 +89,7 @@ This component was born from the limitations of [esphome-intercom](https://githu
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Auto Answer** - Configurable automatic call acceptance
+- **Ringtone on incoming calls** - Devices play a looping ringtone sound while ringing
 - **Volume Control** - Adjustable speaker volume and microphone gain
 - **Contact Management** - Select call destination from discovered devices
 - **Status LED** - Visual feedback for call states
@@ -636,12 +637,13 @@ sequenceDiagram
 | ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) |
 | Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) |
 | Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) |
+| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (dual mic path, LVGL touch display) |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
 
 ### Requirements
 
-- **ESP32-S3** with PSRAM (required for AEC)
+- **ESP32-S3** or **ESP32-P4** with PSRAM (required for AEC)
 - I2S microphone (INMP441, SPH0645, ES8311, etc.)
 - I2S speaker amplifier (MAX98357A, ES8311, etc.)
 - ESP-IDF framework (not Arduino)
@@ -989,6 +991,7 @@ Working configs tested on real hardware are included in the repository:
 | [`xiaozhi-ball-v3.yaml`](xiaozhi-ball-v3.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
 | [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
 | [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
+| [`waveshare-p4-touch-lcd-va-intercom.yaml`](waveshare-p4-touch-lcd-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
 | [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
 | [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
 
@@ -996,7 +999,24 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.1.1 (Current)
+### v2.1.2 (Current)
+
+- **Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 support** — Full VA + MWW + Intercom on the ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM) with 10.1" MIPI DSI capacitive touch display (GT9271), ES8311 DAC + ES7210 4-ch ADC, WiFi via ESP32-C6 co-processor (SDIO). Ready-to-flash YAML config included (`waveshare-p4-touch-lcd-va-intercom.yaml`).
+
+<table>
+  <tr>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="300"/><br/><b>Weather + VA</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="300"/><br/><b>Intercom + VA</b></td>
+  </tr>
+</table>
+
+- **P4 split-screen UI** — Portrait 800x1280 display divided into two halves: top is a swipeable LVGL tileview (weather page with current conditions, MDI icons, and 5-day forecast via `weather.get_forecasts` action; intercom page with contacts, call controls, and dynamic state groups), bottom is a touch-to-talk Voice Assistant area with animated avatar (20-frame idle animation), per-state images (listening, thinking, error), and mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix). Full overlay pages for no-WiFi, no-HA, and timer states.
+
+- **Ringtone on incoming calls** — Devices now play a looping ringtone sound (`sounds/ringtone.flac`) while in ringing state. Ringtone stops automatically when the call is answered, declined, or times out.
+
+- **LVGL image format fix (P4)** — Assistant animation images changed from `type: RGB` to `type: RGB565` with `byte_order: little_endian` to match the display's `LV_COLOR_DEPTH=16`. RGB (24-bit) with 16-bit color depth caused LVGL to assign `LV_IMG_CF_RGB888`, which the built-in decoder cannot open — resulting in "No data" placeholder.
+
+### v2.1.1
 
 - **Waveshare ESP32-S3-AUDIO-Board support** — Full VA + MWW + Intercom on the Waveshare ESP32-S3-AUDIO-Board (ES8311 DAC + ES7210 4-ch ADC). Ready-to-flash YAML config included (`waveshare-s3-audio-va-intercom.yaml`).
 
@@ -1030,7 +1050,7 @@ Working configs tested on real hardware are included in the repository:
 **What's next — v2.2.0 and beyond**
 
 - **ESP-AFE integration** — Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component — both will remain supported. Noise suppression would particularly benefit analog reference setups (Waveshare ES7210 TDM) where ADC noise floor is higher than digital feedback (ES8311 stereo).
-- **ESP32-P4 testing** — The [ESP32-P4-WiFi6-Touch-LCD](https://www.waveshare.com/esp32-p4-wifi6-touch-lcd-7-8-10.1.htm) (RISC-V dual-core, 32MB PSRAM, 32MB Flash, large touch display) uses the same ES8311 + ES7210 codec pair as the Waveshare S3 Audio. The P4 has significantly more RAM and a dedicated audio DSP. Testing will explore whether its hardware accelerators can take AEC and noise suppression off the application cores entirely.
+- **ESP32-P4 hardware DSP** — The P4 has a dedicated audio DSP that could potentially offload AEC and noise suppression from the application cores entirely. Initial support is already shipping (v2.1.2), further optimization will explore the hardware accelerators.
 
 ### v2.0.5
 

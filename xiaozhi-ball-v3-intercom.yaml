@@ -102,9 +102,6 @@ api:
 ota:
   - platform: esphome
 
-web_server:
-  port: 80
-
 logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO

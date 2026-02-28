@@ -77,8 +77,6 @@ network:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
-    ssid: "s3-mini-ic Fallback"
 
 # ==============================================================================
 # EXTERNAL COMPONENTS

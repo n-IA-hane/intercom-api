@@ -32,31 +32,37 @@ With i2s_audio_duplex:
 
 ## Architecture
 
-```
-                      ┌─ Stereo mode (ES8311): split L=ref, R=mic ─────────┐
-                      │                                                     │
-I2S RX ──────────────┤─ TDM mode (ES7210): deinterleave mic_slot, ref_slot ┤
-                      │                                                     │
-                      └─ Mono mode: mic only, ref from ring buffer          │
-                                               │                           │
-                             mic_attenuation (optional)                     │
-                                               │                      spk_ref_buffer
-                        ┌──────────────────────┤                           │
-                        ▼                      ▼                           ▼
-              raw_mic_callbacks          AEC process(mic, ref) ←──── reference
-              (mic_raw, pre-AEC)              │
-                   │                          ▼
-                   ▼                    mic_callbacks
-                  MWW                   (mic_aec, post-AEC)
-                                             │
-                                    ┌────────┴────────┐
-                                    ▼                 ▼
-                              Voice Assistant    Intercom TX
+```mermaid
+graph TD
+    RX[I2S RX] --> Stereo["Stereo mode (ES8311)<br/>split L=ref, R=mic"]
+    RX --> TDM["TDM mode (ES7210)<br/>deinterleave mic_slot, ref_slot"]
+    RX --> Mono["Mono mode<br/>mic only, ref from ring buffer"]
 
-Speaker buffer ──→ volume scaling ──→ I2S TX (speaker)
-       ▲                    │
-       │                    └──→ ref ring buffer (mono mode only)
-  mixer (VA TTS + Intercom RX)
+    Stereo --> mic_path[mic]
+    Stereo --> ref_path[ref]
+    TDM --> mic_path
+    TDM --> ref_path
+    Mono --> mic_path
+
+    mic_path --> atten["mic_attenuation<br/>(optional)"]
+    atten --> raw["raw_mic_callbacks<br/>(mic_raw, pre-AEC)"]
+    atten --> AEC["AEC process(mic, ref)"]
+
+    ref_path --> spk_ref[spk_ref_buffer]
+    spk_ref --> reference[reference]
+    reference --> AEC
+
+    raw --> MWW
+
+    AEC --> post["mic_callbacks<br/>(mic_aec, post-AEC)"]
+    post --> VA[Voice Assistant]
+    post --> ICT[Intercom TX]
+
+    Mixer["mixer<br/>(VA TTS + Intercom RX)"] --> SPK[Speaker buffer]
+    SPK --> VOL[volume scaling]
+    VOL --> TX[I2S TX]
+    VOL --> RingBuf["ref ring buffer<br/>(mono mode only)"]
+    RingBuf -.-> reference
 ```
 
 ### Task Layout

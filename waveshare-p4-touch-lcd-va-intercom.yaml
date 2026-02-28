@@ -5,7 +5,7 @@
 # Hardware:
 #   - ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM hex)
 #   - WiFi via ESP32-C6 co-processor (SDIO, esp32_hosted)
-#   - MIPI DSI display: 7" 1024x600 (ILI9881C) — see notes below for 8"/10.1"
+#   - MIPI DSI display: 10.1" 800x1280 (JD9365) — portrait mode
 #   - GT9271 capacitive touch (GT911 driver compatible, I2C 0x14)
 #   - ES8311 Audio DAC (speaker, I2C 0x18)
 #   - ES7210 Audio ADC (dual mic array, I2C 0x40)
@@ -46,9 +46,9 @@ substitutions:
   name: waveshare-p4-touch
   friendly_name: Waveshare P4 Touch
 
-  # Display dimensions (after rotation)
-  display_width: "1024"
-  display_height: "600"
+  # Display dimensions (portrait)
+  display_width: "800"
+  display_height: "1280"
 
   # Voice assistant phase IDs
   voice_assist_idle_phase_id: "1"
@@ -60,8 +60,8 @@ substitutions:
   voice_assist_muted_phase_id: "12"
   voice_assist_timer_finished_phase_id: "20"
 
-  # Font
-  font_glyphsets: "GF_Latin_Core"
+  # Font — explicit glyphs (printable ASCII + degree + Italian accents)
+  font_glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°àèéìòùÀÈÉÌÒÙ"
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -71,17 +71,21 @@ esphome:
   friendly_name: ${friendly_name}
   min_version: 2026.2.0
   on_boot:
-    priority: 600
-    then:
-      - output.turn_on: speaker_enable
-      - delay: 200ms
-      - light.turn_on:
-          id: display_backlight
-          brightness: 100%
-      - script.execute: draw_display
-      - micro_wake_word.stop:
-      - delay: 1s
-      - micro_wake_word.start:
+    - priority: 600
+      then:
+        - output.turn_on: speaker_enable
+    - priority: -100
+      then:
+        - logger.log: "Boot: late init start"
+        - delay: 500ms
+        - light.turn_on:
+            id: display_backlight
+            brightness: 100%
+        - lvgl.page.show: initializing_page
+        - script.execute: draw_display
+        - micro_wake_word.stop:
+        - delay: 1s
+        - micro_wake_word.start:
 
 esp32:
   board: esp32-p4-evboard
@@ -93,7 +97,8 @@ esp32:
     advanced:
       enable_idf_experimental_features: true
     sdkconfig_options:
-      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_LWIP_MAX_SOCKETS: "20"
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
 
 psram:
   mode: hex
@@ -126,12 +131,14 @@ esp32_hosted:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
-    ssid: "${name} Fallback"
-    password: !secret wifi_password
+  power_save_mode: none
+  reboot_timeout: 10min
+  fast_connect: false
   on_connect:
+    - logger.log: "WiFi connected"
     - script.execute: draw_display
   on_disconnect:
+    - logger.log: "WiFi disconnected"
     - script.execute: draw_display
 
 api:
@@ -145,6 +152,8 @@ api:
     - script.execute: start_wake_word
     - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
+    - delay: 5s
+    - script.execute: fetch_forecast
   on_client_disconnected:
     - script.execute: draw_display
 
@@ -152,8 +161,11 @@ ota:
   - platform: esphome
 
 logger:
-  hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  hardware_uart: UART0
+  level: WARN
+
+debug:
+  update_interval: 60s
 
 network:
   enable_high_performance: true
@@ -221,8 +233,8 @@ i2s_audio_duplex:
   i2s_lrclk_pin: GPIO10
   i2s_bclk_pin: GPIO12
   i2s_mclk_pin: GPIO13
-  i2s_din_pin: GPIO9           # From ES7210 ADC
-  i2s_dout_pin: GPIO11         # To ES8311 DAC
+  i2s_din_pin: GPIO11          # From ES7210 ADC (BSP_I2S_DSIN)
+  i2s_dout_pin: GPIO9          # To ES8311 DAC (BSP_I2S_DOUT)
   sample_rate: 48000           # I2S bus at ES8311/ES7210 native rate
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
@@ -280,6 +292,9 @@ media_player:
       speaker: va_speaker
       sample_rate: 48000
       format: FLAC
+    files:
+      - id: intercom_ringing_sound
+        file: sounds/ringtone.flac
     on_announcement:
       - if:
           condition:
@@ -368,9 +383,26 @@ voice_assistant:
     - script.execute: draw_display
 
   on_tts_start:
-    - text_sensor.template.publish:
-        id: text_response
-        state: !lambda return x;
+    # Parse emoticon prefix, set mood background, strip from displayed text
+    - lambda: |-
+        std::string text = x;
+        esphome::image::Image *mood = id(mood_neutral);
+        if (text.size() >= 3) {
+          std::string prefix = text.substr(0, 3);
+          if (prefix == ":-)") {
+            mood = id(mood_happy);
+          } else if (prefix == ":-(") {
+            mood = id(mood_angry);
+          } else if (prefix == ":-|") {
+            // neutral (default)
+          }
+          if (prefix == ":-)" || prefix == ":-(" || prefix == ":-|") {
+            text = text.substr(3);
+            if (!text.empty() && text[0] == ' ') text = text.substr(1);
+          }
+        }
+        lv_img_set_src(id(mood_bg), mood);
+        id(text_response).publish_state(text);
     - globals.set:
         id: voice_assistant_phase
         value: '${voice_assist_replying_phase_id}'
@@ -497,12 +529,18 @@ intercom_api:
     - light.turn_on:
         id: display_backlight
         brightness: 100%
+    - media_player.stop:
+        announcement: true
+    - script.execute: intercom_ringing_loop
     - script.execute: draw_display
 
   on_answered:
     - logger.log: "Call answered"
 
   on_streaming:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - light.turn_on:
         id: display_backlight
         brightness: 100%
@@ -520,31 +558,33 @@ intercom_api:
     - script.execute: draw_display
 
   on_idle:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-    # Restart MWW when intercom call ends (resilience)
+    - globals.set:
+        id: current_mode
+        value: '0'
     - if:
         condition:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
-    # Restore previous mode after call ends
-    - if:
-        condition:
-          lambda: return id(previous_mode) == 0;
-        then:
-          - script.execute: switch_to_va
-        else:
-          - globals.set:
-              id: current_mode
-              value: '1'
-          - script.execute: draw_display
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
 
   on_hangup:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - logger.log:
         format: "Hangup: %s"
         args: ['reason.c_str()']
 
   on_call_failed:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - logger.log:
         format: "Call failed: %s"
         args: ['reason.c_str()']
@@ -559,10 +599,13 @@ intercom_api:
 display:
   - platform: mipi_dsi
     id: main_display
-    model: WAVESHARE-ESP32-P4-WIFI6-TOUCH-LCD-7B
+    model: WAVESHARE-P4-NANO-10.1
+    reset_pin: 27                 # GPIO27 — X-series BSP hardware reset (BSP_LCD_RST)
+    lane_bit_rate: 1500Mbps       # Per BSP: 1500 Mbps for 10.1" JD9365
+    vsync_back_porch: 10          # Per Waveshare driver (ESPHome default is 12)
     dimensions:
-      width: 1024
-      height: 600
+      width: 800
+      height: 1280
     update_interval: never
     auto_clear_enabled: false
 
@@ -573,7 +616,8 @@ touchscreen:
   - platform: gt911
     id: main_touch
     i2c_id: internal_i2c
-    reset_pin: GPIO23
+    # On this hardware revision GT9271 is detected on 0x5D.
+    address: 0x5D
     display: main_display
     update_interval: 50ms
     on_touch:
@@ -588,8 +632,8 @@ touchscreen:
 output:
   - platform: ledc
     id: backlight_pwm
-    pin: GPIO32          # GPIO26 for non-7B variants
-    inverted: true
+    pin: GPIO26          # GPIO32 for 7B variant only
+    inverted: false       # X-series BSP: non-inverted (higher duty = brighter)
     frequency: 1000Hz
 
   - platform: gpio
@@ -614,8 +658,7 @@ font:
       weight: 700
     id: font_title
     size: 32
-    glyphsets:
-      - ${font_glyphsets}
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -623,8 +666,7 @@ font:
       weight: 700
     id: font_state
     size: 48
-    glyphsets:
-      - ${font_glyphsets}
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -632,8 +674,7 @@ font:
       weight: 400
     id: font_body
     size: 22
-    glyphsets:
-      - ${font_glyphsets}
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -641,8 +682,7 @@ font:
       weight: 400
     id: font_small
     size: 16
-    glyphsets:
-      - ${font_glyphsets}
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -650,8 +690,7 @@ font:
       weight: 500
     id: font_button
     size: 24
-    glyphsets:
-      - ${font_glyphsets}
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -659,16 +698,7 @@ font:
       weight: 400
     id: font_response
     size: 20
-    glyphsets:
-      - ${font_glyphsets}
-
-  - file:
-      type: gfonts
-      family: Roboto Mono
-      weight: 400
-    id: font_clock
-    size: 20
-    glyphs: "0123456789:% "
+    glyphs: "${font_glyphs}"
 
   - file:
       type: gfonts
@@ -677,6 +707,204 @@ font:
     id: font_timer
     size: 36
     glyphs: "0123456789:"
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_weather_icon
+    size: 100
+    glyphs:
+      - "\U000F0590"  # weather-cloudy
+      - "\U000F0591"  # weather-fog
+      - "\U000F0592"  # weather-hail
+      - "\U000F0593"  # weather-lightning
+      - "\U000F0594"  # weather-night
+      - "\U000F0595"  # weather-partly-cloudy
+      - "\U000F0596"  # weather-pouring
+      - "\U000F0597"  # weather-rainy
+      - "\U000F0598"  # weather-snowy
+      - "\U000F0599"  # weather-sunny
+      - "\U000F059D"  # weather-windy
+      - "\U000F059E"  # weather-windy-variant
+      - "\U000F067E"  # weather-lightning-rainy
+      - "\U000F067F"  # weather-snowy-rainy
+      - "\U000F0F37"  # weather-cloudy-alert
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_status_icon
+    size: 28
+    glyphs:
+      - "\U000F05A9"  # mdi:wifi
+      - "\U000F05AA"  # mdi:wifi-off
+      - "\U000F0079"  # mdi:battery
+      - "\U000F008E"  # mdi:battery-outline
+      - "\U000F0083"  # mdi:battery-alert
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_weather_icon_sm
+    size: 48
+    glyphs:
+      - "\U000F0590"
+      - "\U000F0591"
+      - "\U000F0592"
+      - "\U000F0593"
+      - "\U000F0594"
+      - "\U000F0595"
+      - "\U000F0596"
+      - "\U000F0597"
+      - "\U000F0598"
+      - "\U000F0599"
+      - "\U000F059D"
+      - "\U000F059E"
+      - "\U000F067E"
+      - "\U000F067F"
+      - "\U000F0F37"
+
+# =============================================================================
+# IMAGES
+# =============================================================================
+image:
+  # VA state images
+  - file: images/assistant/listening.png
+    id: img_listening
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/thinking.png
+    id: img_thinking
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/error.png
+    id: img_error
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  # Mood backgrounds for replying (set based on LLM emoticon prefix)
+  - file: images/assistant/happy.png
+    id: mood_happy
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/neutral.png
+    id: mood_neutral
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/angry.png
+    id: mood_angry
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  # Overlay page images
+  - file: images/assistant/error-no-wifi.png
+    id: error_no_wifi
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/error-no-ha.png
+    id: error_no_ha
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_00.png
+    id: yawn_00
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_01.png
+    id: yawn_01
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_02.png
+    id: yawn_02
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_03.png
+    id: yawn_03
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_04.png
+    id: yawn_04
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_05.png
+    id: yawn_05
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_06.png
+    id: yawn_06
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_07.png
+    id: yawn_07
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_08.png
+    id: yawn_08
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_09.png
+    id: yawn_09
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_10.png
+    id: yawn_10
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_11.png
+    id: yawn_11
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_12.png
+    id: yawn_12
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_13.png
+    id: yawn_13
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_14.png
+    id: yawn_14
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_15.png
+    id: yawn_15
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_16.png
+    id: yawn_16
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_17.png
+    id: yawn_17
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_18.png
+    id: yawn_18
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
+  - file: images/assistant/yawn_19.png
+    id: yawn_19
+    resize: 400x400
+    type: RGB565
+    byte_order: little_endian
 
 # =============================================================================
 # LVGL DISPLAY ENGINE
@@ -728,7 +956,7 @@ lvgl:
     # INITIALIZING
     # ==================================================================
     - id: initializing_page
-      bg_color: 0x1E1E2E
+      bg_color: 0x000000
       widgets:
         - label:
             align: CENTER
@@ -740,201 +968,53 @@ lvgl:
     # NO WIFI
     # ==================================================================
     - id: no_wifi_page
-      bg_color: 0x1E1E2E
+      bg_color: 0x000000
       widgets:
         - label:
-            align: CENTER
-            y: -30
+            align: TOP_MID
+            y: 60
             text: "No WiFi"
             text_color: 0xE74C3C
             text_font: font_state
         - label:
-            align: CENTER
-            y: 30
-            text: "Waiting for connection..."
+            align: TOP_MID
+            y: 120
+            text: "In attesa di connessione..."
             text_color: 0x888888
             text_font: font_body
+        - image:
+            align: CENTER
+            y: 40
+            src: error_no_wifi
 
     # ==================================================================
     # NO HOME ASSISTANT
     # ==================================================================
     - id: no_ha_page
-      bg_color: 0x1E1E2E
+      bg_color: 0x000000
       widgets:
         - label:
-            align: CENTER
-            y: -30
+            align: TOP_MID
+            y: 60
             text: "No Home Assistant"
             text_color: 0xF39C12
             text_font: font_state
         - label:
-            align: CENTER
-            y: 30
-            text: "Waiting for API connection..."
-            text_color: 0x888888
-            text_font: font_body
-
-    # ==================================================================
-    # VA: IDLE
-    # ==================================================================
-    - id: idle_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
             align: TOP_MID
-            y: 20
-            text: "${friendly_name}"
-            text_color: 0x4361EE
-            text_font: font_title
-        - label:
-            id: idle_clock_label
-            align: TOP_RIGHT
-            x: -20
-            y: 24
-            text: ""
-            text_color: 0x888888
-            text_font: font_clock
-        - label:
-            align: CENTER
-            y: -20
-            text: "Ready"
-            text_color: 0x2ECC71
-            text_font: font_state
-        - label:
-            align: CENTER
-            y: 40
-            text: "Say 'Hey Trowyayoh' to start"
-            text_color: 0x888888
-            text_font: font_body
-        # Mode switch button (bottom-right corner)
-        - button:
-            align: BOTTOM_RIGHT
-            x: -20
-            y: -20
-            width: 140
-            height: 50
-            bg_color: 0x2D2D44
-            radius: 8
-            on_click:
-              - script.execute: switch_to_intercom
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "Intercom"
-                  text_color: 0x888888
-                  text_font: font_small
-
-    # ==================================================================
-    # VA: LISTENING
-    # ==================================================================
-    - id: listening_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
-            align: CENTER
-            y: -20
-            text: "Listening..."
-            text_color: 0x2ECC71
-            text_font: font_state
-
-    # ==================================================================
-    # VA: THINKING
-    # ==================================================================
-    - id: thinking_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
-            align: TOP_MID
-            y: 40
-            text: "You said:"
-            text_color: 0x888888
-            text_font: font_small
-        - label:
-            id: thinking_text_label
-            align: TOP_MID
-            y: 70
-            width: 900
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_body
-            long_mode: WRAP
-            text_align: CENTER
-        - label:
-            align: CENTER
-            y: 80
-            text: "Thinking..."
-            text_color: 0xF39C12
-            text_font: font_state
-
-    # ==================================================================
-    # VA: REPLYING
-    # ==================================================================
-    - id: replying_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
-            id: replying_text_label
-            align: TOP_LEFT
-            x: 40
-            y: 30
-            width: 944
-            height: 540
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_response
-            long_mode: WRAP
-
-    # ==================================================================
-    # VA: ERROR
-    # ==================================================================
-    - id: error_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
-            align: CENTER
-            text: "Error"
-            text_color: 0xE74C3C
-            text_font: font_state
-
-    # ==================================================================
-    # VA: MUTED
-    # ==================================================================
-    - id: muted_page
-      bg_color: 0x1E1E2E
-      widgets:
-        - label:
-            align: CENTER
-            y: -20
-            text: "Muted"
-            text_color: 0xE74C3C
-            text_font: font_state
-        - label:
-            align: CENTER
-            y: 40
-            text: "Tap to unmute"
-            text_color: 0x888888
-            text_font: font_body
-        - button:
-            align: CENTER
             y: 120
-            width: 200
-            height: 60
-            bg_color: 0x2ECC71
-            radius: 10
-            on_click:
-              - switch.turn_off: mute
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "Unmute"
-                  text_color: 0xFFFFFF
-                  text_font: font_button
+            text: "In attesa di connessione API..."
+            text_color: 0x888888
+            text_font: font_body
+        - image:
+            align: CENTER
+            y: 40
+            src: error_no_ha
 
     # ==================================================================
     # VA: TIMER FINISHED
     # ==================================================================
     - id: timer_finished_page
-      bg_color: 0x1E1E2E
+      bg_color: 0x000000
       widgets:
         - label:
             align: CENTER
@@ -959,286 +1039,839 @@ lvgl:
                   text_font: font_button
 
     # ==================================================================
-    # INTERCOM: IDLE (touch buttons for call, prev, next)
+    # MAIN PAGE: Split-screen (weather/intercom + VA)
     # ==================================================================
-    - id: ic_idle_page
-      bg_color: 0x0D1B2A
+    - id: main_page
+      bg_color: 0x000000
       widgets:
-        # Title bar
-        - label:
-            align: TOP_LEFT
-            x: 30
-            y: 20
-            text: "INTERCOM"
-            text_color: 0x4361EE
-            text_font: font_title
-        - label:
-            id: ic_idle_status_label
-            align: TOP_RIGHT
-            x: -30
-            y: 24
-            text: ""
-            text_color: 0x888888
-            text_font: font_small
-
-        # Contact name (large, centered)
-        - label:
+        # === TOP HALF: TILEVIEW (meteo + intercom) ===
+        - tileview:
+            id: top_tileview
+            width: 780
+            height: 630
             align: TOP_MID
-            y: 100
-            text: "Destination:"
-            text_color: 0x888888
-            text_font: font_small
-        - label:
-            id: ic_idle_peer_label
-            align: TOP_MID
-            y: 130
-            width: 700
-            text: "Home Assistant"
-            text_color: 0xFFFFFF
-            text_font: font_state
-            text_align: CENTER
-            long_mode: DOT
+            y: 5
+            bg_opa: TRANSP
+            border_color: 0x333355
+            border_width: 1
+            radius: 12
+            tiles:
+              # --- TILE 0: WEATHER ---
+              - row: 0
+                column: 0
+                dir: HOR
+                id: weather_tile
+                widgets:
+                  # Header: day + date
+                  - label:
+                      id: weather_date_label
+                      align: TOP_LEFT
+                      x: 30
+                      y: 15
+                      text: ""
+                      text_color: 0x888888
+                      text_font: font_title
+                  # Header: WiFi status
+                  - label:
+                      id: wifi_status_icon
+                      align: TOP_RIGHT
+                      x: -170
+                      y: 15
+                      text: "\U000F05A9"
+                      text_font: font_status_icon
+                      text_color: 0x888888
+                  # Header: clock
+                  - label:
+                      id: weather_clock_label
+                      align: TOP_RIGHT
+                      x: -30
+                      y: 12
+                      text: ""
+                      text_color: 0x888888
+                      text_font: font_title
+                  # Weather icon (MDI glyph)
+                  - label:
+                      id: weather_icon_label
+                      align: TOP_MID
+                      y: 80
+                      text: "\U000F0599"
+                      text_font: font_weather_icon
+                      text_color: 0xFFD700
+                  # Temperature
+                  - label:
+                      id: weather_temp_label
+                      align: TOP_MID
+                      y: 180
+                      text: "--°"
+                      text_font: font_state
+                      text_color: 0xFFFFFF
+                  # Location
+                  - label:
+                      id: weather_location_label
+                      align: TOP_MID
+                      y: 240
+                      text: ""
+                      text_font: font_body
+                      text_color: 0x888888
+                  # Condition text (Italian)
+                  - label:
+                      id: weather_condition_label
+                      align: TOP_MID
+                      y: 270
+                      text: ""
+                      text_font: font_body
+                      text_color: 0xAAAAAA
+                  # Humidity + wind
+                  - label:
+                      id: weather_details_label
+                      align: TOP_MID
+                      y: 310
+                      text: ""
+                      text_font: font_body
+                      text_color: 0x888888
+                  # Forecast 5 days — flex row
+                  - obj:
+                      id: forecast_container
+                      align: TOP_MID
+                      y: 360
+                      width: 760
+                      height: 250
+                      bg_opa: TRANSP
+                      border_width: 0
+                      scrollable: false
+                      scrollbar_mode: "off"
+                      layout:
+                        type: FLEX
+                        flex_flow: ROW
+                        flex_align_main: SPACE_EVENLY
+                      pad_all: 0
+                      widgets:
+                        # Day 0
+                        - obj:
+                            width: 140
+                            height: 240
+                            bg_opa: TRANSP
+                            scrollable: false
+                            layout:
+                              type: FLEX
+                              flex_flow: COLUMN
+                              flex_align_main: SPACE_EVENLY
+                              flex_align_cross: STRETCH
+                              flex_align_track: CENTER
+                            widgets:
+                              - label:
+                                  id: fc0_day_label
+                                  text: "--"
+                                  text_font: font_button
+                                  text_color: 0x2ECC71
+                                  text_align: CENTER
+                              - label:
+                                  id: fc0_icon_label
+                                  text: "\U000F0599"
+                                  text_font: font_weather_icon_sm
+                                  text_color: 0xFFD700
+                                  text_align: CENTER
+                              - label:
+                                  id: fc0_max_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0xFF6B6B
+                                  text_align: CENTER
+                              - label:
+                                  id: fc0_min_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0x6BA3FF
+                                  text_align: CENTER
+                        # Day 1
+                        - obj:
+                            width: 140
+                            height: 240
+                            bg_opa: TRANSP
+                            scrollable: false
+                            layout:
+                              type: FLEX
+                              flex_flow: COLUMN
+                              flex_align_main: SPACE_EVENLY
+                              flex_align_cross: STRETCH
+                              flex_align_track: CENTER
+                            widgets:
+                              - label:
+                                  id: fc1_day_label
+                                  text: "--"
+                                  text_font: font_button
+                                  text_color: 0x2ECC71
+                                  text_align: CENTER
+                              - label:
+                                  id: fc1_icon_label
+                                  text: "\U000F0599"
+                                  text_font: font_weather_icon_sm
+                                  text_color: 0xFFD700
+                                  text_align: CENTER
+                              - label:
+                                  id: fc1_max_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0xFF6B6B
+                                  text_align: CENTER
+                              - label:
+                                  id: fc1_min_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0x6BA3FF
+                                  text_align: CENTER
+                        # Day 2
+                        - obj:
+                            width: 140
+                            height: 240
+                            bg_opa: TRANSP
+                            scrollable: false
+                            layout:
+                              type: FLEX
+                              flex_flow: COLUMN
+                              flex_align_main: SPACE_EVENLY
+                              flex_align_cross: STRETCH
+                              flex_align_track: CENTER
+                            widgets:
+                              - label:
+                                  id: fc2_day_label
+                                  text: "--"
+                                  text_font: font_button
+                                  text_color: 0x2ECC71
+                                  text_align: CENTER
+                              - label:
+                                  id: fc2_icon_label
+                                  text: "\U000F0599"
+                                  text_font: font_weather_icon_sm
+                                  text_color: 0xFFD700
+                                  text_align: CENTER
+                              - label:
+                                  id: fc2_max_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0xFF6B6B
+                                  text_align: CENTER
+                              - label:
+                                  id: fc2_min_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0x6BA3FF
+                                  text_align: CENTER
+                        # Day 3
+                        - obj:
+                            width: 140
+                            height: 240
+                            bg_opa: TRANSP
+                            scrollable: false
+                            layout:
+                              type: FLEX
+                              flex_flow: COLUMN
+                              flex_align_main: SPACE_EVENLY
+                              flex_align_cross: STRETCH
+                              flex_align_track: CENTER
+                            widgets:
+                              - label:
+                                  id: fc3_day_label
+                                  text: "--"
+                                  text_font: font_button
+                                  text_color: 0x2ECC71
+                                  text_align: CENTER
+                              - label:
+                                  id: fc3_icon_label
+                                  text: "\U000F0599"
+                                  text_font: font_weather_icon_sm
+                                  text_color: 0xFFD700
+                                  text_align: CENTER
+                              - label:
+                                  id: fc3_max_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0xFF6B6B
+                                  text_align: CENTER
+                              - label:
+                                  id: fc3_min_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0x6BA3FF
+                                  text_align: CENTER
+                        # Day 4
+                        - obj:
+                            width: 140
+                            height: 240
+                            bg_opa: TRANSP
+                            scrollable: false
+                            layout:
+                              type: FLEX
+                              flex_flow: COLUMN
+                              flex_align_main: SPACE_EVENLY
+                              flex_align_cross: STRETCH
+                              flex_align_track: CENTER
+                            widgets:
+                              - label:
+                                  id: fc4_day_label
+                                  text: "--"
+                                  text_font: font_button
+                                  text_color: 0x2ECC71
+                                  text_align: CENTER
+                              - label:
+                                  id: fc4_icon_label
+                                  text: "\U000F0599"
+                                  text_font: font_weather_icon_sm
+                                  text_color: 0xFFD700
+                                  text_align: CENTER
+                              - label:
+                                  id: fc4_max_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0xFF6B6B
+                                  text_align: CENTER
+                              - label:
+                                  id: fc4_min_label
+                                  text: "--°"
+                                  text_font: font_body
+                                  text_color: 0x6BA3FF
+                                  text_align: CENTER
+                  # Battery indicator
+                  - label:
+                      id: battery_icon_label
+                      align: BOTTOM_LEFT
+                      x: 30
+                      y: -8
+                      text: ""
+                      text_font: font_status_icon
+                      text_color: 0x888888
+                  - label:
+                      id: battery_pct_label
+                      align: BOTTOM_LEFT
+                      x: 62
+                      y: -10
+                      text: ""
+                      text_font: font_small
+                      text_color: 0x888888
 
-        # Contact count
-        - label:
-            id: ic_idle_contacts_label
-            align: TOP_MID
-            y: 200
-            text: "Contacts: 0"
-            text_color: 0x888888
-            text_font: font_small
+              # --- TILE 1: INTERCOM ---
+              - row: 0
+                column: 1
+                dir: HOR
+                id: intercom_tile
+                widgets:
+                  # IC IDLE group
+                  - obj:
+                      id: ic_idle_group
+                      width: 780
+                      height: 630
+                      bg_opa: TRANSP
+                      border_width: 0
+                      pad_all: 0
+                      scrollable: false
+                      scrollbar_mode: "off"
+                      widgets:
+                        - label:
+                            align: TOP_LEFT
+                            x: 30
+                            y: 20
+                            text: "INTERCOM"
+                            text_color: 0x4361EE
+                            text_font: font_title
+                        - label:
+                            align: TOP_MID
+                            y: 100
+                            text: "Destination:"
+                            text_color: 0x888888
+                            text_font: font_small
+                        - label:
+                            id: ic_idle_peer_label
+                            align: TOP_MID
+                            y: 130
+                            width: 700
+                            text: "Home Assistant"
+                            text_color: 0xFFFFFF
+                            text_font: font_state
+                            text_align: CENTER
+                            long_mode: DOT
+                        - label:
+                            id: ic_idle_contacts_label
+                            align: TOP_MID
+                            y: 200
+                            text: "Contacts: 0"
+                            text_color: 0x888888
+                            text_font: font_small
+                        # Prev
+                        - button:
+                            align: BOTTOM_LEFT
+                            x: 80
+                            y: -60
+                            width: 160
+                            height: 70
+                            bg_color: 0x2D2D44
+                            radius: 10
+                            on_click:
+                              - button.press: prev_contact_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "< Prev"
+                                  text_color: 0xEEEEEE
+                                  text_font: font_button
+                        # Call
+                        - button:
+                            align: BOTTOM_MID
+                            y: -50
+                            width: 280
+                            height: 90
+                            bg_color: 0x2ECC71
+                            radius: 15
+                            on_click:
+                              - button.press: call_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "CALL"
+                                  text_color: 0xFFFFFF
+                                  text_font: font_state
+                        # Next
+                        - button:
+                            align: BOTTOM_RIGHT
+                            x: -80
+                            y: -60
+                            width: 160
+                            height: 70
+                            bg_color: 0x2D2D44
+                            radius: 10
+                            on_click:
+                              - button.press: next_contact_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "Next >"
+                                  text_color: 0xEEEEEE
+                                  text_font: font_button
+                  # IC RINGING IN group
+                  - obj:
+                      id: ic_ringing_in_group
+                      width: 780
+                      height: 630
+                      bg_color: 0x3D0000
+                      border_width: 0
+                      pad_all: 0
+                      scrollable: false
+                      scrollbar_mode: "off"
+                      hidden: true
+                      widgets:
+                        - label:
+                            align: TOP_MID
+                            y: 40
+                            text: "INCOMING CALL"
+                            text_color: 0xFF4444
+                            text_font: font_title
+                        - label:
+                            align: TOP_MID
+                            y: 100
+                            text: "Da:"
+                            text_color: 0xCCCCCC
+                            text_font: font_body
+                        - label:
+                            id: ic_ringing_in_peer_label
+                            align: TOP_MID
+                            y: 140
+                            width: 700
+                            text: ""
+                            text_color: 0xFFFFFF
+                            text_font: font_state
+                            text_align: CENTER
+                            long_mode: DOT
+                        - button:
+                            align: BOTTOM_LEFT
+                            x: 100
+                            y: -80
+                            width: 260
+                            height: 90
+                            bg_color: 0x2ECC71
+                            radius: 15
+                            on_click:
+                              - intercom_api.answer_call: intercom
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "RISPONDI"
+                                  text_color: 0xFFFFFF
+                                  text_font: font_button
+                        - button:
+                            align: BOTTOM_RIGHT
+                            x: -100
+                            y: -80
+                            width: 260
+                            height: 90
+                            bg_color: 0xE74C3C
+                            radius: 15
+                            on_click:
+                              - button.press: decline_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "RIFIUTA"
+                                  text_color: 0xFFFFFF
+                                  text_font: font_button
+                  # IC RINGING OUT group
+                  - obj:
+                      id: ic_ringing_out_group
+                      width: 780
+                      height: 630
+                      bg_color: 0x1A1000
+                      border_width: 0
+                      pad_all: 0
+                      scrollable: false
+                      scrollbar_mode: "off"
+                      hidden: true
+                      widgets:
+                        - label:
+                            align: TOP_MID
+                            y: 40
+                            text: "CALLING"
+                            text_color: 0xF39C12
+                            text_font: font_title
+                        - label:
+                            id: ic_ringing_out_peer_label
+                            align: CENTER
+                            y: -40
+                            width: 700
+                            text: ""
+                            text_color: 0xFFFFFF
+                            text_font: font_state
+                            text_align: CENTER
+                            long_mode: DOT
+                        - label:
+                            align: CENTER
+                            y: 20
+                            text: "In attesa di risposta..."
+                            text_color: 0xCCCCCC
+                            text_font: font_body
+                        - button:
+                            align: BOTTOM_MID
+                            y: -80
+                            width: 280
+                            height: 90
+                            bg_color: 0xE74C3C
+                            radius: 15
+                            on_click:
+                              - button.press: call_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "CHIUDI"
+                                  text_color: 0xFFFFFF
+                                  text_font: font_button
+                  # IC IN CALL group
+                  - obj:
+                      id: ic_in_call_group
+                      width: 780
+                      height: 630
+                      bg_color: 0x002200
+                      border_width: 0
+                      pad_all: 0
+                      scrollable: false
+                      scrollbar_mode: "off"
+                      hidden: true
+                      widgets:
+                        - label:
+                            align: TOP_MID
+                            y: 40
+                            text: "IN CALL"
+                            text_color: 0x2ECC71
+                            text_font: font_title
+                        - label:
+                            align: TOP_MID
+                            y: 100
+                            text: "Connected to:"
+                            text_color: 0xCCCCCC
+                            text_font: font_body
+                        - label:
+                            id: ic_in_call_peer_label
+                            align: CENTER
+                            y: -30
+                            width: 700
+                            text: ""
+                            text_color: 0xFFFFFF
+                            text_font: font_state
+                            text_align: CENTER
+                            long_mode: DOT
+                        - button:
+                            align: BOTTOM_MID
+                            y: -80
+                            width: 280
+                            height: 90
+                            bg_color: 0xE74C3C
+                            radius: 15
+                            on_click:
+                              - button.press: call_button
+                            widgets:
+                              - label:
+                                  align: CENTER
+                                  text: "CHIUDI"
+                                  text_color: 0xFFFFFF
+                                  text_font: font_button
 
-        # Navigation + Call buttons (bottom area)
-        # Previous contact
-        - button:
-            id: ic_prev_btn
-            align: BOTTOM_LEFT
-            x: 80
-            y: -60
-            width: 160
-            height: 70
-            bg_color: 0x2D2D44
-            radius: 10
-            on_click:
-              - button.press: prev_contact_button
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "< Prev"
-                  text_color: 0xEEEEEE
-                  text_font: font_button
-
-        # Call button (big green, center)
-        - button:
-            id: ic_call_btn
+        # === BOTTOM HALF: VA AREA ===
+        - obj:
+            id: va_container
+            width: 780
+            height: 630
             align: BOTTOM_MID
-            y: -50
-            width: 280
-            height: 90
-            bg_color: 0x2ECC71
-            radius: 15
-            on_click:
-              - button.press: call_button
+            y: -5
+            bg_color: 0x000000
+            border_color: 0x333355
+            border_width: 1
+            radius: 12
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "off"
             widgets:
-              - label:
-                  align: CENTER
-                  text: "CALL"
-                  text_color: 0xFFFFFF
-                  text_font: font_state
+              # --- VA IDLE group ---
+              - obj:
+                  id: va_idle_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  scrollbar_mode: "off"
+                  widgets:
+                    # Touch hint (above animation)
+                    - label:
+                        id: va_hint_label
+                        align: BOTTOM_MID
+                        y: -430
+                        text: "Touch to talk"
+                        text_font: font_small
+                        text_color: 0x555555
+                    # Touch area over animation (pushed to bottom)
+                    - obj:
+                        id: va_touch_area
+                        align: BOTTOM_MID
+                        y: -10
+                        width: 400
+                        height: 400
+                        bg_opa: TRANSP
+                        border_width: 0
+                        scrollable: false
+                        scrollbar_mode: "off"
+                        on_click:
+                          - if:
+                              condition:
+                                voice_assistant.is_running:
+                              then:
+                                - voice_assistant.stop:
+                              else:
+                                - voice_assistant.start:
+                        widgets:
+                          - animimg:
+                              id: idle_animation
+                              align: CENTER
+                              width: 400
+                              height: 400
+                              src:
+                                # Forward: 0→19
+                                - yawn_00
+                                - yawn_01
+                                - yawn_02
+                                - yawn_03
+                                - yawn_04
+                                - yawn_05
+                                - yawn_06
+                                - yawn_07
+                                - yawn_08
+                                - yawn_09
+                                - yawn_10
+                                - yawn_11
+                                - yawn_12
+                                - yawn_13
+                                - yawn_14
+                                - yawn_15
+                                - yawn_16
+                                - yawn_17
+                                - yawn_18
+                                - yawn_19
+                                # Hold at peak (~1s)
+                                - yawn_19
+                                - yawn_19
+                                - yawn_19
+                                - yawn_19
+                                - yawn_19
+                                - yawn_19
+                                - yawn_19
+                                # Backward: 18→1
+                                - yawn_18
+                                - yawn_17
+                                - yawn_16
+                                - yawn_15
+                                - yawn_14
+                                - yawn_13
+                                - yawn_12
+                                - yawn_11
+                                - yawn_10
+                                - yawn_09
+                                - yawn_08
+                                - yawn_07
+                                - yawn_06
+                                - yawn_05
+                                - yawn_04
+                                - yawn_03
+                                - yawn_02
+                                - yawn_01
+                              duration: 6750ms
+                              auto_start: false
 
-        # Next contact
-        - button:
-            id: ic_next_btn
-            align: BOTTOM_RIGHT
-            x: -80
-            y: -60
-            width: 160
-            height: 70
-            bg_color: 0x2D2D44
-            radius: 10
-            on_click:
-              - button.press: next_contact_button
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "Next >"
-                  text_color: 0xEEEEEE
-                  text_font: font_button
+              # --- VA LISTENING group ---
+              - obj:
+                  id: va_listening_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  hidden: true
+                  on_click:
+                    - voice_assistant.stop:
+                  widgets:
+                    - image:
+                        align: CENTER
+                        y: -40
+                        src: img_listening
+                    - label:
+                        align: BOTTOM_MID
+                        y: -40
+                        text: "Listening..."
+                        text_color: 0x2ECC71
+                        text_font: font_state
 
-        # Mode switch (top-right area)
-        - button:
-            align: TOP_RIGHT
-            x: -30
-            y: 60
-            width: 120
-            height: 40
-            bg_color: 0x2D2D44
-            radius: 8
-            on_click:
-              - script.execute: switch_to_va
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "VA Mode"
-                  text_color: 0x888888
-                  text_font: font_small
+              # --- VA THINKING group ---
+              - obj:
+                  id: va_thinking_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  hidden: true
+                  on_click:
+                    - voice_assistant.stop:
+                  widgets:
+                    - image:
+                        align: CENTER
+                        y: -60
+                        src: img_thinking
+                    - label:
+                        id: thinking_text_label
+                        align: BOTTOM_MID
+                        y: -60
+                        width: 720
+                        text: ""
+                        text_color: 0xFFFFFF
+                        text_font: font_body
+                        long_mode: WRAP
+                        text_align: CENTER
+                    - label:
+                        align: BOTTOM_MID
+                        y: -20
+                        text: "Thinking..."
+                        text_color: 0xF39C12
+                        text_font: font_state
 
-    # ==================================================================
-    # INTERCOM: RINGING IN (incoming call)
-    # ==================================================================
-    - id: ic_ringing_in_page
-      bg_color: 0x3D0000
-      widgets:
-        - label:
-            align: TOP_MID
-            y: 40
-            text: "INCOMING CALL"
-            text_color: 0xFF4444
-            text_font: font_title
-        - label:
-            align: TOP_MID
-            y: 100
-            text: "Call from:"
-            text_color: 0xCCCCCC
-            text_font: font_body
-        - label:
-            id: ic_ringing_in_peer_label
-            align: TOP_MID
-            y: 140
-            width: 700
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_state
-            text_align: CENTER
-            long_mode: DOT
+              # --- VA REPLYING group ---
+              - obj:
+                  id: va_replying_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  scrollbar_mode: "off"
+                  hidden: true
+                  on_click:
+                    - voice_assistant.stop:
+                  widgets:
+                    - image:
+                        id: mood_bg
+                        align: CENTER
+                        y: -60
+                        src: mood_neutral
+                    - label:
+                        id: replying_text_label
+                        align: BOTTOM_MID
+                        y: -20
+                        width: 720
+                        text: ""
+                        text_color: 0xFFFFFF
+                        text_font: font_response
+                        long_mode: WRAP
+                        text_align: CENTER
 
-        # Answer button (green)
-        - button:
-            align: BOTTOM_LEFT
-            x: 140
-            y: -80
-            width: 280
-            height: 90
-            bg_color: 0x2ECC71
-            radius: 15
-            on_click:
-              - intercom_api.answer_call: intercom
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "ANSWER"
-                  text_color: 0xFFFFFF
-                  text_font: font_button
+              # --- VA ERROR group ---
+              - obj:
+                  id: va_error_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  hidden: true
+                  on_click:
+                    - voice_assistant.stop:
+                  widgets:
+                    - image:
+                        align: CENTER
+                        y: -40
+                        src: img_error
+                    - label:
+                        align: BOTTOM_MID
+                        y: -40
+                        text: "Error"
+                        text_color: 0xE74C3C
+                        text_font: font_state
 
-        # Decline button (red)
-        - button:
-            align: BOTTOM_RIGHT
-            x: -140
-            y: -80
-            width: 280
-            height: 90
-            bg_color: 0xE74C3C
-            radius: 15
-            on_click:
-              - button.press: decline_button
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "DECLINE"
-                  text_color: 0xFFFFFF
-                  text_font: font_button
-
-    # ==================================================================
-    # INTERCOM: RINGING OUT (outgoing call)
-    # ==================================================================
-    - id: ic_ringing_out_page
-      bg_color: 0x1A1000
-      widgets:
-        - label:
-            align: TOP_MID
-            y: 40
-            text: "CALLING"
-            text_color: 0xF39C12
-            text_font: font_title
-        - label:
-            id: ic_ringing_out_peer_label
-            align: CENTER
-            y: -40
-            width: 700
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_state
-            text_align: CENTER
-            long_mode: DOT
-        - label:
-            align: CENTER
-            y: 20
-            text: "Waiting for answer..."
-            text_color: 0xCCCCCC
-            text_font: font_body
-
-        # Hangup button
-        - button:
-            align: BOTTOM_MID
-            y: -80
-            width: 280
-            height: 90
-            bg_color: 0xE74C3C
-            radius: 15
-            on_click:
-              - button.press: call_button
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "HANGUP"
-                  text_color: 0xFFFFFF
-                  text_font: font_button
-
-    # ==================================================================
-    # INTERCOM: IN CALL
-    # ==================================================================
-    - id: ic_in_call_page
-      bg_color: 0x002200
-      widgets:
-        - label:
-            align: TOP_MID
-            y: 40
-            text: "IN CALL"
-            text_color: 0x2ECC71
-            text_font: font_title
-        - label:
-            align: TOP_MID
-            y: 100
-            text: "Connected to:"
-            text_color: 0xCCCCCC
-            text_font: font_body
-        - label:
-            id: ic_in_call_peer_label
-            align: CENTER
-            y: -30
-            width: 700
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_state
-            text_align: CENTER
-            long_mode: DOT
-
-        # Hangup button
-        - button:
-            align: BOTTOM_MID
-            y: -80
-            width: 280
-            height: 90
-            bg_color: 0xE74C3C
-            radius: 15
-            on_click:
-              - button.press: call_button
-            widgets:
-              - label:
-                  align: CENTER
-                  text: "HANGUP"
-                  text_color: 0xFFFFFF
-                  text_font: font_button
+              # --- VA MUTED group ---
+              - obj:
+                  id: va_muted_group
+                  width: 780
+                  height: 630
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  hidden: true
+                  widgets:
+                    - label:
+                        align: CENTER
+                        y: -40
+                        text: "Muted"
+                        text_color: 0xE74C3C
+                        text_font: font_state
+                    - label:
+                        align: CENTER
+                        y: 20
+                        text: "Touch to unmute"
+                        text_color: 0x888888
+                        text_font: font_body
+                    - button:
+                        align: CENTER
+                        y: 100
+                        width: 200
+                        height: 60
+                        bg_color: 0x2ECC71
+                        radius: 10
+                        on_click:
+                          - switch.turn_off: mute
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "Unmute"
+                              text_color: 0xFFFFFF
+                              text_font: font_button
 
 # =============================================================================
 # GLOBALS
@@ -1269,87 +1902,141 @@ globals:
     restore_value: no
     initial_value: '"Home Assistant"'
 
+  # Forecast arrays (5-day)
+  - id: forecast_condition
+    type: std::array<std::string, 5>
+  - id: forecast_temp_max
+    type: float[5]
+  - id: forecast_temp_min
+    type: float[5]
+  - id: forecast_dow
+    type: int[5]
+
 # =============================================================================
 # SCRIPTS
 # =============================================================================
 script:
-  # Main display rendering — route to correct page based on mode + state
+  # Main display rendering — split-screen layout
   - id: draw_display
     mode: restart
     then:
       - lambda: |-
-          lv_obj_t* target = nullptr;
+          lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
 
-          if (id(init_in_progress)) {
-            target = id(initializing_page)->obj;
-          } else if (!wifi::global_wifi_component->is_connected()) {
-            target = id(no_wifi_page)->obj;
-          } else if (!api::global_api_server->is_connected()) {
-            target = id(no_ha_page)->obj;
-          } else if (id(current_mode) == 1) {
-            // Intercom mode
-            auto s = id(intercom).get_state_str();
-            if (s == "Ringing" || s == "Incoming") {
-              lv_label_set_text(id(ic_ringing_in_peer_label), id(peer_name).c_str());
-              target = id(ic_ringing_in_page)->obj;
-            } else if (s == "Calling" || s == "Outgoing") {
-              lv_label_set_text(id(ic_ringing_out_peer_label), id(peer_name).c_str());
-              target = id(ic_ringing_out_page)->obj;
-            } else if (s == "Streaming" || s == "Answering") {
-              lv_label_set_text(id(ic_in_call_peer_label), id(peer_name).c_str());
-              target = id(ic_in_call_page)->obj;
-            } else {
-              // IC idle: update labels
-              lv_label_set_text(id(ic_idle_peer_label), id(peer_name).c_str());
-              auto csv = id(intercom).get_contacts_csv();
-              int count = csv.empty() ? 0 : (int)std::count(csv.begin(), csv.end(), ',') + 1;
-              char buf[32];
-              snprintf(buf, sizeof(buf), "Contacts: %d", count);
-              lv_label_set_text(id(ic_idle_contacts_label), buf);
-              target = id(ic_idle_page)->obj;
+          // Overlay pages (full-screen, cover everything)
+          if (!wifi::global_wifi_component->is_connected()) {
+            if (active_scr != id(no_wifi_page)->obj)
+              lv_disp_load_scr(id(no_wifi_page)->obj);
+            return;
+          }
+          if (!api::global_api_server->is_connected()) {
+            if (active_scr != id(no_ha_page)->obj)
+              lv_disp_load_scr(id(no_ha_page)->obj);
+            return;
+          }
+          int phase = id(voice_assistant_phase);
+          if (phase == ${voice_assist_not_ready_phase_id}) {
+            if (active_scr != id(no_ha_page)->obj)
+              lv_disp_load_scr(id(no_ha_page)->obj);
+            return;
+          }
+          if (phase == ${voice_assist_timer_finished_phase_id}) {
+            if (active_scr != id(timer_finished_page)->obj)
+              lv_disp_load_scr(id(timer_finished_page)->obj);
+            return;
+          }
+
+          // Normal: show main split-screen page
+          if (active_scr != id(main_page)->obj) {
+            lv_disp_load_scr(id(main_page)->obj);
+            // Disable scrolling on tileview tiles (content must not scroll within tiles)
+            lv_obj_clear_flag(id(weather_tile), LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(id(intercom_tile), LV_OBJ_FLAG_SCROLLABLE);
+          }
+
+          // === Update VA container (bottom half) ===
+          bool va_idle = (phase == ${voice_assist_idle_phase_id});
+
+          // Hide all VA groups
+          lv_obj_add_flag(id(va_idle_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_listening_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_thinking_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_replying_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_error_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_muted_group), LV_OBJ_FLAG_HIDDEN);
+
+          if (va_idle) {
+            lv_obj_clear_flag(id(va_idle_group), LV_OBJ_FLAG_HIDDEN);
+            auto now = id(my_time).now();
+            if (now.is_valid()) {
+              char clk[8];
+              snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
+              // va_clock_label removed — clock in weather header only
             }
+          } else if (phase == ${voice_assist_listening_phase_id}) {
+            lv_obj_clear_flag(id(va_listening_group), LV_OBJ_FLAG_HIDDEN);
+          } else if (phase == ${voice_assist_thinking_phase_id}) {
+            lv_label_set_text(id(thinking_text_label), id(text_request).state.c_str());
+            lv_obj_clear_flag(id(va_thinking_group), LV_OBJ_FLAG_HIDDEN);
+          } else if (phase == ${voice_assist_replying_phase_id}) {
+            lv_label_set_text(id(replying_text_label), id(text_response).state.c_str());
+            lv_obj_clear_flag(id(va_replying_group), LV_OBJ_FLAG_HIDDEN);
+          } else if (phase == ${voice_assist_error_phase_id}) {
+            lv_obj_clear_flag(id(va_error_group), LV_OBJ_FLAG_HIDDEN);
+          } else if (phase == ${voice_assist_muted_phase_id}) {
+            lv_obj_clear_flag(id(va_muted_group), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // === Update intercom tile (top right) ===
+          auto ic_state = id(intercom).get_state_str();
+
+          lv_obj_add_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
+
+          if (ic_state == "Ringing" || ic_state == "Incoming") {
+            lv_label_set_text(id(ic_ringing_in_peer_label), id(peer_name).c_str());
+            lv_obj_clear_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
+          } else if (ic_state == "Calling" || ic_state == "Outgoing") {
+            lv_label_set_text(id(ic_ringing_out_peer_label), id(peer_name).c_str());
+            lv_obj_clear_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
+          } else if (ic_state == "Streaming" || ic_state == "Answering") {
+            lv_label_set_text(id(ic_in_call_peer_label), id(peer_name).c_str());
+            lv_obj_clear_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
           } else {
-            // VA mode
-            int phase = id(voice_assistant_phase);
-            if (phase == ${voice_assist_listening_phase_id}) {
-              target = id(listening_page)->obj;
-            } else if (phase == ${voice_assist_thinking_phase_id}) {
-              lv_label_set_text(id(thinking_text_label), id(text_request).state.c_str());
-              target = id(thinking_page)->obj;
-            } else if (phase == ${voice_assist_replying_phase_id}) {
-              lv_label_set_text(id(replying_text_label), id(text_response).state.c_str());
-              target = id(replying_page)->obj;
-            } else if (phase == ${voice_assist_error_phase_id}) {
-              target = id(error_page)->obj;
-            } else if (phase == ${voice_assist_muted_phase_id}) {
-              target = id(muted_page)->obj;
-            } else if (phase == ${voice_assist_not_ready_phase_id}) {
-              target = id(no_ha_page)->obj;
-            } else if (phase == ${voice_assist_timer_finished_phase_id}) {
-              target = id(timer_finished_page)->obj;
-            } else {
-              // Idle
-              auto now = id(my_time).now();
-              if (now.is_valid()) {
-                char clk[8];
-                snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
-                lv_label_set_text(id(idle_clock_label), clk);
-              }
-              target = id(idle_page)->obj;
-            }
+            lv_label_set_text(id(ic_idle_peer_label), id(peer_name).c_str());
+            auto csv = id(intercom).get_contacts_csv();
+            int count = csv.empty() ? 0 : (int)std::count(csv.begin(), csv.end(), ',') + 1;
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Contacts: %d", count);
+            lv_label_set_text(id(ic_idle_contacts_label), buf);
+            lv_obj_clear_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
           }
 
-          if (target && target != lv_disp_get_scr_act(nullptr)) {
-            lv_disp_load_scr(target);
-          }
-
+      # Animation lifecycle
+      - if:
+          condition:
+            lambda: |-
+              return id(voice_assistant_phase) == ${voice_assist_idle_phase_id} && !id(init_in_progress);
+          then:
+            - if:
+                condition:
+                  lambda: return !id(yawn_loop).is_running();
+                then:
+                  - script.execute: yawn_loop
+          else:
+            - script.stop: yawn_loop
+            - lambda: lv_anim_del(id(idle_animation), nullptr);
       # Self-heal: ensure MWW is active when idle
       - if:
           condition:
             and:
               - lambda: |-
-                  return id(current_mode) == 0 &&
-                         id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
+                  return id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
                          !id(init_in_progress);
               - switch.is_off: mute
               - not:
@@ -1357,6 +2044,193 @@ script:
           then:
             - script.execute: start_wake_word
       - script.execute: update_timer_state
+
+  # Idle animation loop (yawn blink + long pause)
+  - id: yawn_loop
+    mode: single
+    then:
+      - lambda: |-
+          lv_animimg_set_repeat_count(id(idle_animation), 0);
+          lv_animimg_start(id(idle_animation));
+          lv_anim_del(id(idle_animation), nullptr);
+      - while:
+          condition:
+            lambda: return true;
+          then:
+            - lambda: lv_animimg_start(id(idle_animation));
+            - delay: 25s
+
+  # Weather display update
+  - id: update_weather_display
+    mode: restart
+    then:
+      - lambda: |-
+          // Condition → MDI icon mapping
+          auto icon_for = [](const std::string& c) -> const char* {
+            if (c == "sunny") return "\U000F0599";
+            if (c == "clear-night") return "\U000F0594";
+            if (c == "cloudy") return "\U000F0590";
+            if (c == "partlycloudy") return "\U000F0595";
+            if (c == "fog") return "\U000F0591";
+            if (c == "rainy") return "\U000F0597";
+            if (c == "snowy") return "\U000F0598";
+            if (c == "lightning") return "\U000F0593";
+            if (c == "hail") return "\U000F0592";
+            if (c == "windy") return "\U000F059D";
+            if (c == "pouring") return "\U000F0596";
+            if (c == "snowy-rainy") return "\U000F067F";
+            if (c == "windy-variant") return "\U000F059E";
+            if (c == "lightning-rainy") return "\U000F067E";
+            if (c == "exceptional") return "\U000F0F37";
+            return "\U000F0590";
+          };
+          // Condition → English text
+          auto text_for = [](const std::string& c) -> const char* {
+            if (c == "sunny") return "Sunny";
+            if (c == "clear-night") return "Clear";
+            if (c == "cloudy") return "Cloudy";
+            if (c == "partlycloudy") return "Partly Cloudy";
+            if (c == "fog") return "Fog";
+            if (c == "rainy") return "Rain";
+            if (c == "snowy") return "Snow";
+            if (c == "lightning") return "Thunderstorm";
+            if (c == "hail") return "Hail";
+            if (c == "windy") return "Windy";
+            if (c == "pouring") return "Heavy Rain";
+            if (c == "snowy-rainy") return "Sleet";
+            if (c == "windy-variant") return "Windy";
+            if (c == "lightning-rainy") return "Thunderstorm";
+            if (c == "exceptional") return "Exceptional";
+            return "";
+          };
+          static const char* day_full[] = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+          static const char* day_short[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+          static const char* month_names[] = {"January","February","March","April","May","June",
+                                              "July","August","September","October","November","December"};
+
+          // --- Header: date + clock + wifi + battery ---
+          auto now = id(my_time).now();
+          if (now.is_valid()) {
+            char date_buf[48];
+            snprintf(date_buf, sizeof(date_buf), "%s %d %s",
+                     day_full[now.day_of_week - 1], now.day_of_month,
+                     month_names[now.month - 1]);
+            lv_label_set_text(id(weather_date_label), date_buf);
+
+            char clk[8];
+            snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
+            lv_label_set_text(id(weather_clock_label), clk);
+            // va_clock_label removed — clock in weather header only
+          }
+
+          // WiFi status icon
+          if (wifi::global_wifi_component->is_connected()) {
+            lv_label_set_text(id(wifi_status_icon), "\U000F05A9");  // mdi:wifi
+            lv_obj_set_style_text_color(id(wifi_status_icon), lv_color_hex(0x2ECC71), 0);
+          } else {
+            lv_label_set_text(id(wifi_status_icon), "\U000F05AA");  // mdi:wifi-off
+            lv_obj_set_style_text_color(id(wifi_status_icon), lv_color_hex(0xE74C3C), 0);
+          }
+
+          // Battery indicator
+          if (id(battery_level).has_state() && !std::isnan(id(battery_level).state)) {
+            float batt = id(battery_level).state;
+            const char* batt_icon = batt > 20.0f ? "\U000F0079"   // mdi:battery
+                                  : batt > 5.0f  ? "\U000F0083"   // mdi:battery-alert
+                                  :                 "\U000F008E";  // mdi:battery-outline
+            lv_label_set_text(id(battery_icon_label), batt_icon);
+            uint32_t batt_color = batt > 20.0f ? 0x2ECC71 : 0xE74C3C;
+            lv_obj_set_style_text_color(id(battery_icon_label), lv_color_hex(batt_color), 0);
+            char batt_buf[8];
+            snprintf(batt_buf, sizeof(batt_buf), "%.0f%%", batt);
+            lv_label_set_text(id(battery_pct_label), batt_buf);
+            lv_obj_set_style_text_color(id(battery_pct_label), lv_color_hex(batt_color), 0);
+          } else {
+            lv_label_set_text(id(battery_icon_label), "");
+            lv_label_set_text(id(battery_pct_label), "");
+          }
+
+          // --- Current weather ---
+          auto cond = id(weather_condition).state;
+          if (!cond.empty()) {
+            lv_label_set_text(id(weather_icon_label), icon_for(cond));
+            lv_label_set_text(id(weather_condition_label), text_for(cond));
+          }
+
+          if (!std::isnan(id(weather_temperature).state)) {
+            char temp[16];
+            snprintf(temp, sizeof(temp), "%.0f\u00B0", id(weather_temperature).state);
+            lv_label_set_text(id(weather_temp_label), temp);
+          }
+
+          auto loc = id(weather_location).state;
+          if (!loc.empty()) {
+            lv_label_set_text(id(weather_location_label), loc.c_str());
+          }
+
+          // Humidity + wind
+          char details[64];
+          float hum = id(weather_humidity).state;
+          float wind = id(weather_wind_speed).state;
+          if (!std::isnan(hum) && !std::isnan(wind))
+            snprintf(details, sizeof(details), "Humidity: %.0f%%  |  Wind: %.0f km/h", hum, wind);
+          else if (!std::isnan(hum))
+            snprintf(details, sizeof(details), "Humidity: %.0f%%", hum);
+          else
+            details[0] = '\0';
+          lv_label_set_text(id(weather_details_label), details);
+
+          // --- Forecast 5 days ---
+          lv_obj_t* fc_day_labels[] = {id(fc0_day_label), id(fc1_day_label), id(fc2_day_label), id(fc3_day_label), id(fc4_day_label)};
+          lv_obj_t* fc_icon_labels[] = {id(fc0_icon_label), id(fc1_icon_label), id(fc2_icon_label), id(fc3_icon_label), id(fc4_icon_label)};
+          lv_obj_t* fc_max_labels[] = {id(fc0_max_label), id(fc1_max_label), id(fc2_max_label), id(fc3_max_label), id(fc4_max_label)};
+          lv_obj_t* fc_min_labels[] = {id(fc0_min_label), id(fc1_min_label), id(fc2_min_label), id(fc3_min_label), id(fc4_min_label)};
+          for (int i = 0; i < 5; i++) {
+            int dow = id(forecast_dow)[i];
+            if (dow >= 0 && dow <= 6)
+              lv_label_set_text(fc_day_labels[i], day_full[dow]);
+            auto& fc = id(forecast_condition)[i];
+            if (!fc.empty())
+              lv_label_set_text(fc_icon_labels[i], icon_for(fc));
+            char t[16];
+            snprintf(t, sizeof(t), "Max: %.0f\u00B0", id(forecast_temp_max)[i]);
+            lv_label_set_text(fc_max_labels[i], t);
+            snprintf(t, sizeof(t), "Min: %.0f\u00B0", id(forecast_temp_min)[i]);
+            lv_label_set_text(fc_min_labels[i], t);
+          }
+
+  # Fetch 5-day forecast from HA
+  - id: fetch_forecast
+    mode: single
+    then:
+      - homeassistant.action:
+          action: weather.get_forecasts
+          data:
+            entity_id: weather.casa
+            type: daily
+          capture_response: true
+          on_success:
+            - lambda: |-
+                JsonObjectConst resp = response["response"];
+                JsonObjectConst data = resp["weather.casa"];
+                JsonArrayConst forecast = data["forecast"];
+                for (int i = 0; i < 5 && i < (int)forecast.size(); i++) {
+                  JsonObjectConst day = forecast[i];
+                  id(forecast_condition)[i] = day["condition"].as<std::string>();
+                  id(forecast_temp_max)[i]  = day["temperature"]   | 0.0f;
+                  id(forecast_temp_min)[i]  = day["templow"]       | 0.0f;
+                  // Extract day of week from datetime
+                  std::string dt = day["datetime"].as<std::string>();
+                  int y, m, d;
+                  sscanf(dt.c_str(), "%d-%d-%d", &y, &m, &d);
+                  struct tm tm = {};
+                  tm.tm_year = y - 1900;
+                  tm.tm_mon = m - 1;
+                  tm.tm_mday = d;
+                  mktime(&tm);
+                  id(forecast_dow)[i] = tm.tm_wday;
+                }
+            - script.execute: update_weather_display
 
   # Timer state update
   - id: update_timer_state
@@ -1372,7 +2246,7 @@ script:
             }
           }
           int phase = id(voice_assistant_phase);
-          bool on_supported_page = id(current_mode) == 0 && (
+          bool on_supported_page = (
             phase == ${voice_assist_idle_phase_id} ||
             phase == ${voice_assist_listening_phase_id} ||
             phase == ${voice_assist_thinking_phase_id} ||
@@ -1419,22 +2293,6 @@ script:
                 id: voice_assistant_phase
                 value: '${voice_assist_muted_phase_id}'
 
-  # Mode switching
-  - id: switch_to_va
-    then:
-      - globals.set:
-          id: current_mode
-          value: '0'
-      - script.execute: set_idle_or_mute_phase
-      - script.execute: draw_display
-
-  - id: switch_to_intercom
-    then:
-      - globals.set:
-          id: current_mode
-          value: '1'
-      - script.execute: draw_display
-
   # Timer alarm loop
   - id: timer_alarm_loop
     mode: single
@@ -1445,6 +2303,21 @@ script:
           then:
             - logger.log: "Timer alarm ring"
             - delay: 4s
+
+  # Intercom ringing loop
+  - id: intercom_ringing_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            or:
+              - intercom_api.is_ringing: intercom
+              - intercom_api.is_incoming: intercom
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: intercom_ringing_sound
+                announcement: true
+            - delay: 3s
 
   # Backlight auto-off timer
   - id: backlight_timer
@@ -1533,7 +2406,7 @@ binary_sensor:
         input: true
         pullup: true
     on_multi_click:
-      # Single click: context-dependent
+      # Single click: toggle VA or stop timer
       - timing:
           - ON for at most 500ms
           - OFF for at least 400ms
@@ -1546,41 +2419,17 @@ binary_sensor:
               else:
                 - if:
                     condition:
-                      lambda: return id(current_mode) == 1;
+                      voice_assistant.is_running:
                     then:
-                      - button.press: call_button
+                      - voice_assistant.stop:
                     else:
-                      - if:
-                          condition:
-                            voice_assistant.is_running:
-                          then:
-                            - voice_assistant.stop:
-                          else:
-                            - voice_assistant.start:
-      # Double click: next contact (intercom) or nothing (VA)
-      - timing:
-          - ON for 50ms to 500ms
-          - OFF for at most 300ms
-          - ON for 50ms to 500ms
-          - OFF for at least 400ms
-        then:
-          - if:
-              condition:
-                lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
-              then:
-                - button.press: next_contact_button
-      # Long press: switch mode
+                      - voice_assistant.start:
+      # Long press: toggle mute
       - timing:
           - ON for 1s to 3s
           - OFF for at least 300ms
         then:
-          - if:
-              condition:
-                lambda: return id(current_mode) == 1;
-              then:
-                - script.execute: switch_to_va
-              else:
-                - script.execute: switch_to_intercom
+          - switch.toggle: mute
 
 # =============================================================================
 # SWITCHES
@@ -1652,19 +2501,26 @@ text_sensor:
   - platform: homeassistant
     id: ha_active_devices
     entity_id: sensor.intercom_active_devices
-    attribute: device_list
     on_value:
-      then:
-        - lambda: |-
-            if (!x.empty()) {
-              id(intercom).set_contacts(x);
-              id(peer_name) = id(intercom).get_current_destination();
-            }
-        - if:
-            condition:
-              lambda: return id(current_mode) == 1;
-            then:
-              - script.execute: draw_display
+      - intercom_api.set_contacts:
+          id: intercom
+          contacts_csv: !lambda 'return x;'
+      - lambda: |-
+          id(peer_name) = id(intercom).get_current_destination();
+          lv_label_set_text(id(ic_idle_peer_label), id(peer_name).c_str());
+          auto csv = id(intercom).get_contacts_csv();
+          int count = csv.empty() ? 0 : (int)std::count(csv.begin(), csv.end(), ',') + 1;
+          char buf[32];
+          snprintf(buf, sizeof(buf), "Contacts: %d", count);
+          lv_label_set_text(id(ic_idle_contacts_label), buf);
+
+  - platform: debug
+    device:
+      name: Device Info
+      entity_category: diagnostic
+    reset_reason:
+      name: Reset Reason
+      entity_category: diagnostic
 
   - id: text_request
     platform: template
@@ -1672,14 +2528,38 @@ text_sensor:
   - id: text_response
     platform: template
 
+  - platform: homeassistant
+    id: weather_condition
+    entity_id: weather.casa
+    internal: true
+    on_value:
+      - script.execute: update_weather_display
+
+  - platform: homeassistant
+    id: weather_location
+    entity_id: weather.casa
+    attribute: friendly_name
+    internal: true
+
 # =============================================================================
 # SENSORS
 # =============================================================================
 sensor:
   - platform: wifi_signal
     name: WiFi Signal
+    id: wifi_rssi
     update_interval: 60s
     entity_category: diagnostic
+
+  - platform: max17043
+    battery_voltage:
+      name: Battery Voltage
+      entity_category: diagnostic
+    battery_level:
+      name: Battery Level
+      id: battery_level
+      entity_category: diagnostic
+    update_interval: 60s
 
   - platform: uptime
     name: Uptime
@@ -1691,23 +2571,64 @@ sensor:
     update_interval: 60s
     entity_category: diagnostic
 
+  - platform: debug
+    free:
+      name: Heap Free
+      entity_category: diagnostic
+    block:
+      name: Heap Largest Block
+      entity_category: diagnostic
+    min_free:
+      name: Heap Min Free
+      entity_category: diagnostic
+    loop_time:
+      name: Main Loop Max Time
+      entity_category: diagnostic
+    psram:
+      name: PSRAM Free
+      entity_category: diagnostic
+    cpu_frequency:
+      name: CPU Frequency
+      entity_category: diagnostic
+
+  - platform: homeassistant
+    id: weather_temperature
+    entity_id: weather.casa
+    attribute: temperature
+    internal: true
+    on_value:
+      - script.execute: update_weather_display
+
+  - platform: homeassistant
+    id: weather_humidity
+    entity_id: weather.casa
+    attribute: humidity
+    internal: true
+
+  - platform: homeassistant
+    id: weather_wind_speed
+    entity_id: weather.casa
+    attribute: wind_speed
+    internal: true
+
 # =============================================================================
 # PERIODIC UPDATES
 # =============================================================================
 interval:
+  # Update weather display + clocks every 30s
   - interval: 30s
     then:
       - if:
           condition:
-            lambda: |-
-              return id(current_mode) == 0 &&
-                     id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
-                     !id(init_in_progress);
+            lambda: return !id(init_in_progress);
           then:
-            - lambda: |-
-                auto now = id(my_time).now();
-                if (now.is_valid()) {
-                  char clk[8];
-                  snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
-                  lv_label_set_text(id(idle_clock_label), clk);
-                }
+            - script.execute: update_weather_display
+
+  # Fetch forecast every 5 min
+  - interval: 5min
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - script.execute: fetch_forecast
