@@ -1350,19 +1350,6 @@ button:
       - intercom_api.decline_call:
           id: intercom
 
-  - platform: template
-    id: refresh_contacts_button
-    name: "Refresh Contacts"
-    icon: "mdi:refresh"
-    entity_category: config
-    on_press:
-      - intercom_api.set_contacts:
-          id: intercom
-          contacts_csv: !lambda 'return id(ha_active_devices).state;'
-      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-      - script.execute: update_ic_idle_labels
-      - script.execute: draw_display
-
   - platform: restart
     name: "Restart"
     icon: "mdi:restart"

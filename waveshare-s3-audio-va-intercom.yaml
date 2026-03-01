@@ -263,13 +263,21 @@ media_player:
       - id: intercom_ringing_sound
         file: sounds/ringtone.flac
     on_announcement:
-      - light.turn_on:
-          id: status_led
-          red: 0%
-          green: 100%
-          blue: 0%
-          brightness: 100%
-          effect: "Spin"
+      - if:
+          condition:
+            intercom_api.is_idle: intercom
+          then:
+            - light.turn_on:
+                id: status_led
+                red: 0%
+                green: 100%
+                blue: 0%
+                brightness: 100%
+                effect: "Spin"
+          else:
+            - light.turn_on:
+                id: status_led
+                effect: "Ringing"
       # Restart MWW for barge-in support during TTS
       - if:
           condition:
@@ -280,7 +288,11 @@ media_player:
           then:
             - micro_wake_word.start:
     on_idle:
-      - light.turn_off: status_led
+      - if:
+          condition:
+            intercom_api.is_idle: intercom
+          then:
+            - light.turn_off: status_led
       # Restart MWW after media finishes
       - if:
           condition:
@@ -435,15 +447,6 @@ intercom_api:
     - media_player.stop:
     - script.execute: intercom_ringing_loop
 
-  on_answered:
-    - light.turn_on:
-        id: status_led
-        red: 30%
-        green: 69%
-        blue: 31%
-        brightness: 100%
-        effect: none
-
   on_streaming:
     - script.stop: intercom_ringing_loop
     - media_player.stop:
@@ -453,7 +456,7 @@ intercom_api:
         green: 69%
         blue: 31%
         brightness: 100%
-        effect: "Spin"
+        effect: none
 
   on_idle:
     - script.stop: intercom_ringing_loop
@@ -533,17 +536,6 @@ button:
     icon: mdi:phone-hangup
     on_press:
       - intercom_api.decline_call: intercom
-
-  - platform: template
-    name: Refresh Contacts
-    id: refresh_contacts_button
-    icon: mdi:refresh
-    on_press:
-      - lambda: |-
-          auto devices = id(ha_active_devices).state;
-          if (!devices.empty()) {
-            id(intercom).set_contacts(devices);
-          }
 
   - platform: restart
     name: Restart

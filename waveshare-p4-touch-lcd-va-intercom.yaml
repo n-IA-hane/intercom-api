@@ -60,8 +60,6 @@ substitutions:
   voice_assist_muted_phase_id: "12"
   voice_assist_timer_finished_phase_id: "20"
 
-  # Font — explicit glyphs (printable ASCII + degree + Italian accents)
-  font_glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~°àèéìòùÀÈÉÌÒÙ"
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -654,51 +652,51 @@ light:
 font:
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 700
     id: font_title
     size: 32
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 700
     id: font_state
     size: 48
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 400
     id: font_body
     size: 22
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 400
     id: font_small
     size: 16
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 500
     id: font_button
     size: 24
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
-      family: Roboto
+      family: Noto Sans
       weight: 400
     id: font_response
     size: 20
-    glyphs: "${font_glyphs}"
+    glyphsets: [GF_Latin_Core]
 
   - file:
       type: gfonts
@@ -1735,16 +1733,16 @@ lvgl:
                   on_click:
                     - voice_assistant.stop:
                   widgets:
-                    - image:
-                        align: CENTER
-                        y: -40
-                        src: img_listening
                     - label:
-                        align: BOTTOM_MID
-                        y: -40
+                        align: TOP_MID
+                        y: 80
                         text: "Listening..."
                         text_color: 0x2ECC71
                         text_font: font_state
+                    - image:
+                        align: BOTTOM_MID
+                        y: -10
+                        src: img_listening
 
               # --- VA THINKING group ---
               - obj:
@@ -1759,14 +1757,10 @@ lvgl:
                   on_click:
                     - voice_assistant.stop:
                   widgets:
-                    - image:
-                        align: CENTER
-                        y: -60
-                        src: img_thinking
                     - label:
                         id: thinking_text_label
-                        align: BOTTOM_MID
-                        y: -60
+                        align: TOP_MID
+                        y: 10
                         width: 720
                         text: ""
                         text_color: 0xFFFFFF
@@ -1774,11 +1768,15 @@ lvgl:
                         long_mode: WRAP
                         text_align: CENTER
                     - label:
-                        align: BOTTOM_MID
-                        y: -20
+                        align: TOP_MID
+                        y: 140
                         text: "Thinking..."
                         text_color: 0xF39C12
                         text_font: font_state
+                    - image:
+                        align: BOTTOM_MID
+                        y: -10
+                        src: img_thinking
 
               # --- VA REPLYING group ---
               - obj:
@@ -1794,21 +1792,21 @@ lvgl:
                   on_click:
                     - voice_assistant.stop:
                   widgets:
-                    - image:
-                        id: mood_bg
-                        align: CENTER
-                        y: -60
-                        src: mood_neutral
                     - label:
                         id: replying_text_label
-                        align: BOTTOM_MID
-                        y: -20
+                        align: TOP_MID
+                        y: 10
                         width: 720
                         text: ""
                         text_color: 0xFFFFFF
                         text_font: font_response
                         long_mode: WRAP
                         text_align: CENTER
+                    - image:
+                        id: mood_bg
+                        align: BOTTOM_MID
+                        y: -10
+                        src: mood_neutral
 
               # --- VA ERROR group ---
               - obj:
@@ -1823,16 +1821,16 @@ lvgl:
                   on_click:
                     - voice_assistant.stop:
                   widgets:
-                    - image:
-                        align: CENTER
-                        y: -40
-                        src: img_error
                     - label:
-                        align: BOTTOM_MID
-                        y: -40
+                        align: TOP_MID
+                        y: 80
                         text: "Error"
                         text_color: 0xE74C3C
                         text_font: font_state
+                    - image:
+                        align: BOTTOM_MID
+                        y: -10
+                        src: img_error
 
               # --- VA MUTED group ---
               - obj:
@@ -2373,18 +2371,6 @@ button:
     on_press:
       - intercom_api.decline_call: intercom
 
-  - platform: template
-    name: Refresh Contacts
-    id: refresh_contacts_button
-    icon: mdi:refresh
-    on_press:
-      - lambda: |-
-          auto devices = id(ha_active_devices).state;
-          if (!devices.empty()) {
-            id(intercom).set_contacts(devices);
-            id(peer_name) = id(intercom).get_current_destination();
-          }
-      - script.execute: draw_display
 
   - platform: restart
     name: Restart
