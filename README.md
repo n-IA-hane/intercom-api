@@ -1,6 +1,6 @@
 # ESPHome Intercom API
 
-From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience — with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.
+From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience -with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.
 
 ![Dashboard Preview](readme-img/dashboard.png)
 
@@ -47,7 +47,7 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 | 🔔 **Simple Doorbell** | 1 ESP + Browser | Ring notification, answer from phone/PC |
 | 🏠 **Home Intercom** | Multiple ESPs | Call between rooms (Kitchen ↔ Bedroom) |
 | 📞 **PBX-like System** | ESPs + Browser + HA | Full intercom network with Home Assistant as a participant |
-| 🤖 **Voice Assistant + Intercom** | ESP with display | Wake word, voice commands, weather, intercom — all on one device |
+| 🤖 **Voice Assistant + Intercom** | ESP with display | Wake word, voice commands, weather, intercom -all on one device |
 
 **Home Assistant acts as the central hub** - it can receive calls (doorbell), make calls to ESPs, and relay calls between devices. All audio flows through HA, enabling remote access without complex NAT/firewall configuration.
 
@@ -168,7 +168,7 @@ graph TB
 4. Restart Home Assistant
 5. Go to **Settings → Integrations → Add Integration** → search "Intercom Native" → click **Submit**
 
-The integration automatically registers the Lovelace card — no manual frontend setup needed.
+The integration automatically registers the Lovelace card -no manual frontend setup needed.
 
 #### Option B: Manual install
 
@@ -336,7 +336,7 @@ text_sensor:
 
 ### 3. Lovelace Card
 
-The Lovelace card is **automatically registered** when the integration loads — no manual file copying or resource registration needed.
+The Lovelace card is **automatically registered** when the integration loads -no manual file copying or resource registration needed.
 
 #### Add the card to your dashboard
 
@@ -359,9 +359,9 @@ mode: full  # or 'simple'
 
 The card automatically discovers ESPHome devices with the `intercom_api` component.
 
-The Lovelace card provides **full-duplex bidirectional audio** with the ESP device — you can talk and listen simultaneously through your browser or the Home Assistant Companion app. The card captures audio from your microphone via `getUserMedia()` and plays incoming audio from the ESP in real-time.
+The Lovelace card provides **full-duplex bidirectional audio** with the ESP device -you can talk and listen simultaneously through your browser or the Home Assistant Companion app. The card captures audio from your microphone via `getUserMedia()` and plays incoming audio from the ESP in real-time.
 
-> **Important: HTTPS required** — Browser microphone access (`getUserMedia`) requires a secure context. You need HTTPS to use the card's audio features. Solutions: [Nabu Casa](https://www.nabucasa.com/), Let's Encrypt, reverse proxy with SSL, or self-signed certificate. Exception: `localhost` works without HTTPS.
+> **Important: HTTPS required** -Browser microphone access (`getUserMedia`) requires a secure context. You need HTTPS to use the card's audio features. Solutions: [Nabu Casa](https://www.nabucasa.com/), Let's Encrypt, reverse proxy with SSL, or self-signed certificate. Exception: `localhost` works without HTTPS.
 
 > **Note**: Devices must be added to Home Assistant via the ESPHome integration before they appear in the card.
 
@@ -438,7 +438,7 @@ graph TB
 
 When an ESP device has "Home Assistant" selected as destination and initiates a call (via GPIO button press or template button), it fires an `esphome.intercom_call` event for notifications and the Lovelace card goes into ringing state with Answer/Decline buttons:
 
-![ESP calling Home Assistant — Card ringing](readme-img/call-from-esp-to-homeassistant.png)
+![ESP calling Home Assistant -Card ringing](readme-img/call-from-esp-to-homeassistant.png)
 
 ---
 
@@ -506,7 +506,7 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 
 | Mode | CPU | Memory | Use Case |
 |------|-----|--------|----------|
-| `voip_low_cost` | Low | Low | **Recommended** — sufficient for all setups including VA + MWW |
+| `voip_low_cost` | Low | Low | **Recommended** -sufficient for all setups including VA + MWW |
 | `voip_high_perf` | Medium | Medium | Better filter quality, try if not using display/heavy workloads |
 | `sr_low_cost` | Medium | Medium | Speech recognition optimized, alternative to voip modes |
 | `sr_high_perf` | High | **Very High** | Best cancellation but may exhaust DMA memory on ESP32-S3 |
@@ -618,7 +618,7 @@ sequenceDiagram
 | Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) |
 | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path, LVGL touch display) |
 
-> **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
+> **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) -every bit helps!
 
 ### Requirements
 
@@ -631,13 +631,13 @@ sequenceDiagram
 
 ## i2s_audio_duplex
 
-This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with:
+This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** -a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with:
 
 - **True full-duplex** on a single I2S bus
-- **Built-in AEC integration** — stereo digital feedback, TDM hardware reference, or ring buffer
-- **Dual mic paths** — raw (pre-AEC) for wake word + AEC-processed for voice assistant
-- **FIR decimation** — run the bus at 48kHz (codec native) while processing at 16kHz
-- **Reference counting** — multiple consumers share the same mic safely
+- **Built-in AEC integration** -stereo digital feedback, TDM hardware reference, or ring buffer
+- **Dual mic paths** -raw (pre-AEC) for wake word + AEC-processed for voice assistant
+- **FIR decimation** -run the bus at 48kHz (codec native) while processing at 16kHz
+- **Reference counting** -multiple consumers share the same mic safely
 
 ### Audio Pipeline
 
@@ -649,12 +649,12 @@ The I2S bus runs at a higher rate for better DAC/ADC quality, with internal FIR 
 | Output Rate | Configurable (`output_sample_rate`, e.g. 16000 Hz) |
 | Decimation | FIR filter, ratio = bus/output (e.g. ×3 for 48→16kHz) |
 | FIR Filter | 31-tap, Kaiser beta=8.0, ~60dB stopband, linear phase |
-| Speaker Input | Bus rate (48kHz) — ESPHome resampler upsamples before play |
-| Mic Output | Output rate (16kHz) — for MWW, Voice Assistant, Intercom |
+| Speaker Input | Bus rate (48kHz) -ESPHome resampler upsamples before play |
+| Mic Output | Output rate (16kHz) -for MWW, Voice Assistant, Intercom |
 
 MWW, Voice Assistant STT, and Intercom operate at 16kHz internally. The I2S bus runs at 48kHz (the codec's native rate), so:
 - **TTS** via `announcement_pipeline` with `sample_rate: 48000` arrives at 48kHz from HA. Full 48kHz quality to the DAC.
-- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player — 48kHz when configured as such.
+- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player -48kHz when configured as such.
 - **Media files** (timer sounds, notifications) at native 48kHz are played directly without resampling.
 - **Intercom audio** is sent/received at 16kHz over TCP and upsampled to 48kHz for local playback via the resampler speaker.
 
@@ -697,7 +697,7 @@ If your codec supports it (ES8311, and potentially others with DAC loopback), **
 
 **How it works:**
 - ES8311 outputs a stereo I2S frame: **L channel = DAC loopback** (what the speaker is playing), **R channel = ADC** (microphone)
-- The reference signal is **sample-accurate** — same I2S frame as the mic capture, no timing estimation needed
+- The reference signal is **sample-accurate** -same I2S frame as the mic capture, no timing estimation needed
 - `aec_reference_delay_ms: 10` (just a few ms for internal codec latency, vs ~80ms for ring buffer mode)
 
 ```yaml
@@ -714,11 +714,11 @@ esphome:
         id(i2c_bus).write(0x18, data, 2);
 ```
 
-Without stereo feedback, the component falls back to a **ring buffer reference** — it copies speaker audio to a delay buffer and reads it back ~80ms later to match the acoustic path. This works with any codec but requires careful delay tuning and is never perfectly aligned.
+Without stereo feedback, the component falls back to a **ring buffer reference** -it copies speaker audio to a delay buffer and reads it back ~80ms later to match the acoustic path. This works with any codec but requires careful delay tuning and is never perfectly aligned.
 
 ### TDM Hardware Reference (ES7210 + ES8311)
 
-For boards with a multi-channel ADC (ES7210), the AEC reference can be captured as a hardware analog signal — the ES8311 DAC output is wired to an ES7210 input (MIC3), providing a sample-aligned reference from the same TDM I2S frame:
+For boards with a multi-channel ADC (ES7210), the AEC reference can be captured as a hardware analog signal -the ES8311 DAC output is wired to an ES7210 input (MIC3), providing a sample-aligned reference from the same TDM I2S frame:
 
 ```yaml
 i2s_audio_duplex:
@@ -741,7 +741,7 @@ i2s_audio_duplex:
 
 ### Dual Mic Paths
 
-`i2s_audio_duplex` provides two microphone outputs — raw (pre-AEC) and AEC-processed — enabling wake word detection during TTS playback:
+`i2s_audio_duplex` provides two microphone outputs -raw (pre-AEC) and AEC-processed -enabling wake word detection during TTS playback:
 
 ```yaml
 microphone:
@@ -769,20 +769,20 @@ See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md)
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball — VA + Intercom</b></td>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 -Weather + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 -Intercom + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball -VA + Intercom</b></td>
   </tr>
 </table>
 
-The Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection. No display required (works on headless devices like the Waveshare S3 Audio); on devices with a screen, you also get a full touch UI:
+The Voice Assistant and Intercom coexist seamlessly on the same hardware -shared microphone, shared speaker (via audio mixer), shared wake word detection. No display required (works on headless devices like the Waveshare S3 Audio); on devices with a screen, you also get a full touch UI:
 
-- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
-- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
-- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
-- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
-- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
-- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
+- **Always listening** -Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
+- **Touch or voice** -Start the assistant by saying the wake word or tapping the screen (on touch displays)
+- **Barge-in** -Say the wake word during a TTS response to interrupt and ask a new question
+- **Intercom calls** -Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
+- **Weather at a glance** -Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
+- **Mood-aware responses** -The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
 
 ### AEC Best Practices
 
@@ -793,7 +793,7 @@ AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU co
 ```yaml
 esp_aec:
   sample_rate: 16000
-  filter_length: 4       # 64ms tail — sufficient for integrated codecs
+  filter_length: 4       # 64ms tail -sufficient for integrated codecs
   mode: voip_low_cost    # Light on resources, good echo cancellation
 ```
 
@@ -805,14 +805,14 @@ If you are **not** using a display or AEC-heavy workloads, and want to experimen
 
 AEC processing is automatically gated: it only runs when the speaker had real audio within the last 250ms. When the speaker is silent (idle, no TTS, no intercom audio), AEC is bypassed and mic audio passes through unchanged.
 
-This prevents the adaptive filter from drifting during silence, which would otherwise suppress the mic signal and kill wake word detection. The gating is transparent — no configuration needed.
+This prevents the adaptive filter from drifting during silence, which would otherwise suppress the mic signal and kill wake word detection. The gating is transparent -no configuration needed.
 
 ### Custom Wake Words
 
 Two custom Micro Wake Word models trained by the author are included in the `wakewords/` directory:
 
-- **Hey Bender** (`hey_bender.json`) — inspired by the Futurama character
-- **Hey Trowyayoh** (`hey_trowyayoh.json`) — phonetic spelling of the Italian word *"troiaio"* (roughly: "what a mess", or more colorfully, "bullshit")
+- **Hey Bender** (`hey_bender.json`) -inspired by the Futurama character
+- **Hey Trowyayoh** (`hey_trowyayoh.json`) -phonetic spelling of the Italian word *"troiaio"* (roughly: "what a mess", or more colorfully, "bullshit")
 
 These are standard `.json` + `.tflite` files compatible with ESPHome's `micro_wake_word`. To use them:
 
@@ -837,18 +837,18 @@ Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom 
 
 Key benefits: lower CPU (dirty-region only), no `component.update` contention, native animation (`animimg`), mood-based backgrounds via `lv_img_set_src()`, and automatic text scrolling (`SCROLL_CIRCULAR`).
 
-Timer overlays use `top_layer` with `LV_OBJ_FLAG_HIDDEN` — visible on any page. Media files are auto-resampled by the `platform: resampler` speaker in the mixer pipeline.
+Timer overlays use `top_layer` with `LV_OBJ_FLAG_HIDDEN` -visible on any page. Media files are auto-resampled by the `platform: resampler` speaker in the mixer pipeline.
 
 ### Experiment and Tune
 
 Every setup is different: room acoustics, mic sensitivity, speaker placement, codec characteristics. We encourage you to:
 
-- **Try different `filter_length` values** (4 vs 8) — longer isn't always better if your acoustic path is short
-- **Toggle AEC on/off during calls** to hear the difference — the `aec` switch is available in HA
-- **Adjust `mic_gain`** — higher gain helps voice detection but can introduce noise
-- **Test MWW during TTS** with your specific wake word — some words are more robust than others
-- **Compare `voip_low_cost` vs `voip_high_perf`** — the difference may be subtle in your environment
-- **Monitor ESP logs** — AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
+- **Try different `filter_length` values** (4 vs 8) -longer isn't always better if your acoustic path is short
+- **Toggle AEC on/off during calls** to hear the difference -the `aec` switch is available in HA
+- **Adjust `mic_gain`** -higher gain helps voice detection but can introduce noise
+- **Test MWW during TTS** with your specific wake word -some words are more robust than others
+- **Compare `voip_low_cost` vs `voip_high_perf`** -the difference may be subtle in your environment
+- **Monitor ESP logs** -AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
 
 ---
 
@@ -1019,59 +1019,59 @@ Working configs tested on real hardware are included in the repository:
 
 ### v2.1.2 (Current)
 
-- **Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 support** — Full VA + MWW + Intercom on the ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM) with 10.1" MIPI DSI capacitive touch display (GT9271), ES8311 DAC + ES7210 4-ch ADC, WiFi via ESP32-C6 co-processor (SDIO). Ready-to-flash YAML config included (`waveshare-p4-touch-lcd-va-intercom.yaml`).
+- **Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 support** -Full VA + MWW + Intercom on the ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM) with 10.1" MIPI DSI capacitive touch display (GT9271), ES8311 DAC + ES7210 4-ch ADC, WiFi via ESP32-C6 co-processor (SDIO). Ready-to-flash YAML config included (`waveshare-p4-touch-lcd-va-intercom.yaml`).
 
-- **P4 split-screen UI** — Portrait 800x1280 display divided into two halves: top is a swipeable LVGL tileview (weather page with current conditions, MDI icons, and 5-day forecast via `weather.get_forecasts` action; intercom page with contacts, call controls, and dynamic state groups), bottom is a touch-to-talk Voice Assistant area with animated avatar (20-frame idle animation), per-state images (listening, thinking, error), and mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix). Full overlay pages for no-WiFi, no-HA, and timer states.
+- **P4 split-screen UI** -Portrait 800x1280 display divided into two halves: top is a swipeable LVGL tileview (weather page with current conditions, MDI icons, and 5-day forecast via `weather.get_forecasts` action; intercom page with contacts, call controls, and dynamic state groups), bottom is a touch-to-talk Voice Assistant area with animated avatar (20-frame idle animation), per-state images (listening, thinking, error), and mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix). Full overlay pages for no-WiFi, no-HA, and timer states.
 
-- **Ringtone on incoming calls** — Devices now play a looping ringtone sound (`sounds/ringtone.flac`) while in ringing state. Ringtone stops automatically when the call is answered, declined, or times out.
+- **Ringtone on incoming calls** -Devices now play a looping ringtone sound (`sounds/ringtone.flac`) while in ringing state. Ringtone stops automatically when the call is answered, declined, or times out.
 
-- **LVGL image format fix (P4)** — Assistant animation images changed from `type: RGB` to `type: RGB565` with `byte_order: little_endian` to match the display's `LV_COLOR_DEPTH=16`. RGB (24-bit) with 16-bit color depth caused LVGL to assign `LV_IMG_CF_RGB888`, which the built-in decoder cannot open — resulting in "No data" placeholder.
+- **LVGL image format fix (P4)** -Assistant animation images changed from `type: RGB` to `type: RGB565` with `byte_order: little_endian` to match the display's `LV_COLOR_DEPTH=16`. RGB (24-bit) with 16-bit color depth caused LVGL to assign `LV_IMG_CF_RGB888`, which the built-in decoder cannot open -resulting in "No data" placeholder.
 
 ### v2.1.1
 
-- **Waveshare ESP32-S3-AUDIO-Board support** — Full VA + MWW + Intercom on the Waveshare ESP32-S3-AUDIO-Board (ES8311 DAC + ES7210 4-ch ADC). Ready-to-flash YAML config included (`waveshare-s3-audio-va-intercom.yaml`).
+- **Waveshare ESP32-S3-AUDIO-Board support** -Full VA + MWW + Intercom on the Waveshare ESP32-S3-AUDIO-Board (ES8311 DAC + ES7210 4-ch ADC). Ready-to-flash YAML config included (`waveshare-s3-audio-va-intercom.yaml`).
 
-- **TDM hardware AEC reference** — New `use_tdm_reference` mode for boards with ES7210 multi-channel ADC. ES7210 operates in TDM mode with one slot carrying the voice mic and another carrying the DAC analog output (via MIC3). Reference is sample-aligned from the same I2S frame — no ring buffer delay needed. I2S uses `I2S_SLOT_MODE_STEREO` for TDM (MONO only puts slot 0 in DMA). ES8311 reads/writes slot 0 as standard I2S.
+- **TDM hardware AEC reference** -New `use_tdm_reference` mode for boards with ES7210 multi-channel ADC. ES7210 operates in TDM mode with one slot carrying the voice mic and another carrying the DAC analog output (via MIC3). Reference is sample-aligned from the same I2S frame -no ring buffer delay needed. I2S uses `I2S_SLOT_MODE_STEREO` for TDM (MONO only puts slot 0 in DMA). ES8311 reads/writes slot 0 as standard I2S.
 
-- **AEC reference volume fix** — Research confirmed that both ES8311 digital feedback (stereo loopback) and ES7210 TDM analog capture provide reference signals that already include hardware DAC volume. The previous `aec_reference_volume` scaling was double-attenuating the reference in these modes, degrading echo cancellation. Now: `aec_reference_volume` is only applied in ring buffer mode (raw PCM before DAC). Stereo and TDM modes apply only `mic_attenuation` for level matching.
+- **AEC reference volume fix** -Research confirmed that both ES8311 digital feedback (stereo loopback) and ES7210 TDM analog capture provide reference signals that already include hardware DAC volume. The previous `aec_reference_volume` scaling was double-attenuating the reference in these modes, degrading echo cancellation. Now: `aec_reference_volume` is only applied in ring buffer mode (raw PCM before DAC). Stereo and TDM modes apply only `mic_attenuation` for level matching.
 
-- **Robustness improvements** — Ring buffer race condition fix (atomic request flags for deferred reset), AEC buffer allocation checks, task deletion UB fix (`task_exited_` atomic flag), I2S persistent error recovery (consecutive error counter), speaker ref buffer allocation guard for stereo/TDM modes (saves 25-32KB RAM).
+- **Robustness improvements** -Ring buffer race condition fix (atomic request flags for deferred reset), AEC buffer allocation checks, task deletion UB fix (`task_exited_` atomic flag), I2S persistent error recovery (consecutive error counter), speaker ref buffer allocation guard for stereo/TDM modes (saves 25-32KB RAM).
 
-- **Relaxed atomics** — All `std::atomic` operations use `memory_order_relaxed` (safe on ESP32-S3 cache-coherent Xtensa, eliminates unnecessary MEMW fence instructions in the audio hot loop).
+- **Relaxed atomics** -All `std::atomic` operations use `memory_order_relaxed` (safe on ESP32-S3 cache-coherent Xtensa, eliminates unnecessary MEMW fence instructions in the audio hot loop).
 
 ### v2.1.0
 
-- **48kHz I2S bus with FIR decimation** — I2S bus now runs at 48kHz (ES8311 native rate) for noticeably better TTS and media audio quality. Internal 32-tap FIR anti-alias filter (Kaiser β=8.0, ~60dB stopband attenuation, float arithmetic on ESP32-S3 hardware FPU) decimates mic/AEC/VA/intercom paths to 16kHz. Speaker path stays at 48kHz end-to-end: HA transcodes media via ffmpeg_proxy directly to FLAC 48kHz, ESPHome resampler handles any other source rate. New `output_sample_rate` config option; fully backward compatible (omitting it = no change, ratio=1 = zero-overhead memcpy path).
+- **48kHz I2S bus with FIR decimation** -I2S bus now runs at 48kHz (ES8311 native rate) for noticeably better TTS and media audio quality. Internal 32-tap FIR anti-alias filter (Kaiser β=8.0, ~60dB stopband attenuation, float arithmetic on ESP32-S3 hardware FPU) decimates mic/AEC/VA/intercom paths to 16kHz. Speaker path stays at 48kHz end-to-end: HA transcodes media via ffmpeg_proxy directly to FLAC 48kHz, ESPHome resampler handles any other source rate. New `output_sample_rate` config option; fully backward compatible (omitting it = no change, ratio=1 = zero-overhead memcpy path).
 
-- **FreeRTOS task layout overhaul — MWW detection fully restored** — Audio task (`i2s_duplex`) moved from Core 1 (priority 9) to **Core 0 (priority 19)**, matching the canonical Espressif AEC pattern. MWW inference (unpinned, priority 3) now naturally schedules to Core 1, completely free from AEC interference. Result: **10/10 wake word detection during TTS** (was 1/10). AEC CPU cost is ~42% of Core 0 per 16ms frame regardless — the fix is architectural separation, not mode change. LVGL/display rendering on Core 1 is also no longer preempted by AEC every 16ms. Intercom task priorities aligned to canonical values (srv: 5, tx: 5, spk: 4).
+- **FreeRTOS task layout overhaul -MWW detection fully restored** -Audio task (`i2s_duplex`) moved from Core 1 (priority 9) to **Core 0 (priority 19)**, matching the canonical Espressif AEC pattern. MWW inference (unpinned, priority 3) now naturally schedules to Core 1, completely free from AEC interference. Result: **10/10 wake word detection during TTS** (was 1/10). AEC CPU cost is ~42% of Core 0 per 16ms frame regardless -the fix is architectural separation, not mode change. LVGL/display rendering on Core 1 is also no longer preempted by AEC every 16ms. Intercom task priorities aligned to canonical values (srv: 5, tx: 5, spk: 4).
 
-- **Audio reliability fixes (code audit)** — Several race conditions and stuck-state bugs eliminated:
+- **Audio reliability fixes (code audit)** -Several race conditions and stuck-state bugs eliminated:
   - `ERROR` message handler now properly closes socket, resets FSM, and fires `on_call_failed` (was a no-op, leaving ESP stuck in OUTGOING state)
   - `OUTGOING` timeout now calls `set_active_(false)` before `end_call_()`, stopping mic/speaker on timeout
   - `dc_offset_` IIR state reset between call sessions (was accumulating across sessions, causing audio startup glitch on radio streams)
   - TOCTOU fixes: single atomic load of `client_.socket` in select loop and `call_state_` in accept condition
   - Removed duplicate `STOP` send in `stop()` (already sent by `close_client_socket_()`)
 
-- **Code cleanup & trigger unification** — Removed `client_mode_` and the connect/disconnect client-mode branch (never used in production). Unified triggers: `on_incoming_call` merged into `on_ringing`, `on_call_end` removed (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer and AEC switches.
+- **Code cleanup & trigger unification** -Removed `client_mode_` and the connect/disconnect client-mode branch (never used in production). Unified triggers: `on_incoming_call` merged into `on_ringing`, `on_call_end` removed (covered by `on_hangup`/`on_call_failed`). Added `entity_category: config` on auto_answer and AEC switches.
 
-- **intercom_native HA integration refactor** — `websocket_api.py` restructured: 6 TCP session callbacks extracted from nested closures into `IntercomSession` instance methods (`_on_audio`, `_on_disconnected`, `_on_ringing`, `_on_answered`, `_on_stop_received`, `_on_error_received`); `_create_tcp_client()` factory and `_stop_device_sessions()` helper extracted (eliminates duplicate stop/decline logic in `websocket_stop` and `websocket_decline`). Dead code removed: `_set_incoming_caller()` function, `on_connected` callback from `tcp_client.py`, unused protocol/audio constants from `const.py` (`PROTOCOL_VERSION`, `FLAG_END`, `ERR_*`, `SAMPLE_RATE`, `BITS_PER_SAMPLE`, `PING_TIMEOUT`, `EVENT_*`). Frontend cleanup: all `console.log` debug output removed from `intercom-processor.js`, dead `_unsubscribeState` subscription removed from `intercom-card.js`. Manifest bumped to 2.0.5 with `hassfest`-compliant key ordering.
+- **intercom_native HA integration refactor** -`websocket_api.py` restructured: 6 TCP session callbacks extracted from nested closures into `IntercomSession` instance methods (`_on_audio`, `_on_disconnected`, `_on_ringing`, `_on_answered`, `_on_stop_received`, `_on_error_received`); `_create_tcp_client()` factory and `_stop_device_sessions()` helper extracted (eliminates duplicate stop/decline logic in `websocket_stop` and `websocket_decline`). Dead code removed: `_set_incoming_caller()` function, `on_connected` callback from `tcp_client.py`, unused protocol/audio constants from `const.py` (`PROTOCOL_VERSION`, `FLAG_END`, `ERR_*`, `SAMPLE_RATE`, `BITS_PER_SAMPLE`, `PING_TIMEOUT`, `EVENT_*`). Frontend cleanup: all `console.log` debug output removed from `intercom-processor.js`, dead `_unsubscribeState` subscription removed from `intercom-card.js`. Manifest bumped to 2.0.5 with `hassfest`-compliant key ordering.
 
-- **Display & UI fixes** — SPI clock 40MHz (halves GC9A01A flush time), LVGL `buffer_size` 50%, instant page transitions via `lv_disp_load_scr()`. Fixed stale VA response text persisting on screen when media player starts later: LVGL reply labels now explicitly cleared when `text_response` is set to empty, preventing previous conversation text from reappearing hours later.
+- **Display & UI fixes** -SPI clock 40MHz (halves GC9A01A flush time), LVGL `buffer_size` 50%, instant page transitions via `lv_disp_load_scr()`. Fixed stale VA response text persisting on screen when media player starts later: LVGL reply labels now explicitly cleared when `text_response` is set to empty, preventing previous conversation text from reappearing hours later.
 
-**What's next — v2.2.0 and beyond**
+**What's next -v2.2.0 and beyond**
 
-- **ESP-AFE integration** — Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component — both will remain supported. Noise suppression would particularly benefit analog reference setups (Waveshare ES7210 TDM) where ADC noise floor is higher than digital feedback (ES8311 stereo).
-- **ESP32-P4 hardware DSP** — The P4 has a dedicated audio DSP that could potentially offload AEC and noise suppression from the application cores entirely. Initial support is already shipping (v2.1.2), further optimization will explore the hardware accelerators.
+- **ESP-AFE integration** -Espressif's full Audio Front-End pipeline bundles beamforming, noise suppression, and echo cancellation in a single optimized block. The goal is to offer it as an alternative to the current `esp_aec` component -both will remain supported. Noise suppression would particularly benefit analog reference setups (Waveshare ES7210 TDM) where ADC noise floor is higher than digital feedback (ES8311 stereo).
+- **ESP32-P4 hardware DSP** -The P4 has a dedicated audio DSP that could potentially offload AEC and noise suppression from the application cores entirely. Initial support is already shipping (v2.1.2), further optimization will explore the hardware accelerators.
 
 ### v2.0.5
 
-- **i2s_audio_duplex: mixer compatibility fix** — Added `audio_output_callback_` forwarding from the I2S audio task to the duplex speaker. Without this, `platform: mixer` source speakers (va_speaker, intercom_speaker) never detect that audio has been played, staying stuck in `STATE_RUNNING` forever. This caused `media_player.is_announcing` to stay true indefinitely after TTS playback.
-- **i2s_audio_duplex: speaker start/stop idempotency** — `start()` now uses an atomic `listener_registered_` guard with `compare_exchange_strong` to prevent multiple `xSemaphoreTake()` per stream session. Previously, `play()` calling `start()` before `loop()` set `STATE_RUNNING` caused the semaphore count to leak (N takes, 1 give), preventing the speaker from ever stopping.
-- **New: `xiaozhi-ball-v3.yaml`** — Voice Assistant + Intercom + LVGL display config for Xiaozhi Ball V3. Uses LVGL declarative widgets instead of manual C++ display lambdas: `animimg` for idle animation, mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix), `SCROLL_CIRCULAR` for long text, timer overlay on `top_layer`. Coexists with VA, MWW, AEC, and intercom on a single ESP32-S3.
-- **Timer alarm fix** — Replaced `REPEAT_ONE` media player mode (caused TTS to loop instead of timer sound due to race condition) with explicit `timer_alarm_loop` script. Fixed timer sound not playing: converted `timer_finished.flac` from 48kHz to 16kHz to match announcement pipeline sample rate.
-- **Display fixes** — LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions (labels cleared in `text_sensor.on_value` handlers)
-- **Intercom stack overflow fix** — Increased intercom task stack from 4KB to 8KB to prevent crash during concurrent TTS playback
-- **YAML reorganization** — All configs renamed to descriptive names: `xiaozhi-ball-v3.yaml`, `xiaozhi-ball-v3-intercom.yaml`, `esp32-s3-mini-va-intercom.yaml`, `esp32-s3-mini-intercom.yaml`
+- **i2s_audio_duplex: mixer compatibility fix** -Added `audio_output_callback_` forwarding from the I2S audio task to the duplex speaker. Without this, `platform: mixer` source speakers (va_speaker, intercom_speaker) never detect that audio has been played, staying stuck in `STATE_RUNNING` forever. This caused `media_player.is_announcing` to stay true indefinitely after TTS playback.
+- **i2s_audio_duplex: speaker start/stop idempotency** -`start()` now uses an atomic `listener_registered_` guard with `compare_exchange_strong` to prevent multiple `xSemaphoreTake()` per stream session. Previously, `play()` calling `start()` before `loop()` set `STATE_RUNNING` caused the semaphore count to leak (N takes, 1 give), preventing the speaker from ever stopping.
+- **New: `xiaozhi-ball-v3.yaml`** -Voice Assistant + Intercom + LVGL display config for Xiaozhi Ball V3. Uses LVGL declarative widgets instead of manual C++ display lambdas: `animimg` for idle animation, mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix), `SCROLL_CIRCULAR` for long text, timer overlay on `top_layer`. Coexists with VA, MWW, AEC, and intercom on a single ESP32-S3.
+- **Timer alarm fix** -Replaced `REPEAT_ONE` media player mode (caused TTS to loop instead of timer sound due to race condition) with explicit `timer_alarm_loop` script. Fixed timer sound not playing: converted `timer_finished.flac` from 48kHz to 16kHz to match announcement pipeline sample rate.
+- **Display fixes** -LVGL scrollbar disabled on round screen, battery NaN guard at boot, stale text clearing between VA interactions (labels cleared in `text_sensor.on_value` handlers)
+- **Intercom stack overflow fix** -Increased intercom task stack from 4KB to 8KB to prevent crash during concurrent TTS playback
+- **YAML reorganization** -All configs renamed to descriptive names: `xiaozhi-ball-v3.yaml`, `xiaozhi-ball-v3-intercom.yaml`, `esp32-s3-mini-va-intercom.yaml`, `esp32-s3-mini-intercom.yaml`
 
 ### v2.0.3
 
