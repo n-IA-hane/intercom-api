@@ -62,13 +62,6 @@ On devices with a display (Xiaozhi Ball V3, Waveshare P4 10.1" Touch LCD), the V
 - **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
 - **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
 
-<table>
-  <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="300"/><br/><b>Weather + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="300"/><br/><b>Intercom + Voice Assistant</b></td>
-  </tr>
-</table>
-
 ```mermaid
 graph TD
     HA[🏠 Home Assistant<br/>PBX hub]
@@ -667,13 +660,6 @@ sequenceDiagram
 - I2S speaker amplifier (MAX98357A, ES8311, etc.)
 - ESP-IDF framework (not Arduino)
 
-<table>
-  <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Weather</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Intercom</b></td>
-  </tr>
-</table>
-
 ### Single-Bus Codecs (ES8311, ES8388, WM8960)
 
 Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use the included `i2s_audio_duplex` component:
@@ -714,6 +700,13 @@ See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md)
 ## Voice Assistant Coexistence & AEC Best Practices
 
 ![Voice Assistant during Intercom call](readme-img/intercom_va.gif)
+
+<table>
+  <tr>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Weather</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Intercom</b></td>
+  </tr>
+</table>
 
 The intercom can run alongside ESPHome's **Voice Assistant** (VA) and **Micro Wake Word** (MWW) on the same device. This combination is powerful but pushes the ESP32-S3 hardware to its limits. This section documents what we learned from extensive testing.
 
