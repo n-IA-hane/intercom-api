@@ -699,12 +699,11 @@ See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md)
 
 ## Voice Assistant Coexistence & AEC Best Practices
 
-![Voice Assistant during Intercom call](readme-img/intercom_va.gif)
-
 <table>
   <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Weather</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Intercom</b></td>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom</b></td>
+    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball — VA + Intercom</b></td>
   </tr>
 </table>
 
