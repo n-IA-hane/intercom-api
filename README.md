@@ -47,7 +47,7 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 | 🔔 **Simple Doorbell** | 1 ESP + Browser | Ring notification, answer from phone/PC |
 | 🏠 **Home Intercom** | Multiple ESPs | Call between rooms (Kitchen ↔ Bedroom) |
 | 📞 **PBX-like System** | ESPs + Browser + HA | Full intercom network with Home Assistant as a participant |
-| 🤖 **Voice Assistant + Intercom** | ESP with display | Wake word, voice commands, weather, intercom, all on one device |
+| 🤖 **Voice Assistant + Intercom** | ESP (display optional) | Wake word, voice commands, weather, intercom, all on one device |
 
 **Home Assistant acts as the central hub** - it can receive calls (doorbell), make calls to ESPs, and relay calls between devices. All audio flows through HA, enabling remote access without complex NAT/firewall configuration.
 
