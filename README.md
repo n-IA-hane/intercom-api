@@ -701,8 +701,8 @@ See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md)
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom</b></td>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom + Voice Assistant</b></td>
     <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball — VA + Intercom</b></td>
   </tr>
 </table>
