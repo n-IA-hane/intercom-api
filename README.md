@@ -1,6 +1,6 @@
 # ESPHome Intercom API
 
-A complete voice assistant + intercom solution for ESP32 devices. This repository provides everything needed for a fully functional experience: full-duplex intercom, Voice Assistant with wake word detection, echo cancellation, LVGL display with animations, and ready-to-flash YAML configs for tested hardware — from simple doorbell to PBX-like multi-device system.
+From a simple ESPHome doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience. Full-duplex audio, wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash ESPHome configs for tested ESP32 hardware.
 
 ![Dashboard Preview](readme-img/dashboard.png)
 
@@ -51,17 +51,6 @@ A complete voice assistant + intercom solution for ESP32 devices. This repositor
 
 **Home Assistant acts as the central hub** - it can receive calls (doorbell), make calls to ESPs, and relay calls between devices. All audio flows through HA, enabling remote access without complex NAT/firewall configuration.
 
-### Voice Assistant + Intercom Experience
-
-On devices with a display (Xiaozhi Ball V3, Waveshare P4 10.1" Touch LCD), the Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection:
-
-- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
-- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
-- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
-- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
-- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
-- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
-
 ```mermaid
 graph TD
     HA[🏠 Home Assistant<br/>PBX hub]
@@ -111,6 +100,17 @@ This component was born from the limitations of [esphome-intercom](https://githu
 ### Bundled Components
 
 This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration (stereo digital feedback, TDM hardware reference, or ring buffer), dual mic paths (raw + AEC-processed), FIR decimation for multi-rate operation, and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome/components/i2s_audio_duplex/README.md) for full details.
+
+### Voice Assistant + Intercom Experience
+
+On devices with a display (Xiaozhi Ball V3, Waveshare P4 10.1" Touch LCD), the Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection:
+
+- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
+- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
+- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
+- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
+- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
+- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
 
 ---
 
