@@ -103,7 +103,7 @@ This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex
 
 ### Voice Assistant + Intercom Experience
 
-On devices with a display (Xiaozhi Ball V3, Waveshare P4 10.1" Touch LCD), the Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection:
+The Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection. No display required (works on headless devices like the Waveshare S3 Audio); on devices with a screen, you also get a full touch UI:
 
 - **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
 - **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
