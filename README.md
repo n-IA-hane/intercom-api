@@ -47,8 +47,27 @@ A complete voice assistant + intercom solution for ESP32 devices. This repositor
 | 🔔 **Simple Doorbell** | 1 ESP + Browser | Ring notification, answer from phone/PC |
 | 🏠 **Home Intercom** | Multiple ESPs | Call between rooms (Kitchen ↔ Bedroom) |
 | 📞 **PBX-like System** | ESPs + Browser + HA | Full intercom network with Home Assistant as a participant |
+| 🤖 **Voice Assistant + Intercom** | ESP with display | Wake word, voice commands, weather, intercom — all on one device |
 
 **Home Assistant acts as the central hub** - it can receive calls (doorbell), make calls to ESPs, and relay calls between devices. All audio flows through HA, enabling remote access without complex NAT/firewall configuration.
+
+### Voice Assistant + Intercom Experience
+
+On devices with a display (Xiaozhi Ball V3, Waveshare P4 10.1" Touch LCD), the Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection:
+
+- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
+- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
+- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
+- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
+- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
+- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
+
+<table>
+  <tr>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="300"/><br/><b>Weather + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="300"/><br/><b>Intercom + Voice Assistant</b></td>
+  </tr>
+</table>
 
 ```mermaid
 graph TD
@@ -648,6 +667,13 @@ sequenceDiagram
 - I2S speaker amplifier (MAX98357A, ES8311, etc.)
 - ESP-IDF framework (not Arduino)
 
+<table>
+  <tr>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Weather</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 10.1" — Intercom</b></td>
+  </tr>
+</table>
+
 ### Single-Bus Codecs (ES8311, ES8388, WM8960)
 
 Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use the included `i2s_audio_duplex` component:
@@ -1002,13 +1028,6 @@ Working configs tested on real hardware are included in the repository:
 ### v2.1.2 (Current)
 
 - **Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 support** — Full VA + MWW + Intercom on the ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM) with 10.1" MIPI DSI capacitive touch display (GT9271), ES8311 DAC + ES7210 4-ch ADC, WiFi via ESP32-C6 co-processor (SDIO). Ready-to-flash YAML config included (`waveshare-p4-touch-lcd-va-intercom.yaml`).
-
-<table>
-  <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="300"/><br/><b>Weather + VA</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="300"/><br/><b>Intercom + VA</b></td>
-  </tr>
-</table>
 
 - **P4 split-screen UI** — Portrait 800x1280 display divided into two halves: top is a swipeable LVGL tileview (weather page with current conditions, MDI icons, and 5-day forecast via `weather.get_forecasts` action; intercom page with contacts, call controls, and dynamic state groups), bottom is a touch-to-talk Voice Assistant area with animated avatar (20-frame idle animation), per-state images (listening, thinking, error), and mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix). Full overlay pages for no-WiFi, no-HA, and timer states.
 
