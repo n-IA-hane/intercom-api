@@ -1208,15 +1208,52 @@ script:
             args: ['id(my_time).now().hour', 'id(my_time).now().minute']
       - if:
           condition:
-            and:
-              - binary_sensor.is_off: usb_connected
-              - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
+            - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
           then:
             - lvgl.label.update:
                 id: idle_battery_label
-                text:
-                  format: "%.0f%%"
-                  args: ['id(battery_percentage).state']
+                text: !lambda |-
+                  bool charging = id(usb_connected).state;
+                  float bat = id(battery_percentage).state;
+                  float wifi = id(wifi_pct).state;
+                  std::string ret;
+      
+                  if (bat < 10) {
+                      ret = (charging ? "\U000F089F" : "\U000F008E");
+                  } else if (bat < 20) {
+                      ret = (charging ? "\U000F089C" : "\U000F007A");
+                  } else if (bat < 30) {
+                      ret = (charging ? "\U000F0086" : "\U000F007B");
+                  } else if (bat < 40) {
+                      ret = (charging ? "\U000F0087" : "\U000F007C");
+                  } else if (bat < 50) {
+                      ret = (charging ? "\U000F0088" : "\U000F007D");
+                  } else if (bat < 60) {
+                      ret = (charging ? "\U000F089D" : "\U000F007E");
+                  } else if (bat < 70) {
+                      ret = (charging ? "\U000F0089" : "\U000F007F");
+                  } else if (bat < 80) {
+                      ret = (charging ? "\U000F089E" : "\U000F0080");
+                  } else if (bat < 90) {
+                      ret = (charging ? "\U000F008A" : "\U000F0081");
+                  } else if (bat < 100) {
+                      ret = (charging ? "\U000F008B" : "\U000F0082");
+                  } else if (bat == 100) {
+                      ret = "\U000F0553";
+                  } else {
+                      ret = "";
+                  }
+                  
+                  if (wifi < 20) {
+                      ret = ret + "\U000F08BF";
+                  } else if (wifi < 55) {
+                      ret = ret + "\U000F08BC";
+                  } else if (wifi < 80) {
+                      ret = ret + "\U000F08BD";
+                  } else {
+                      ret = ret + "\U000F08BE";
+                  }                  
+                  return ret;
           else:
             - lvgl.label.update:
                 id: idle_battery_label
@@ -1281,22 +1318,22 @@ script:
   - id: backlight_timer
     mode: restart
     then:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      - delay: 30s
+      - light.turn_on:
+          id: backlight
+          brightness: 60%
+      - delay: 120s
       - if:
           condition:
             binary_sensor.is_on: usb_connected
           then:
             - light.turn_on:
                 id: backlight
-                brightness: 100%
+                brightness: 20%
           else:
-            - light.turn_on:
-                id: backlight
-                brightness: 100%
-            - delay: 30s
-            - light.turn_on:
-                id: backlight
-                brightness: 60%
-            - delay: 120s
             - light.turn_off: backlight
 
 # =============================================================================
@@ -2107,6 +2144,39 @@ font:
       weight: 400
     id: font_debug
     size: 14
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icons
+    size: 20
+    glyphs:
+      - "\U000F0553" # usb
+      
+      - "\U000F008E" # battery-0
+      - "\U000F007A" # battery-10
+      - "\U000F007B" # battery-20
+      - "\U000F007C" # battery-30
+      - "\U000F007D" # battery-40
+      - "\U000F007E" # battery-50
+      - "\U000F007F" # battery-60
+      - "\U000F0080" # battery-70
+      - "\U000F0081" # battery-80
+      - "\U000F0082" # battery-90
+      - "\U000F0079" # battery-100
+
+      - "\U000F089F" # battery-0  charging
+      - "\U000F089C" # battery-10 charging
+      - "\U000F0086" # battery-20 charging
+      - "\U000F0087" # battery-30 charging
+      - "\U000F0088" # battery-40 charging
+      - "\U000F089D" # battery-50 charging
+      - "\U000F0089" # battery-60 charging
+      - "\U000F089E" # battery-70 charging
+      - "\U000F008A" # battery-80 charging
+      - "\U000F008B" # battery-90 charging
+
+      - "\U000F08BF" # cell-0 <20%
+      - "\U000F08BC" # cell-1 <55%
+      - "\U000F08BD" # cell-2 <80%
+      - "\U000F08BE" # cell-3 <=100%
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2262,7 +2332,7 @@ lvgl:
             y: 2
             text: ""
             text_color: 0xFFFFFF
-            text_font: font_clock
+            text_font: icons
         - label:
             id: idle_clock_label
             align: BOTTOM_MID
