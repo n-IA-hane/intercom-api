@@ -1,6 +1,6 @@
 # ESPHome Intercom API
 
-From a simple ESPHome doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience. Full-duplex audio, wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash ESPHome configs for tested ESP32 hardware.
+From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience — with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.
 
 ![Dashboard Preview](readme-img/dashboard.png)
 
@@ -31,8 +31,8 @@ From a simple ESPHome doorbell to a PBX-like multi-device intercom, all the way 
 - [Entities and Controls](#entities-and-controls)
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
-- [Voice Assistant Coexistence & AEC Best Practices](#voice-assistant-coexistence--aec-best-practices)
-- [LVGL Display Coexistence](#lvgl-display-coexistence)
+- [i2s_audio_duplex](#i2s_audio_duplex)
+- [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -97,21 +97,6 @@ This component was born from the limitations of [esphome-intercom](https://githu
 - **Persistent Settings** - Volume, gain, AEC state saved to flash
 - **Remote Access** - Works through any HA remote access method
 
-### Bundled Components
-
-This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with true full-duplex operation, built-in AEC integration (stereo digital feedback, TDM hardware reference, or ring buffer), dual mic paths (raw + AEC-processed), FIR decimation for multi-rate operation, and reference counting for multi-consumer mic sharing. See the [i2s_audio_duplex documentation](esphome/components/i2s_audio_duplex/README.md) for full details.
-
-### Voice Assistant + Intercom Experience
-
-The Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection. No display required (works on headless devices like the Waveshare S3 Audio); on devices with a screen, you also get a full touch UI:
-
-- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
-- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
-- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
-- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
-- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
-- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
-
 ---
 
 ## Architecture
@@ -149,25 +134,6 @@ graph TB
 | Channels | Mono |
 | ESP Chunk Size | 512 bytes (256 samples = 16ms) |
 | Browser Chunk Size | 2048 bytes (1024 samples = 64ms) |
-
-### i2s_audio_duplex Audio Pipeline
-
-When using `i2s_audio_duplex` (for single-bus codecs like ES8311), the I2S bus runs at a higher rate for better DAC/ADC quality, with internal FIR decimation to produce 16kHz for processing:
-
-| Parameter | Value |
-|-----------|-------|
-| I2S Bus Rate | Configurable (`sample_rate`, e.g. 48000 Hz) |
-| Output Rate | Configurable (`output_sample_rate`, e.g. 16000 Hz) |
-| Decimation | FIR filter, ratio = bus/output (e.g. ×3 for 48→16kHz) |
-| FIR Filter | 31-tap, Kaiser beta=8.0, ~60dB stopband, linear phase |
-| Speaker Input | Bus rate (48kHz) — ESPHome resampler upsamples before play |
-| Mic Output | Output rate (16kHz) — for MWW, Voice Assistant, Intercom |
-
-MWW, Voice Assistant STT, and Intercom operate at 16kHz internally. The I2S bus runs at 48kHz (the codec's native rate), so:
-- **TTS** via `announcement_pipeline` with `sample_rate: 48000` arrives at 48kHz from HA (HA asks the TTS engine for 48kHz, or uses ffmpeg to resample). Full 48kHz quality to the DAC.
-- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player — 48kHz when configured as such.
-- **Media files** (timer sounds, notifications) at native 48kHz are played directly without resampling.
-- **Intercom audio** is sent/received at 16kHz over TCP and upsampled to 48kHz for local playback via the resampler speaker.
 
 ### TCP Protocol (Port 6054)
 
@@ -487,7 +453,6 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
 | `aec_id` | ID | - | Reference to esp_aec component |
-| `mic_bits` | int | 16 | Microphone bit depth (16 or 32) |
 | `dc_offset_removal` | bool | false | Remove DC offset (for mics like SPH0645) |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
 
@@ -524,6 +489,8 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `intercom_api.is_ringing` | State is Ringing (incoming) |
 | `intercom_api.is_calling` | State is Outgoing (waiting answer) |
 | `intercom_api.is_in_call` | State is Streaming (active call) |
+| `intercom_api.is_streaming` | Audio is actively streaming |
+| `intercom_api.is_answering` | Call is being answered |
 | `intercom_api.is_incoming` | Has incoming call |
 
 ### esp_aec Component
@@ -540,8 +507,8 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | Mode | CPU | Memory | Use Case |
 |------|-----|--------|----------|
 | `voip_low_cost` | Low | Low | **Recommended** — sufficient for all setups including VA + MWW |
-| `voip` | Medium | Medium | General purpose |
 | `voip_high_perf` | Medium | Medium | Better filter quality, try if not using display/heavy workloads |
+| `sr_low_cost` | Medium | Medium | Speech recognition optimized, alternative to voip modes |
 | `sr_high_perf` | High | **Very High** | Best cancellation but may exhaust DMA memory on ESP32-S3 |
 
 > **Note**: All modes have similar CPU cost per frame (~7ms). The difference is primarily in memory allocation and adaptive filter quality.
@@ -649,7 +616,7 @@ sequenceDiagram
 | ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) |
 | Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) |
 | Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) |
-| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (dual mic path, LVGL touch display) |
+| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path, LVGL touch display) |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane) — every bit helps!
 
@@ -660,9 +627,40 @@ sequenceDiagram
 - I2S speaker amplifier (MAX98357A, ES8311, etc.)
 - ESP-IDF framework (not Arduino)
 
+---
+
+## i2s_audio_duplex
+
+This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** — a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with:
+
+- **True full-duplex** on a single I2S bus
+- **Built-in AEC integration** — stereo digital feedback, TDM hardware reference, or ring buffer
+- **Dual mic paths** — raw (pre-AEC) for wake word + AEC-processed for voice assistant
+- **FIR decimation** — run the bus at 48kHz (codec native) while processing at 16kHz
+- **Reference counting** — multiple consumers share the same mic safely
+
+### Audio Pipeline
+
+The I2S bus runs at a higher rate for better DAC/ADC quality, with internal FIR decimation to produce 16kHz for processing:
+
+| Parameter | Value |
+|-----------|-------|
+| I2S Bus Rate | Configurable (`sample_rate`, e.g. 48000 Hz) |
+| Output Rate | Configurable (`output_sample_rate`, e.g. 16000 Hz) |
+| Decimation | FIR filter, ratio = bus/output (e.g. ×3 for 48→16kHz) |
+| FIR Filter | 31-tap, Kaiser beta=8.0, ~60dB stopband, linear phase |
+| Speaker Input | Bus rate (48kHz) — ESPHome resampler upsamples before play |
+| Mic Output | Output rate (16kHz) — for MWW, Voice Assistant, Intercom |
+
+MWW, Voice Assistant STT, and Intercom operate at 16kHz internally. The I2S bus runs at 48kHz (the codec's native rate), so:
+- **TTS** via `announcement_pipeline` with `sample_rate: 48000` arrives at 48kHz from HA. Full 48kHz quality to the DAC.
+- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player — 48kHz when configured as such.
+- **Media files** (timer sounds, notifications) at native 48kHz are played directly without resampling.
+- **Intercom audio** is sent/received at 16kHz over TCP and upsampled to 48kHz for local playback via the resampler speaker.
+
 ### Single-Bus Codecs (ES8311, ES8388, WM8960)
 
-Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use the included `i2s_audio_duplex` component:
+Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use `i2s_audio_duplex`:
 
 ```yaml
 external_components:
@@ -693,41 +691,7 @@ speaker:
     i2s_audio_duplex_id: i2s_duplex
 ```
 
-See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md) for detailed configuration.
-
----
-
-## Voice Assistant Coexistence & AEC Best Practices
-
-<table>
-  <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball — VA + Intercom</b></td>
-  </tr>
-</table>
-
-The intercom can run alongside ESPHome's **Voice Assistant** (VA) and **Micro Wake Word** (MWW) on the same device. This combination is powerful but pushes the ESP32-S3 hardware to its limits. This section documents what we learned from extensive testing.
-
-### Choosing the Right AEC Mode
-
-AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU cost per frame (~7ms out of 16ms budget). The difference is primarily in memory allocation and adaptive filter quality.
-
-**Recommended: `voip_low_cost`** for devices with integrated codecs (ES8311, ES8388). This is more than sufficient for echo cancellation in voice calls and intercom, while keeping CPU free for Voice Assistant, MWW, and display rendering.
-
-```yaml
-# Recommended for most setups
-esp_aec:
-  sample_rate: 16000
-  filter_length: 4       # 64ms tail — sufficient for integrated codecs
-  mode: voip_low_cost    # Light on resources, good echo cancellation
-```
-
-If you are **not** using a display or AEC-heavy workloads, and want to experiment with better cancellation quality, you can try `voip_high_perf` with `filter_length: 8`. But `voip_low_cost` is the safe default.
-
-**Avoid `sr_high_perf`**: It allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability.
-
-### ES8311 Stereo L/R Reference: The Best Configuration
+### ES8311 Stereo L/R Reference
 
 If your codec supports it (ES8311, and potentially others with DAC loopback), **stereo digital feedback is the optimal AEC reference method**. This is the single most impactful configuration choice.
 
@@ -735,11 +699,6 @@ If your codec supports it (ES8311, and potentially others with DAC loopback), **
 - ES8311 outputs a stereo I2S frame: **L channel = DAC loopback** (what the speaker is playing), **R channel = ADC** (microphone)
 - The reference signal is **sample-accurate** — same I2S frame as the mic capture, no timing estimation needed
 - `aec_reference_delay_ms: 10` (just a few ms for internal codec latency, vs ~80ms for ring buffer mode)
-
-**What this enables:**
-- **Perfect echo cancellation** — the AEC adaptive filter converges fast because reference and echo are precisely aligned
-- **Voice Assistant during active intercom calls** — TTS output is completely removed from the mic signal. The remote intercom peer does not hear TTS responses at all
-- **AEC-processed audio goes to VA** — so an intercom call does not interfere with voice assistant STT quality
 
 ```yaml
 i2s_audio_duplex:
@@ -757,15 +716,34 @@ esphome:
 
 Without stereo feedback, the component falls back to a **ring buffer reference** — it copies speaker audio to a delay buffer and reads it back ~80ms later to match the acoustic path. This works with any codec but requires careful delay tuning and is never perfectly aligned.
 
-### Wake Word During TTS Playback
+### TDM Hardware Reference (ES7210 + ES8311)
 
-MWW can detect wake words **even while TTS is playing** — useful for "barge-in" scenarios (e.g., interrupt a long response with your wake word). The `i2s_audio_duplex` component provides a dual mic path that makes this work reliably:
-
-- **MWW uses raw (pre-AEC) mic audio** — the neural model handles speaker echo well
-- **VA STT uses AEC-processed audio** — clean speech recognition without echo
+For boards with a multi-channel ADC (ES7210), the AEC reference can be captured as a hardware analog signal — the ES8311 DAC output is wired to an ES7210 input (MIC3), providing a sample-aligned reference from the same TDM I2S frame:
 
 ```yaml
-# Dual mic path for MWW + VA
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO14
+  i2s_bclk_pin: GPIO13
+  i2s_mclk_pin: GPIO12
+  i2s_din_pin: GPIO15
+  i2s_dout_pin: GPIO16
+  sample_rate: 48000
+  output_sample_rate: 16000
+  aec_id: aec_processor
+  use_tdm_reference: true
+  tdm_total_slots: 4
+  tdm_mic_slots: [0, 2]       # ADC1(MIC1), ADC2(MIC2)
+  tdm_ref_slot: 1             # ADC3(MIC3) = ES8311 DAC feedback
+```
+
+> **Note**: ES7210 requires an `on_boot` lambda (priority 200) to enable TDM mode and set MIC3 gain to 0dB. See `waveshare-s3-audio-va-intercom.yaml` for the complete working config.
+
+### Dual Mic Paths
+
+`i2s_audio_duplex` provides two microphone outputs — raw (pre-AEC) and AEC-processed — enabling wake word detection during TTS playback:
+
+```yaml
 microphone:
   - platform: i2s_audio_duplex
     id: mic_aec                    # AEC-processed: for VA STT + intercom TX
@@ -782,6 +760,46 @@ micro_wake_word:
 voice_assistant:
   microphone: mic_aec              # AEC mic for clean STT
 ```
+
+See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md) for full details.
+
+---
+
+## Voice Assistant + Intercom Experience
+
+<table>
+  <tr>
+    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4 — Weather + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4 — Intercom + Voice Assistant</b></td>
+    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball — VA + Intercom</b></td>
+  </tr>
+</table>
+
+The Voice Assistant and Intercom coexist seamlessly on the same hardware — shared microphone, shared speaker (via audio mixer), shared wake word detection. No display required (works on headless devices like the Waveshare S3 Audio); on devices with a screen, you also get a full touch UI:
+
+- **Always listening** — Micro Wake Word runs continuously on raw (pre-AEC) audio, detecting the wake word even while TTS is playing or during an intercom call
+- **Touch or voice** — Start the assistant by saying the wake word or tapping the screen (on touch displays)
+- **Barge-in** — Say the wake word during a TTS response to interrupt and ask a new question
+- **Intercom calls** — Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
+- **Weather at a glance** — Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
+- **Mood-aware responses** — The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
+
+### AEC Best Practices
+
+AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU cost per frame (~7ms out of 16ms budget). The difference is primarily in memory allocation and adaptive filter quality.
+
+**Recommended: `voip_low_cost`** for devices with integrated codecs (ES8311, ES8388). This is more than sufficient for echo cancellation in voice calls and intercom, while keeping CPU free for Voice Assistant, MWW, and display rendering.
+
+```yaml
+esp_aec:
+  sample_rate: 16000
+  filter_length: 4       # 64ms tail — sufficient for integrated codecs
+  mode: voip_low_cost    # Light on resources, good echo cancellation
+```
+
+If you are **not** using a display or AEC-heavy workloads, and want to experiment with better cancellation quality, you can try `voip_high_perf` with `filter_length: 8`. But `voip_low_cost` is the safe default.
+
+**Avoid `sr_high_perf`**: It allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability.
 
 ### AEC Timeout Gating
 
@@ -804,26 +822,9 @@ micro_wake_word:
     - model: "wakewords/hey_trowyayoh.json"
 ```
 
-### Experiment and Tune
+### LVGL Display
 
-Every setup is different: room acoustics, mic sensitivity, speaker placement, codec characteristics. We encourage you to:
-
-- **Try different `filter_length` values** (4 vs 8) — longer isn't always better if your acoustic path is short
-- **Toggle AEC on/off during calls** to hear the difference — the `aec` switch is available in HA
-- **Adjust `mic_gain`** — higher gain helps voice detection but can introduce noise
-- **Test MWW during TTS** with your specific wake word — some words are more robust than others
-- **Compare `voip_low_cost` vs `voip_high_perf`** — the difference may be subtle in your environment
-- **Monitor ESP logs** — AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
-
----
-
-## LVGL Display Coexistence
-
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3.yaml` config demonstrates a proven approach using **LVGL** (Light and Versatile Graphics Library) instead of manual C++ rendering.
-
-### Why LVGL?
-
-The original display implementation used `ili9xxx` pages with hand-written C++ lambdas — over 14 page lambdas, 26 manual `component.update` calls, frame-by-frame animation scripts, and precomputed geometry for text wrapping on a round screen. LVGL replaces all of this with declarative YAML widgets:
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3.yaml` and `waveshare-p4-touch-lcd-va-intercom.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -834,21 +835,20 @@ The original display implementation used `ili9xxx` pages with hand-written C++ l
 | Precomputed geometry (chord widths, x/y metrics) | LVGL layout engine |
 | Manual ping-pong frame logic | Duplicated frame list in `animimg src:` |
 
-### Key Benefits for VA + Intercom
+Key benefits: lower CPU (dirty-region only), no `component.update` contention, native animation (`animimg`), mood-based backgrounds via `lv_img_set_src()`, and automatic text scrolling (`SCROLL_CIRCULAR`).
 
-- **Lower CPU usage**: LVGL only redraws dirty regions, not the full 240x240 framebuffer every cycle. This leaves more CPU for AEC processing and MWW inference.
-- **No `component.update` contention**: Manual display updates compete with the main loop for CPU. LVGL's internal renderer runs cooperatively without blocking audio tasks.
-- **Simpler animation**: The `animimg` widget handles frame sequencing, timing, and looping natively — no FreeRTOS timers or script-based frame stepping.
-- **Mood-based backgrounds**: The LLM response is parsed for emoticon prefixes (`:-)` `:-(` `:-|`) and a background image is set dynamically via `lv_img_set_src()` — trivial with LVGL, complex with manual rendering.
-- **Text scrolling**: Long VA responses scroll automatically with `SCROLL_CIRCULAR`. No need for manual text pagination with timers.
+Timer overlays use `top_layer` with `LV_OBJ_FLAG_HIDDEN` — visible on any page. Media files are auto-resampled by the `platform: resampler` speaker in the mixer pipeline.
 
-### Timer Overlay
+### Experiment and Tune
 
-A top-layer timer bar (countdown + label) is shown/hidden via `lv_obj_add_flag`/`lv_obj_clear_flag` with `LV_OBJ_FLAG_HIDDEN`. The top layer renders above all pages, so the timer is visible regardless of which page is active (idle, listening, replying, intercom).
+Every setup is different: room acoustics, mic sensitivity, speaker placement, codec characteristics. We encourage you to:
 
-### Media File Requirement
-
-When using a `platform: resampler` speaker in the mixer pipeline, media files are automatically resampled to the bus rate. For best quality, use files at the bus rate natively (e.g. 48kHz with `sample_rate: 48000`). Without a resampler, files must match the speaker's sample rate.
+- **Try different `filter_length` values** (4 vs 8) — longer isn't always better if your acoustic path is short
+- **Toggle AEC on/off during calls** to hear the difference — the `aec` switch is available in HA
+- **Adjust `mic_gain`** — higher gain helps voice detection but can introduce noise
+- **Test MWW during TTS** with your specific wake word — some words are more robust than others
+- **Compare `voip_low_cost` vs `voip_high_perf`** — the difference may be subtle in your environment
+- **Monitor ESP logs** — AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
 
 ---
 
