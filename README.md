@@ -195,10 +195,7 @@ Add the external component to your ESPHome device configuration:
 
 ```yaml
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/intercom-api
-      ref: main
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, esp_aec]
 ```
 
@@ -664,10 +661,7 @@ Many integrated codecs use a single I2S bus for both mic and speaker. Standard E
 
 ```yaml
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/intercom-api
-      ref: main
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 i2s_audio_duplex:
