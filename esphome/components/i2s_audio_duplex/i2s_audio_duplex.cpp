@@ -208,12 +208,29 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
 #endif
   i2s_mclk_multiple_t mclk_mult = get_mclk_multiple(this->mclk_multiple_);
 
-  // DMA descriptor limit is 4092 bytes. Reduce frame count for wide formats.
-  uint32_t dma_frame_num = DMA_BUFFER_SIZE;  // 512 default
+  // DMA descriptor limit is 4092 bytes. Compute max bytes per frame across
+  // TX and RX configs, then clamp dma_frame_num to stay within the limit.
+  // RX can be wider than TX (e.g., mono TX but stereo RX for AEC feedback).
+  uint32_t bytes_per_sample = (this->bits_per_sample_ > 16) ? 4 : 2;  // 24/32-bit → 4-byte DMA container
+  uint32_t tx_bytes_per_frame = this->num_channels_ * bytes_per_sample;
+  uint32_t rx_bytes_per_frame = tx_bytes_per_frame;
+  if (this->use_stereo_aec_ref_) {
+    rx_bytes_per_frame = 2 * bytes_per_sample;  // stereo RX forced
+  }
+#if SOC_I2S_SUPPORTS_TDM
   if (this->use_tdm_ref_) {
-    dma_frame_num = 256;  // TDM: 4+ slots, keep under DMA limit
-  } else if (this->num_channels_ * (this->bits_per_sample_ / 8) > 4) {
-    dma_frame_num = 256;  // Stereo 32-bit: 8 bytes/frame × 256 = 2048 < 4092
+    uint32_t tdm_frame = this->tdm_total_slots_ * bytes_per_sample;
+    rx_bytes_per_frame = tdm_frame;
+    tx_bytes_per_frame = tdm_frame;
+  }
+#endif
+  uint32_t max_bytes_per_frame = std::max(tx_bytes_per_frame, rx_bytes_per_frame);
+  uint32_t dma_frame_num = DMA_BUFFER_SIZE;  // 512 default
+  if (max_bytes_per_frame > 0) {
+    uint32_t max_frames = 4092 / max_bytes_per_frame;
+    if (dma_frame_num > max_frames) {
+      dma_frame_num = max_frames;
+    }
   }
   i2s_chan_config_t chan_cfg = {
       .id = static_cast<i2s_port_t>(this->i2s_num_),
