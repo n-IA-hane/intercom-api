@@ -139,13 +139,9 @@ esp32:
       CONFIG_FREERTOS_HZ: "1000"
       CONFIG_ESP32_WIFI_TASK_PINNED_TO_CORE_1: "y"
       CONFIG_LWIP_MAX_SOCKETS: "16"
-      # Use dynamic TLS buffers to reduce peak memory usage for SSL connections
       CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA: "y"
-      # Smaller TLS buffers (default 16384 is too much with all components active)
-      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "8192"
-      CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN: "4096"
 
 psram:
   mode: octal
