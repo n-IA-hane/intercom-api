@@ -2110,40 +2110,14 @@ font:
     glyphs: "0123456789:"
   - file:
       type: gfonts
-      family: ${font_family}
+      family: Figtree
       weight: 600
     id: font_clock
     size: 20
     glyphs: "0123456789:%"
-  # Intercom fonts
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 700
-    id: font_title
-    size: 24
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 500
-    id: font_state
-    size: 28
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 400
-    id: font_info
-    size: 20
-  - file:
-      type: gfonts
-      family: Roboto Mono
-      weight: 400
-    id: font_debug
-    size: 14
-  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-    id: icons
-    size: 20
-    glyphs:
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
       - "\U000F0553" # usb
       
       - "\U000F008E" # battery-0
@@ -2172,7 +2146,32 @@ font:
       - "\U000F08BF" # cell-0 <20%
       - "\U000F08BC" # cell-1 <55%
       - "\U000F08BD" # cell-2 <80%
-      - "\U000F08BE" # cell-3 <=100%
+      - "\U000F08BE" # cell-3 <=100%    
+  # Intercom fonts
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: font_title
+    size: 24
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_state
+    size: 28
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_info
+    size: 20
+  - file:
+      type: gfonts
+      family: Roboto Mono
+      weight: 400
+    id: font_debug
+    size: 14
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2328,7 +2327,7 @@ lvgl:
             y: 2
             text: ""
             text_color: 0xFFFFFF
-            text_font: icons
+            text_font: font_clock
         - label:
             id: idle_clock_label
             align: BOTTOM_MID
