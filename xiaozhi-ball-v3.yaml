@@ -2144,7 +2144,7 @@ font:
       weight: 400
     id: font_debug
     size: 14
-  - file: "fonts/materialdesignicons-webfont.ttf"
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: icons
     size: 20
     glyphs:
