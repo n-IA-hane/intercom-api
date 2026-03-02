@@ -39,6 +39,9 @@ void I2SAudioDuplexSpeaker::start() {
   if (this->is_failed())
     return;
 
+  // Clear finishing flag on new stream start
+  this->finishing_ = false;
+
   // Idempotent: register listener only once per stream session.
   bool expected = false;
   if (!this->listener_registered_.compare_exchange_strong(expected, true))
@@ -100,6 +103,13 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
 
 void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
   speaker::Speaker::set_mute_state(mute_state);
+
+#ifdef USE_AUDIO_DAC
+  // When audio_dac is present, the base class handles hardware mute.
+  // Skip software volume to avoid double attenuation.
+  if (this->audio_dac_ != nullptr)
+    return;
+#endif
 
   if (mute_state) {
     this->parent_->set_speaker_volume(0.0f);

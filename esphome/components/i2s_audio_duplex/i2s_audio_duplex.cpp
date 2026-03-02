@@ -278,6 +278,11 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
         },
     };
 
+    // Apply slot_bit_width override BEFORE init
+    if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
+      tdm_cfg.slot_cfg.slot_bit_width = slot_bw;
+    }
+
     if (this->tx_handle_) {
       err = i2s_channel_init_tdm_mode(this->tx_handle_, &tdm_cfg);
       if (err != ESP_OK) {
@@ -293,10 +298,6 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
         this->deinit_i2s_();
         return false;
       }
-    }
-    // Apply slot_bit_width override to TDM config
-    if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
-      tdm_cfg.slot_cfg.slot_bit_width = slot_bw;
     }
 
     ESP_LOGD(TAG, "TDM mode: %d slots, mic_slot=%d, ref_slot=%d, mask=0x%x",
