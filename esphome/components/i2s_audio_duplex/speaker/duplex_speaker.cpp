@@ -87,6 +87,7 @@ bool I2SAudioDuplexSpeaker::has_buffered_data() const {
 }
 
 void I2SAudioDuplexSpeaker::set_volume(float volume) {
+  ESP_LOGD(TAG, "set_volume(%.3f) mute=%d", volume, this->mute_state_);
   speaker::Speaker::set_volume(volume);
 
 #ifdef USE_AUDIO_DAC
@@ -105,6 +106,7 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
 }
 
 void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
+  ESP_LOGD(TAG, "set_mute_state(%d) volume=%.3f", mute_state, this->volume_);
   speaker::Speaker::set_mute_state(mute_state);
 
 #ifdef USE_AUDIO_DAC
