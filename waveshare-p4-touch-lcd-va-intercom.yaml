@@ -26,11 +26,11 @@
 #   8":  model: CUSTOM + JD9365 init_sequence             (800x1280, backlight GPIO26)
 #   10.1": model: WAVESHARE-P4-NANO-10.1                  (800x1280, backlight GPIO26)
 #
-# Audio pipeline (i2s_audio_duplex at 48kHz, ring buffer AEC reference):
+# Audio pipeline (i2s_audio_duplex at 48kHz, TDM + FIR decimation to 16kHz):
 #
-#   ES7210 mic → I2S DIN (48kHz) → FIR x3 ──┐
-#                                           ├── AEC → mic_aec → VA / Intercom TX
-#                                           └── mic_raw (pre-AEC) → MWW
+#   ES7210 TDM [mic1, mic2, ref, nc] → FIR x3 ──┐
+#                                               ├── AEC(mic, ref) → mic_aec → VA / Intercom TX
+#                                               └── mic_raw (pre-AEC) → MWW
 #
 #   TTS/media (48kHz) → va_speaker (resampler) ──────┐
 #                                                    ├── mixer (48kHz) → hw_speaker → ES8311
@@ -73,6 +73,27 @@ esphome:
     - priority: 600
       then:
         - output.turn_on: speaker_enable
+    - priority: 200
+      then:
+        # === ES7210 TDM Configuration ===
+        # Enable all 4 ADC clocks, TDM mode, and set MIC3 gain to 0dB.
+        # MIC3 is wired to ES8311 DAC output (line level AEC reference).
+        - lambda: |-
+            // 1. Enable ALL ADC clocks (ESPHome driver only enables ADC1+2)
+            uint8_t reg01;
+            id(es7210_adc).read_byte(0x01, &reg01);
+            reg01 &= ~0x3F;  // Clear bits 0-5: enable ADC1-4 clocks + CP + BCLK
+            id(es7210_adc).write_byte(0x01, reg01);
+
+            // 2. Enable TDM I2S mode: all 4 ADC channels multiplexed on SDOUT1
+            id(es7210_adc).write_byte(0x12, 0x02);
+
+            // 3. MIC3 gain = 0dB (line level from ES8311 DAC output)
+            //    MIC1/MIC2 keep 24dB from ESPHome driver (MEMS mic preamp)
+            id(es7210_adc).write_byte(0x45, 0x10);  // MIC3: PGA_ON + 0dB
+            id(es7210_adc).write_byte(0x46, 0x10);  // MIC4: PGA_ON + 0dB (unused, keep tidy)
+
+            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, sdp2=0x02, MIC3 gain=0dB", reg01);
     - priority: -100
       then:
         - logger.log: "Boot: late init start"
@@ -199,8 +220,7 @@ i2c:
 # Audio: i2s_audio_duplex (48kHz bus, FIR decimation to 16kHz for mic/AEC/VA)
 # =============================================================================
 # ES8311 (DAC) and ES7210 (ADC) share BCLK/LRCLK/MCLK with separate data pins.
-# ES7210 is a standalone ADC chip — no digital loopback possible.
-# AEC reference comes from ring buffer (use_stereo_aec_reference: false).
+# ES8311 DAC output wired to ES7210 MIC3 — TDM hardware AEC reference (slot 2).
 
 audio_dac:
   - platform: es8311
@@ -237,8 +257,9 @@ i2s_audio_duplex:
   sample_rate: 48000           # I2S bus at ES8311/ES7210 native rate
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
-  use_stereo_aec_reference: false  # ES7210 is a separate ADC — no digital loopback
-  aec_reference_delay_ms: 80       # Ring buffer delay (tune if echo remains)
+  use_tdm_reference: true
+  tdm_total_slots: 4
+  tdm_mic_slot: 0              # ES7210 TDM slot 0 = ADC1 (MIC1, voice)
 
 # mic_aec: post-AEC, for VA STT and intercom TX
 # mic_raw: pre-AEC, for MWW (neural model handles speaker echo better)
@@ -506,17 +527,10 @@ intercom_api:
         id(peer_name) = id(intercom).get_current_destination();
         id(previous_mode) = id(current_mode);
         id(current_mode) = 1;
-        // Direct LVGL update — no draw_display race
-        lv_obj_add_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(id(ic_ringing_out_peer_label), id(peer_name).c_str());
-        lv_obj_clear_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
     - light.turn_on:
         id: display_backlight
         brightness: 100%
+    - script.execute: draw_display
     - if:
         condition:
           lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
@@ -533,31 +547,19 @@ intercom_api:
         id(peer_name) = id(intercom).get_caller();
         id(previous_mode) = id(current_mode);
         id(current_mode) = 1;
-        // Direct LVGL update
-        lv_obj_add_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(id(ic_ringing_in_peer_label), id(peer_name).c_str());
-        lv_obj_clear_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
     - light.turn_on:
         id: display_backlight
         brightness: 100%
     - media_player.stop:
         announcement: true
+    - script.execute: draw_display
     - script.execute: intercom_ringing_loop
 
   on_answered:
     - logger.log: "Call answered"
 
   on_streaming:
-    - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+    # Set globals FIRST (before any async action) so draw_display sees correct state
     - lambda: |-
         if (id(current_mode) != 1) {
           id(previous_mode) = id(current_mode);
@@ -569,14 +571,13 @@ intercom_api:
         } else {
           id(peer_name) = id(intercom).get_current_destination();
         }
-        // Direct LVGL update — no draw_display race
-        lv_obj_add_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(id(ic_in_call_peer_label), id(peer_name).c_str());
-        lv_obj_clear_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_tile_id(id(top_tileview), 1, 0, LV_ANIM_ON);
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
+    - light.turn_on:
+        id: display_backlight
+        brightness: 100%
+    - script.execute: draw_display
 
   on_idle:
     - script.stop: intercom_ringing_loop
@@ -585,18 +586,6 @@ intercom_api:
     - lambda: |-
         id(peer_name) = id(intercom).get_current_destination();
         id(current_mode) = 0;
-        // Direct LVGL update — restore idle intercom tile
-        lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_ringing_out_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(id(ic_idle_peer_label), id(peer_name).c_str());
-        auto csv = id(intercom).get_contacts_csv();
-        int count = csv.empty() ? 0 : (int)std::count(csv.begin(), csv.end(), ',') + 1;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Contacts: %d", count);
-        lv_label_set_text(id(ic_idle_contacts_label), buf);
-        lv_obj_clear_flag(id(ic_idle_group), LV_OBJ_FLAG_HIDDEN);
     - if:
         condition:
           switch.is_off: mute
