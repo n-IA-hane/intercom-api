@@ -101,6 +101,9 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
   {
     if (!this->mute_state_) {
       this->parent_->set_speaker_volume(volume);
+      ESP_LOGW(TAG, "→ parent speaker_volume=%.3f", this->parent_->get_speaker_volume());
+    } else {
+      ESP_LOGW(TAG, "→ SKIPPED (muted), parent speaker_volume=%.3f", this->parent_->get_speaker_volume());
     }
   }
 }
@@ -121,8 +124,10 @@ void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
   {
     if (mute_state) {
       this->parent_->set_speaker_volume(0.0f);
+      ESP_LOGW(TAG, "→ muted, parent speaker_volume=%.3f", this->parent_->get_speaker_volume());
     } else {
       this->parent_->set_speaker_volume(this->volume_);
+      ESP_LOGW(TAG, "→ unmuted, parent speaker_volume=%.3f", this->parent_->get_speaker_volume());
     }
   }
 }
