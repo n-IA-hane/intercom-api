@@ -26,14 +26,15 @@
 #   8":  model: CUSTOM + JD9365 init_sequence             (800x1280, backlight GPIO26)
 #   10.1": model: WAVESHARE-P4-NANO-10.1                  (800x1280, backlight GPIO26)
 #
-# Audio pipeline:
-#   ES7210 mic → I2S DIN (48kHz) → FIR decimate x3 ─┐
-#                                                     ├─ mic_raw (pre-AEC)  → MWW
-#                                                     └─ AEC → mic_aec → VA / Intercom TX
+# Audio pipeline (i2s_audio_duplex at 48kHz, TDM + FIR decimation to 16kHz):
 #
-#   TTS/media (48kHz FLAC) → va_speaker (resampler) ──┐
-#                                                       ├── audio_mixer (48kHz) → hw_speaker → I2S DOUT → ES8311
-#   Intercom RX → intercom_speaker (resampler) ────────┘
+#   ES7210 TDM [mic1, mic2, ref, nc] → FIR x3 ──┐
+#                                               ├── AEC(mic, ref) → mic_aec → VA / Intercom TX
+#                                               └── mic_raw (pre-AEC) → MWW
+#
+#   TTS/media (48kHz) → va_speaker (resampler) ──────┐
+#                                                    ├── mixer (48kHz) → hw_speaker → ES8311
+#   Intercom RX → intercom_speaker (resampler) ──────┘
 #
 # Touch UI:
 #   VA pages:      Status display (idle, listening, thinking, replying, error)
@@ -51,6 +52,12 @@ substitutions:
   display_height: "1280"
 
   # Voice assistant phase IDs
+  ai_animation: yawn
+
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
   voice_assist_idle_phase_id: "1"
   voice_assist_listening_phase_id: "2"
   voice_assist_thinking_phase_id: "3"
@@ -72,6 +79,27 @@ esphome:
     - priority: 600
       then:
         - output.turn_on: speaker_enable
+    - priority: 200
+      then:
+        # === ES7210 TDM Configuration ===
+        # Enable all 4 ADC clocks, TDM mode, and set MIC3 gain to 0dB.
+        # MIC3 is wired to ES8311 DAC output (line level AEC reference).
+        - lambda: |-
+            // 1. Enable ALL ADC clocks (ESPHome driver only enables ADC1+2)
+            uint8_t reg01;
+            id(es7210_adc).read_byte(0x01, &reg01);
+            reg01 &= ~0x3F;  // Clear bits 0-5: enable ADC1-4 clocks + CP + BCLK
+            id(es7210_adc).write_byte(0x01, reg01);
+
+            // 2. Enable TDM I2S mode: all 4 ADC channels multiplexed on SDOUT1
+            id(es7210_adc).write_byte(0x12, 0x02);
+
+            // 3. MIC3 gain = 0dB (line level from ES8311 DAC output)
+            //    MIC1/MIC2 keep 24dB from ESPHome driver (MEMS mic preamp)
+            id(es7210_adc).write_byte(0x45, 0x10);  // MIC3: PGA_ON + 0dB
+            id(es7210_adc).write_byte(0x46, 0x10);  // MIC4: PGA_ON + 0dB (unused, keep tidy)
+
+            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, sdp2=0x02, MIC3 gain=0dB", reg01);
     - priority: -100
       then:
         - logger.log: "Boot: late init start"
@@ -179,9 +207,7 @@ time:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source:
-      type: local
-      path: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -198,8 +224,7 @@ i2c:
 # Audio: i2s_audio_duplex (48kHz bus, FIR decimation to 16kHz for mic/AEC/VA)
 # =============================================================================
 # ES8311 (DAC) and ES7210 (ADC) share BCLK/LRCLK/MCLK with separate data pins.
-# ES7210 is a standalone ADC chip — no digital loopback possible.
-# AEC reference comes from ring buffer (use_stereo_aec_reference: false).
+# ES8311 DAC output wired to ES7210 MIC3 — TDM hardware AEC reference (slot 2).
 
 audio_dac:
   - platform: es8311
@@ -236,8 +261,9 @@ i2s_audio_duplex:
   sample_rate: 48000           # I2S bus at ES8311/ES7210 native rate
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
   aec_id: aec_processor
-  use_stereo_aec_reference: false  # ES7210 is a separate ADC — no digital loopback
-  aec_reference_delay_ms: 80       # Ring buffer delay (tune if echo remains)
+  use_tdm_reference: true
+  tdm_total_slots: 4
+  tdm_mic_slot: 0              # ES7210 TDM slot 0 = ADC1 (MIC1, voice)
 
 # mic_aec: post-AEC, for VA STT and intercom TX
 # mic_raw: pre-AEC, for MWW (neural model handles speaker echo better)
@@ -263,20 +289,25 @@ speaker:
     id: audio_mixer
     output_speaker: hw_speaker
     num_channels: 1
+    task_stack_in_psram: true
     source_speakers:
       - id: va_speaker_mix
         timeout: 10s
+        buffer_duration: 500ms
       - id: intercom_speaker_mix
         timeout: 10s
+        buffer_duration: 500ms
 
   # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
   - platform: resampler
     id: va_speaker
     output_speaker: va_speaker_mix
+    task_stack_in_psram: true
 
   - platform: resampler
     id: intercom_speaker         # Intercom RX (16kHz) upsampled → 48kHz
     output_speaker: intercom_speaker_mix
+    task_stack_in_psram: true
 
 # =============================================================================
 # Media Player (TTS via VA speaker)
@@ -322,9 +353,7 @@ micro_wake_word:
   id: mww
   microphone: mic_raw
   on_wake_word_detected:
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+    - script.execute: backlight_timer
     # Barge-in: interrupt TTS if playing
     - if:
         condition:
@@ -337,6 +366,8 @@ micro_wake_word:
         wake_word: !lambda return wake_word;
   models:
     - model: "wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
 
 # =============================================================================
 # Voice Assistant
@@ -351,9 +382,7 @@ voice_assistant:
   volume_multiplier: 2.0
 
   on_listening:
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+    - script.execute: backlight_timer
     - globals.set:
         id: current_mode
         value: '0'
@@ -401,17 +430,41 @@ voice_assistant:
         }
         lv_img_set_src(id(mood_bg), mood);
         id(text_response).publish_state(text);
+    - script.stop: backlight_timer
     - globals.set:
         id: voice_assistant_phase
         value: '${voice_assist_replying_phase_id}'
     - script.execute: draw_display
 
   on_end:
+    # Wait for TTS to start playing (if any)
     - wait_until:
         condition:
-          not:
-            media_player.is_announcing:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    # Wait for TTS to finish
+    - wait_until:
+        condition:
+          and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+                    id: va_speaker
         timeout: 30s
+    # Fallback: force cleanup if stuck
+    - if:
+        condition:
+          or:
+            - media_player.is_announcing:
+            - speaker.is_playing:
+                id: va_speaker
+        then:
+          - logger.log:
+              level: WARN
+              format: "VA on_end: timeout waiting for TTS drain, forcing cleanup"
+          - media_player.stop:
+              announcement: true
     - delay: 100ms
     - voice_assistant.stop:
     - if:
@@ -419,6 +472,7 @@ voice_assistant:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
+    - script.execute: backlight_timer
     - text_sensor.template.publish:
         id: text_request
         state: ""
@@ -499,12 +553,8 @@ intercom_api:
     - lambda: |-
         id(peer_name) = id(intercom).get_current_destination();
         id(previous_mode) = id(current_mode);
-    - globals.set:
-        id: current_mode
-        value: '1'
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+        id(current_mode) = 1;
+    - script.execute: backlight_timer
     - script.execute: draw_display
     - if:
         condition:
@@ -521,27 +571,18 @@ intercom_api:
     - lambda: |-
         id(peer_name) = id(intercom).get_caller();
         id(previous_mode) = id(current_mode);
-    - globals.set:
-        id: current_mode
-        value: '1'
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+        id(current_mode) = 1;
+    - script.execute: backlight_timer
     - media_player.stop:
         announcement: true
-    - script.execute: intercom_ringing_loop
     - script.execute: draw_display
+    - script.execute: intercom_ringing_loop
 
   on_answered:
     - logger.log: "Call answered"
 
   on_streaming:
-    - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
+    # Set globals FIRST (before any async action) so draw_display sees correct state
     - lambda: |-
         if (id(current_mode) != 1) {
           id(previous_mode) = id(current_mode);
@@ -553,16 +594,19 @@ intercom_api:
         } else {
           id(peer_name) = id(intercom).get_current_destination();
         }
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
+    - script.execute: backlight_timer
     - script.execute: draw_display
 
   on_idle:
     - script.stop: intercom_ringing_loop
     - media_player.stop:
         announcement: true
-    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-    - globals.set:
-        id: current_mode
-        value: '0'
+    - lambda: |-
+        id(peer_name) = id(intercom).get_current_destination();
+        id(current_mode) = 0;
     - if:
         condition:
           switch.is_off: mute
@@ -732,9 +776,6 @@ font:
     glyphs:
       - "\U000F05A9"  # mdi:wifi
       - "\U000F05AA"  # mdi:wifi-off
-      - "\U000F0079"  # mdi:battery
-      - "\U000F008E"  # mdi:battery-outline
-      - "\U000F0083"  # mdi:battery-alert
 
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: font_weather_icon_sm
@@ -803,103 +844,103 @@ image:
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_00.png
-    id: yawn_00
+  - file: images/assistant/${ai_animation}_00.png
+    id: ${ai_animation}_00
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_01.png
-    id: yawn_01
+  - file: images/assistant/${ai_animation}_01.png
+    id: ${ai_animation}_01
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_02.png
-    id: yawn_02
+  - file: images/assistant/${ai_animation}_02.png
+    id: ${ai_animation}_02
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_03.png
-    id: yawn_03
+  - file: images/assistant/${ai_animation}_03.png
+    id: ${ai_animation}_03
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_04.png
-    id: yawn_04
+  - file: images/assistant/${ai_animation}_04.png
+    id: ${ai_animation}_04
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_05.png
-    id: yawn_05
+  - file: images/assistant/${ai_animation}_05.png
+    id: ${ai_animation}_05
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_06.png
-    id: yawn_06
+  - file: images/assistant/${ai_animation}_06.png
+    id: ${ai_animation}_06
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_07.png
-    id: yawn_07
+  - file: images/assistant/${ai_animation}_07.png
+    id: ${ai_animation}_07
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_08.png
-    id: yawn_08
+  - file: images/assistant/${ai_animation}_08.png
+    id: ${ai_animation}_08
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_09.png
-    id: yawn_09
+  - file: images/assistant/${ai_animation}_09.png
+    id: ${ai_animation}_09
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_10.png
-    id: yawn_10
+  - file: images/assistant/${ai_animation}_10.png
+    id: ${ai_animation}_10
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_11.png
-    id: yawn_11
+  - file: images/assistant/${ai_animation}_11.png
+    id: ${ai_animation}_11
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_12.png
-    id: yawn_12
+  - file: images/assistant/${ai_animation}_12.png
+    id: ${ai_animation}_12
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_13.png
-    id: yawn_13
+  - file: images/assistant/${ai_animation}_13.png
+    id: ${ai_animation}_13
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_14.png
-    id: yawn_14
+  - file: images/assistant/${ai_animation}_14.png
+    id: ${ai_animation}_14
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_15.png
-    id: yawn_15
+  - file: images/assistant/${ai_animation}_15.png
+    id: ${ai_animation}_15
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_16.png
-    id: yawn_16
+  - file: images/assistant/${ai_animation}_16.png
+    id: ${ai_animation}_16
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_17.png
-    id: yawn_17
+  - file: images/assistant/${ai_animation}_17.png
+    id: ${ai_animation}_17
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_18.png
-    id: yawn_18
+  - file: images/assistant/${ai_animation}_18.png
+    id: ${ai_animation}_18
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/yawn_19.png
-    id: yawn_19
+  - file: images/assistant/${ai_animation}_19.png
+    id: ${ai_animation}_19
     resize: 400x400
     type: RGB565
     byte_order: little_endian
@@ -1329,23 +1370,6 @@ lvgl:
                                   text_font: font_body
                                   text_color: 0x6BA3FF
                                   text_align: CENTER
-                  # Battery indicator
-                  - label:
-                      id: battery_icon_label
-                      align: BOTTOM_LEFT
-                      x: 30
-                      y: -8
-                      text: ""
-                      text_font: font_status_icon
-                      text_color: 0x888888
-                  - label:
-                      id: battery_pct_label
-                      align: BOTTOM_LEFT
-                      x: 62
-                      y: -10
-                      text: ""
-                      text_font: font_small
-                      text_color: 0x888888
 
               # --- TILE 1: INTERCOM ---
               - row: 0
@@ -1670,53 +1694,53 @@ lvgl:
                               height: 400
                               src:
                                 # Forward: 0→19
-                                - yawn_00
-                                - yawn_01
-                                - yawn_02
-                                - yawn_03
-                                - yawn_04
-                                - yawn_05
-                                - yawn_06
-                                - yawn_07
-                                - yawn_08
-                                - yawn_09
-                                - yawn_10
-                                - yawn_11
-                                - yawn_12
-                                - yawn_13
-                                - yawn_14
-                                - yawn_15
-                                - yawn_16
-                                - yawn_17
-                                - yawn_18
-                                - yawn_19
+                                - ${ai_animation}_00
+                                - ${ai_animation}_01
+                                - ${ai_animation}_02
+                                - ${ai_animation}_03
+                                - ${ai_animation}_04
+                                - ${ai_animation}_05
+                                - ${ai_animation}_06
+                                - ${ai_animation}_07
+                                - ${ai_animation}_08
+                                - ${ai_animation}_09
+                                - ${ai_animation}_10
+                                - ${ai_animation}_11
+                                - ${ai_animation}_12
+                                - ${ai_animation}_13
+                                - ${ai_animation}_14
+                                - ${ai_animation}_15
+                                - ${ai_animation}_16
+                                - ${ai_animation}_17
+                                - ${ai_animation}_18
+                                - ${ai_animation}_19
                                 # Hold at peak (~1s)
-                                - yawn_19
-                                - yawn_19
-                                - yawn_19
-                                - yawn_19
-                                - yawn_19
-                                - yawn_19
-                                - yawn_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
+                                - ${ai_animation}_19
                                 # Backward: 18→1
-                                - yawn_18
-                                - yawn_17
-                                - yawn_16
-                                - yawn_15
-                                - yawn_14
-                                - yawn_13
-                                - yawn_12
-                                - yawn_11
-                                - yawn_10
-                                - yawn_09
-                                - yawn_08
-                                - yawn_07
-                                - yawn_06
-                                - yawn_05
-                                - yawn_04
-                                - yawn_03
-                                - yawn_02
-                                - yawn_01
+                                - ${ai_animation}_18
+                                - ${ai_animation}_17
+                                - ${ai_animation}_16
+                                - ${ai_animation}_15
+                                - ${ai_animation}_14
+                                - ${ai_animation}_13
+                                - ${ai_animation}_12
+                                - ${ai_animation}_11
+                                - ${ai_animation}_10
+                                - ${ai_animation}_09
+                                - ${ai_animation}_08
+                                - ${ai_animation}_07
+                                - ${ai_animation}_06
+                                - ${ai_animation}_05
+                                - ${ai_animation}_04
+                                - ${ai_animation}_03
+                                - ${ai_animation}_02
+                                - ${ai_animation}_01
                               duration: 6750ms
                               auto_start: false
 
@@ -2019,15 +2043,15 @@ script:
       - if:
           condition:
             lambda: |-
-              return id(voice_assistant_phase) == ${voice_assist_idle_phase_id} && !id(init_in_progress);
+              return id(current_mode) == 0 && id(voice_assistant_phase) == ${voice_assist_idle_phase_id} && !id(init_in_progress);
           then:
             - if:
                 condition:
-                  lambda: return !id(yawn_loop).is_running();
+                  lambda: return !id(ai_animation_loop).is_running();
                 then:
-                  - script.execute: yawn_loop
+                  - script.execute: ai_animation_loop
           else:
-            - script.stop: yawn_loop
+            - script.stop: ai_animation_loop
             - lambda: lv_anim_del(id(idle_animation), nullptr);
       # Self-heal: ensure MWW is active when idle
       - if:
@@ -2043,8 +2067,8 @@ script:
             - script.execute: start_wake_word
       - script.execute: update_timer_state
 
-  # Idle animation loop (yawn blink + long pause)
-  - id: yawn_loop
+  # Idle animation loop (play once + long pause)
+  - id: ai_animation_loop
     mode: single
     then:
       - lambda: |-
@@ -2130,23 +2154,6 @@ script:
             lv_obj_set_style_text_color(id(wifi_status_icon), lv_color_hex(0xE74C3C), 0);
           }
 
-          // Battery indicator
-          if (id(battery_level).has_state() && !std::isnan(id(battery_level).state)) {
-            float batt = id(battery_level).state;
-            const char* batt_icon = batt > 20.0f ? "\U000F0079"   // mdi:battery
-                                  : batt > 5.0f  ? "\U000F0083"   // mdi:battery-alert
-                                  :                 "\U000F008E";  // mdi:battery-outline
-            lv_label_set_text(id(battery_icon_label), batt_icon);
-            uint32_t batt_color = batt > 20.0f ? 0x2ECC71 : 0xE74C3C;
-            lv_obj_set_style_text_color(id(battery_icon_label), lv_color_hex(batt_color), 0);
-            char batt_buf[8];
-            snprintf(batt_buf, sizeof(batt_buf), "%.0f%%", batt);
-            lv_label_set_text(id(battery_pct_label), batt_buf);
-            lv_obj_set_style_text_color(id(battery_pct_label), lv_color_hex(batt_color), 0);
-          } else {
-            lv_label_set_text(id(battery_icon_label), "");
-            lv_label_set_text(id(battery_pct_label), "");
-          }
 
           // --- Current weather ---
           auto cond = id(weather_condition).state;
@@ -2491,14 +2498,8 @@ text_sensor:
       - intercom_api.set_contacts:
           id: intercom
           contacts_csv: !lambda 'return x;'
-      - lambda: |-
-          id(peer_name) = id(intercom).get_current_destination();
-          lv_label_set_text(id(ic_idle_peer_label), id(peer_name).c_str());
-          auto csv = id(intercom).get_contacts_csv();
-          int count = csv.empty() ? 0 : (int)std::count(csv.begin(), csv.end(), ',') + 1;
-          char buf[32];
-          snprintf(buf, sizeof(buf), "Contacts: %d", count);
-          lv_label_set_text(id(ic_idle_contacts_label), buf);
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - script.execute: draw_display
 
   - platform: debug
     device:
@@ -2537,15 +2538,6 @@ sensor:
     update_interval: 60s
     entity_category: diagnostic
 
-  - platform: max17043
-    battery_voltage:
-      name: Battery Voltage
-      entity_category: diagnostic
-    battery_level:
-      name: Battery Level
-      id: battery_level
-      entity_category: diagnostic
-    update_interval: 60s
 
   - platform: uptime
     name: Uptime

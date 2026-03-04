@@ -21,6 +21,10 @@ substitutions:
   name: esp32-s3-mini-va-intercom
   friendly_name: ESP32-S3 Mini VA Intercom
 
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
@@ -78,7 +82,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, esp_aec]
 
 # =============================================================================
@@ -195,6 +199,8 @@ micro_wake_word:
         effect: "Fast Pulse"
   models:
     - model: "wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
 
 voice_assistant:
   id: va

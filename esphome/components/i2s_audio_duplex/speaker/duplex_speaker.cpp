@@ -39,6 +39,9 @@ void I2SAudioDuplexSpeaker::start() {
   if (this->is_failed())
     return;
 
+  // Clear finishing flag on new stream start
+  this->finishing_ = false;
+
   // Idempotent: register listener only once per stream session.
   bool expected = false;
   if (!this->listener_registered_.compare_exchange_strong(expected, true))
@@ -62,13 +65,8 @@ void I2SAudioDuplexSpeaker::stop() {
 }
 
 void I2SAudioDuplexSpeaker::finish() {
-  int wait_count = 0;
-  while (this->has_buffered_data() && wait_count < 100) {
-    vTaskDelay(pdMS_TO_TICKS(10));
-    wait_count++;
-  }
-
-  this->stop();
+  // Non-blocking: set flag, loop() will call stop() once buffer is drained
+  this->finishing_ = true;
 }
 
 size_t I2SAudioDuplexSpeaker::play(const uint8_t *data, size_t length) {
@@ -91,7 +89,15 @@ bool I2SAudioDuplexSpeaker::has_buffered_data() const {
 void I2SAudioDuplexSpeaker::set_volume(float volume) {
   speaker::Speaker::set_volume(volume);
 
-  if (!this->mute_state_) {
+#ifdef USE_AUDIO_DAC
+  if (this->audio_dac_ != nullptr) {
+    if (volume > 0.0f) {
+      this->audio_dac_->set_mute_off();
+    }
+    this->audio_dac_->set_volume(volume);
+  } else
+#endif
+  {
     this->parent_->set_speaker_volume(volume);
   }
 }
@@ -99,10 +105,21 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
 void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
   speaker::Speaker::set_mute_state(mute_state);
 
-  if (mute_state) {
-    this->parent_->set_speaker_volume(0.0f);
-  } else {
-    this->parent_->set_speaker_volume(this->volume_);
+#ifdef USE_AUDIO_DAC
+  if (this->audio_dac_ != nullptr) {
+    if (mute_state) {
+      this->audio_dac_->set_mute_on();
+    } else {
+      this->audio_dac_->set_mute_off();
+    }
+  } else
+#endif
+  {
+    if (mute_state) {
+      this->parent_->set_speaker_volume(0.0f);
+    } else {
+      this->parent_->set_speaker_volume(this->volume_);
+    }
   }
 }
 
@@ -139,6 +156,11 @@ void I2SAudioDuplexSpeaker::loop() {
       break;
 
     case speaker::STATE_RUNNING:
+      // Non-blocking finish: drain buffer then stop
+      if (this->finishing_ && !this->has_buffered_data()) {
+        this->finishing_ = false;
+        this->stop();
+      }
       break;
 
     case speaker::STATE_STOPPING:

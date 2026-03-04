@@ -20,8 +20,10 @@ def _validate_esp32_variant(config):
             )
     return config
 
+AecProcessor = cg.esphome_ns.class_("AecProcessor")
+
 esp_aec_ns = cg.esphome_ns.namespace("esp_aec")
-EspAec = esp_aec_ns.class_("EspAec", cg.Component)
+EspAec = esp_aec_ns.class_("EspAec", cg.Component, AecProcessor)
 
 CONF_FILTER_LENGTH = "filter_length"
 

@@ -123,7 +123,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # ==============================================================================
 external_components:
-  - source: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # ==============================================================================

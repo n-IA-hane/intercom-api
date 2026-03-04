@@ -9,7 +9,7 @@
 #include "esphome/core/log.h"
 
 #ifdef USE_ESP_AEC
-#include "../esp_aec/esp_aec.h"
+#include "../esp_aec/aec_processor.h"
 #endif
 
 namespace esphome {
@@ -26,6 +26,38 @@ static inline int16_t scale_sample(int16_t sample, float gain) {
 }
 
 static const char *const TAG = "i2s_duplex";
+
+// Helper: get MCLK multiple enum from integer value
+static i2s_mclk_multiple_t get_mclk_multiple(uint32_t mult) {
+  switch (mult) {
+    case 128: return I2S_MCLK_MULTIPLE_128;
+    case 384: return I2S_MCLK_MULTIPLE_384;
+    case 512: return I2S_MCLK_MULTIPLE_512;
+    default: return I2S_MCLK_MULTIPLE_256;
+  }
+}
+
+// Helper: get STD slot config for the configured comm format (0=philips, 1=msb, 2=pcm_short, 3=pcm_long)
+// Note: PCM short/long are TDM-only in ESP-IDF — fall back to Philips in STD mode
+static i2s_std_slot_config_t get_std_slot_config(uint8_t fmt, i2s_data_bit_width_t bw, i2s_slot_mode_t mode) {
+  switch (fmt) {
+    case 1: return I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bw, mode);
+    default: return I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(bw, mode);
+  }
+}
+
+#if SOC_I2S_SUPPORTS_TDM
+// Helper: get TDM slot config for the configured comm format
+static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width_t bw,
+                                                   i2s_slot_mode_t mode, i2s_tdm_slot_mask_t mask) {
+  switch (fmt) {
+    case 1: return I2S_TDM_MSB_SLOT_DEFAULT_CONFIG(bw, mode, mask);
+    case 2: return I2S_TDM_PCM_SHORT_SLOT_DEFAULT_CONFIG(bw, mode, mask);
+    case 3: return I2S_TDM_PCM_LONG_SLOT_DEFAULT_CONFIG(bw, mode, mask);
+    default: return I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(bw, mode, mask);
+  }
+}
+#endif  // SOC_I2S_SUPPORTS_TDM
 
 // Audio parameters
 static const size_t DMA_BUFFER_COUNT = 8;
@@ -90,7 +122,7 @@ void I2SAudioDuplex::setup() {
   ESP_LOGI(TAG, "I2S Audio Duplex ready (speaker_buf=%u bytes)", (unsigned)this->speaker_buffer_size_);
 }
 
-void I2SAudioDuplex::set_aec(esp_aec::EspAec *aec) {
+void I2SAudioDuplex::set_aec(AecProcessor *aec) {
   this->aec_ = aec;
   this->aec_enabled_.store(aec != nullptr, std::memory_order_relaxed);
   // Note: speaker_ref_buffer_ is created in setup() after decimation_ratio_ is computed
@@ -103,7 +135,25 @@ void I2SAudioDuplex::dump_config() {
   ESP_LOGCONFIG(TAG, "  MCLK Pin: %d", this->mclk_pin_);
   ESP_LOGCONFIG(TAG, "  DIN Pin: %d", this->din_pin_);
   ESP_LOGCONFIG(TAG, "  DOUT Pin: %d", this->dout_pin_);
+  ESP_LOGCONFIG(TAG, "  I2S Port: %u", this->i2s_num_);
+  ESP_LOGCONFIG(TAG, "  I2S Role: %s", this->i2s_mode_secondary_ ? "secondary (slave)" : "primary (master)");
   ESP_LOGCONFIG(TAG, "  I2S Bus Rate: %u Hz", (unsigned)this->sample_rate_);
+  ESP_LOGCONFIG(TAG, "  I2S Bits Per Sample: %u", this->bits_per_sample_);
+  if (this->slot_bit_width_ > 0) {
+    ESP_LOGCONFIG(TAG, "  Slot Bit Width: %u", this->slot_bit_width_);
+  }
+  ESP_LOGCONFIG(TAG, "  TX Channels: %u (%s)", this->num_channels_,
+                this->num_channels_ == 2 ? "stereo" : "mono");
+  ESP_LOGCONFIG(TAG, "  RX Mic Channel: %s", this->mic_channel_right_ ? "RIGHT" : "LEFT");
+  static const char *const fmt_names[] = {"Philips", "MSB", "PCM Short", "PCM Long"};
+  ESP_LOGCONFIG(TAG, "  Comm Format: %s", fmt_names[this->i2s_comm_fmt_ & 3]);
+  ESP_LOGCONFIG(TAG, "  MCLK Multiple: %u", (unsigned)this->mclk_multiple_);
+  if (this->use_apll_) {
+    ESP_LOGCONFIG(TAG, "  APLL: enabled");
+  }
+  if (this->correct_dc_offset_) {
+    ESP_LOGCONFIG(TAG, "  DC Offset Correction: enabled");
+  }
   if (this->decimation_ratio_ > 1) {
     ESP_LOGCONFIG(TAG, "  Output Rate: %u Hz (decimation x%u)",
                   (unsigned)this->get_output_sample_rate(), (unsigned)this->decimation_ratio_);
@@ -122,6 +172,26 @@ void I2SAudioDuplex::dump_config() {
 bool I2SAudioDuplex::init_i2s_duplex_() {
   ESP_LOGCONFIG(TAG, "Initializing I2S in DUPLEX mode...");
 
+  // Map configured bit depth to I2S enum
+  // Note: 24-bit data is stored in 32-bit DMA containers (MSB-aligned)
+  i2s_data_bit_width_t bit_width;
+  switch (this->bits_per_sample_) {
+    case 32: bit_width = I2S_DATA_BIT_WIDTH_32BIT; break;
+    case 24: bit_width = I2S_DATA_BIT_WIDTH_24BIT; break;
+    default: bit_width = I2S_DATA_BIT_WIDTH_16BIT; break;
+  }
+
+  // Slot bit width: auto = match data bit width, or explicit override
+  i2s_slot_bit_width_t slot_bw = I2S_SLOT_BIT_WIDTH_AUTO;
+  if (this->slot_bit_width_ > 0) {
+    switch (this->slot_bit_width_) {
+      case 32: slot_bw = I2S_SLOT_BIT_WIDTH_32BIT; break;
+      case 24: slot_bw = I2S_SLOT_BIT_WIDTH_24BIT; break;
+      case 16: slot_bw = I2S_SLOT_BIT_WIDTH_16BIT; break;
+      default: slot_bw = I2S_SLOT_BIT_WIDTH_AUTO; break;
+    }
+  }
+
   bool need_tx = (this->dout_pin_ >= 0);
   bool need_rx = (this->din_pin_ >= 0);
 
@@ -131,18 +201,47 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
   }
 
   // Channel configuration
-  // TDM MONO 4-slot: each DMA frame = 4 × 2 bytes = 8 bytes.
-  // ESP-IDF DMA descriptor limit is 4092 bytes → max 511 frames at 8 bytes/frame.
-  // Use 256 for TDM (2048 bytes/desc), 512 for standard (1024 bytes/desc).
-  uint32_t dma_frame_num = this->use_tdm_ref_ ? 256 : DMA_BUFFER_SIZE;
+  // Clock source: APLL for accurate clocking (ESP32 original only)
+  i2s_clock_src_t clk_src = I2S_CLK_SRC_DEFAULT;
+#ifdef I2S_CLK_SRC_APLL
+  if (this->use_apll_) clk_src = I2S_CLK_SRC_APLL;
+#endif
+  i2s_mclk_multiple_t mclk_mult = get_mclk_multiple(this->mclk_multiple_);
+
+  // DMA descriptor limit is 4092 bytes. Compute max bytes per frame across
+  // TX and RX configs, then clamp dma_frame_num to stay within the limit.
+  // RX can be wider than TX (e.g., mono TX but stereo RX for AEC feedback).
+  uint32_t bytes_per_sample = (this->bits_per_sample_ > 16) ? 4 : 2;  // 24/32-bit → 4-byte DMA container
+  uint32_t tx_bytes_per_frame = this->num_channels_ * bytes_per_sample;
+  uint32_t rx_bytes_per_frame = tx_bytes_per_frame;
+  if (this->use_stereo_aec_ref_) {
+    rx_bytes_per_frame = 2 * bytes_per_sample;  // stereo RX forced
+  }
+#if SOC_I2S_SUPPORTS_TDM
+  if (this->use_tdm_ref_) {
+    uint32_t tdm_frame = this->tdm_total_slots_ * bytes_per_sample;
+    rx_bytes_per_frame = tdm_frame;
+    tx_bytes_per_frame = tdm_frame;
+  }
+#endif
+  uint32_t max_bytes_per_frame = std::max(tx_bytes_per_frame, rx_bytes_per_frame);
+  uint32_t dma_frame_num = DMA_BUFFER_SIZE;  // 512 default
+  if (max_bytes_per_frame > 0) {
+    uint32_t max_frames = 4092 / max_bytes_per_frame;
+    if (dma_frame_num > max_frames) {
+      dma_frame_num = max_frames;
+    }
+  }
   i2s_chan_config_t chan_cfg = {
-      .id = I2S_NUM_0,
-      .role = I2S_ROLE_MASTER,
+      .id = static_cast<i2s_port_t>(this->i2s_num_),
+      .role = this->i2s_mode_secondary_ ? I2S_ROLE_SLAVE : I2S_ROLE_MASTER,
       .dma_desc_num = DMA_BUFFER_COUNT,
       .dma_frame_num = dma_frame_num,
       .auto_clear_after_cb = true,
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
       .auto_clear_before_cb = false,
       .intr_priority = 0,
+#endif
   };
 
   i2s_chan_handle_t *tx_ptr = need_tx ? &this->tx_handle_ : nullptr;
@@ -162,6 +261,7 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
     return pin >= 0 ? static_cast<gpio_num_t>(pin) : GPIO_NUM_NC;
   };
 
+#if SOC_I2S_SUPPORTS_TDM
   if (this->use_tdm_ref_) {
     // ── TDM MODE: ES7210 multi-slot RX + ES8311 slot-0 TX ──
     // STEREO with 4 slots: DMA contains all 4 interleaved slots, BCLK/FS = 64.
@@ -176,12 +276,11 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
     i2s_tdm_config_t tdm_cfg = {
         .clk_cfg = {
             .sample_rate_hz = this->sample_rate_,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .clk_src = clk_src,
             .ext_clk_freq_hz = 0,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+            .mclk_multiple = mclk_mult,
         },
-        .slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
-            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO, tdm_mask),
+        .slot_cfg = get_tdm_slot_config(this->i2s_comm_fmt_, bit_width, I2S_SLOT_MODE_STEREO, tdm_mask),
         .gpio_cfg = {
             .mclk = pin_or_nc(this->mclk_pin_),
             .bclk = pin_or_nc(this->bclk_pin_),
@@ -195,6 +294,11 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
             },
         },
     };
+
+    // Apply slot_bit_width override BEFORE init
+    if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
+      tdm_cfg.slot_cfg.slot_bit_width = slot_bw;
+    }
 
     if (this->tx_handle_) {
       err = i2s_channel_init_tdm_mode(this->tx_handle_, &tdm_cfg);
@@ -212,17 +316,22 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
         return false;
       }
     }
+
     ESP_LOGD(TAG, "TDM mode: %d slots, mic_slot=%d, ref_slot=%d, mask=0x%x",
              this->tdm_total_slots_, this->tdm_mic_slot_, this->tdm_ref_slot_, (unsigned)tdm_mask);
-  } else {
-    // ── STANDARD MODE (unchanged) ──
+  } else
+#endif  // SOC_I2S_SUPPORTS_TDM
+  {
+    // ── STANDARD MODE ──
+    i2s_slot_mode_t tx_slot_mode = (this->num_channels_ == 2)
+        ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO;
     i2s_std_config_t tx_cfg = {
         .clk_cfg = {
             .sample_rate_hz = this->sample_rate_,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+            .clk_src = clk_src,
+            .mclk_multiple = mclk_mult,
         },
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = get_std_slot_config(this->i2s_comm_fmt_, bit_width, tx_slot_mode),
         .gpio_cfg = {
             .mclk = pin_or_nc(this->mclk_pin_),
             .bclk = pin_or_nc(this->bclk_pin_),
@@ -236,16 +345,26 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
             },
         },
     };
-    tx_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    tx_cfg.slot_cfg.slot_mask = (this->num_channels_ == 2)
+        ? I2S_STD_SLOT_BOTH : I2S_STD_SLOT_LEFT;
+    // Apply slot_bit_width override
+    if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
+      tx_cfg.slot_cfg.slot_bit_width = slot_bw;
+    }
 
-    // RX configuration - stereo if using ES8311 digital feedback, mono otherwise
+    // RX configuration - always independent of TX num_channels
     i2s_std_config_t rx_cfg = tx_cfg;
     if (this->use_stereo_aec_ref_) {
-      rx_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+      rx_cfg.slot_cfg = get_std_slot_config(this->i2s_comm_fmt_, bit_width, I2S_SLOT_MODE_STEREO);
       rx_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
       ESP_LOGD(TAG, "RX configured as STEREO for ES8311 digital feedback AEC");
     } else {
-      rx_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+      rx_cfg.slot_cfg = get_std_slot_config(this->i2s_comm_fmt_, bit_width, I2S_SLOT_MODE_MONO);
+      rx_cfg.slot_cfg.slot_mask = this->mic_channel_right_ ? I2S_STD_SLOT_RIGHT : I2S_STD_SLOT_LEFT;
+    }
+    // Apply slot_bit_width override to RX
+    if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
+      rx_cfg.slot_cfg.slot_bit_width = slot_bw;
     }
 
     if (this->tx_handle_) {
@@ -338,6 +457,7 @@ void I2SAudioDuplex::start() {
 
   this->duplex_running_.store(true, std::memory_order_relaxed);
   this->task_exited_.store(false, std::memory_order_relaxed);
+  this->has_i2s_error_.store(false, std::memory_order_relaxed);
   this->speaker_running_.store(this->tx_handle_ != nullptr, std::memory_order_relaxed);
 
   this->speaker_buffer_->reset();
@@ -357,7 +477,7 @@ void I2SAudioDuplex::start() {
   }
 #endif
 
-  xTaskCreatePinnedToCore(
+  BaseType_t task_created = xTaskCreatePinnedToCore(
       audio_task,
       "i2s_duplex",
       8192,
@@ -366,6 +486,14 @@ void I2SAudioDuplex::start() {
       &this->audio_task_handle_,
       0   // Core 0: canonical Espressif AEC pattern; frees Core 1 for MWW inference
   );
+
+  if (task_created != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create audio task");
+    this->duplex_running_.store(false, std::memory_order_relaxed);
+    this->speaker_running_.store(false, std::memory_order_relaxed);
+    this->deinit_i2s_();
+    return;
+  }
 
   ESP_LOGI(TAG, "Duplex audio started");
 }
@@ -507,13 +635,17 @@ void I2SAudioDuplex::audio_task_() {
   // - TDM: bus_frame_size × tdm_total_slots samples (all slots interleaved)
   // - Stereo: bus_frame_size × 2 (L+R interleaved)
   // - Mono: bus_frame_size
+  // I2S bytes per sample: 2 for 16-bit, 4 for 24/32-bit (24-bit uses 32-bit DMA containers)
+  const uint8_t i2s_bps = (this->bits_per_sample_ > 16) ? 4 : 2;
+  const uint8_t num_ch = this->num_channels_;  // TX channels: 1 (mono) or 2 (stereo)
+
   size_t rx_frame_bytes;
   if (this->use_tdm_ref_) {
-    rx_frame_bytes = bus_frame_size * this->tdm_total_slots_ * sizeof(int16_t);
+    rx_frame_bytes = bus_frame_size * this->tdm_total_slots_ * i2s_bps;
   } else if (this->use_stereo_aec_ref_) {
-    rx_frame_bytes = bus_frame_bytes * 2;
+    rx_frame_bytes = bus_frame_size * 2 * i2s_bps;
   } else {
-    rx_frame_bytes = bus_frame_bytes;
+    rx_frame_bytes = bus_frame_size * i2s_bps;
   }
 
   // ── Buffer allocations ──
@@ -528,8 +660,9 @@ void I2SAudioDuplex::audio_task_() {
       : rx_buffer;  // mono, no decimation: alias rx_buffer
 
   // spk_buffer: DMA-capable, TX output at bus rate (read from ring buffer, write to I2S)
+  // Allocated at full I2S frame size: bus_frame_size × num_channels × bytes_per_sample
   auto *spk_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
+      heap_caps_malloc(bus_frame_size * num_ch * i2s_bps, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 
   // spk_ref_buffer: output-rate AEC reference (from stereo/TDM split or mono ring buffer after decimation)
   int16_t *spk_ref_buffer = nullptr;
@@ -557,7 +690,7 @@ void I2SAudioDuplex::audio_task_() {
   int16_t *tdm_tx_buffer = nullptr;
   size_t tdm_tx_frame_bytes = 0;
   if (this->use_tdm_ref_) {
-    tdm_tx_frame_bytes = bus_frame_size * this->tdm_total_slots_ * sizeof(int16_t);
+    tdm_tx_frame_bytes = bus_frame_size * this->tdm_total_slots_ * i2s_bps;
     tdm_tx_buffer = static_cast<int16_t *>(
         heap_caps_malloc(tdm_tx_frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
   }
@@ -578,35 +711,49 @@ void I2SAudioDuplex::audio_task_() {
   }
 #endif
 
-  // Verify critical allocations
+  // Verify critical allocations — on failure, signal error robustly to upper layers
   if (!rx_buffer || !spk_buffer || (mic_separate && !mic_buffer)) {
     ESP_LOGE(TAG, "Failed to allocate audio buffers");
+    this->has_i2s_error_.store(true, std::memory_order_relaxed);
+    this->task_exited_.store(true, std::memory_order_relaxed);
     goto cleanup;
   }
   if (this->use_stereo_aec_ref_ && ratio > 1 && (!deint_ref || !deint_mic)) {
     ESP_LOGE(TAG, "Failed to allocate stereo decimation buffers");
+    this->has_i2s_error_.store(true, std::memory_order_relaxed);
+    this->task_exited_.store(true, std::memory_order_relaxed);
     goto cleanup;
   }
   if (this->use_tdm_ref_ && !tdm_tx_buffer) {
     ESP_LOGE(TAG, "Failed to allocate TDM TX buffer");
+    this->has_i2s_error_.store(true, std::memory_order_relaxed);
+    this->task_exited_.store(true, std::memory_order_relaxed);
     goto cleanup;
   }
   if (this->use_tdm_ref_ && ratio > 1 && (!tdm_deint_mic || !tdm_deint_ref)) {
     ESP_LOGE(TAG, "Failed to allocate TDM decimation buffers");
+    this->has_i2s_error_.store(true, std::memory_order_relaxed);
+    this->task_exited_.store(true, std::memory_order_relaxed);
     goto cleanup;
   }
 #ifdef USE_ESP_AEC
   if (this->aec_ != nullptr) {
     if (!aec_output) {
       ESP_LOGE(TAG, "Failed to allocate AEC output buffer");
+      this->has_i2s_error_.store(true, std::memory_order_relaxed);
+      this->task_exited_.store(true, std::memory_order_relaxed);
       goto cleanup;
     }
     if ((this->use_stereo_aec_ref_ || this->use_tdm_ref_) && !spk_ref_buffer) {
       ESP_LOGE(TAG, "Failed to allocate AEC reference buffer");
+      this->has_i2s_error_.store(true, std::memory_order_relaxed);
+      this->task_exited_.store(true, std::memory_order_relaxed);
       goto cleanup;
     }
     if (!this->use_stereo_aec_ref_ && !this->use_tdm_ref_ && !ref_bus_buffer) {
       ESP_LOGE(TAG, "Failed to allocate AEC mono reference buffer");
+      this->has_i2s_error_.store(true, std::memory_order_relaxed);
+      this->task_exited_.store(true, std::memory_order_relaxed);
       goto cleanup;
     }
   }
@@ -615,6 +762,7 @@ void I2SAudioDuplex::audio_task_() {
   {
     size_t bytes_read, bytes_written;
     int consecutive_i2s_errors = 0;
+    int32_t dc_offset = 0;  // DC offset tracking (EMA, ~15Hz cutoff)
     // Pre-compute AEC delay bytes outside loop (L12: avoid per-frame recalculation)
     const size_t aec_delay_bytes = (this->sample_rate_ * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
 
@@ -649,8 +797,19 @@ void I2SAudioDuplex::audio_task_() {
         }
         if (err == ESP_OK && bytes_read == rx_frame_bytes) {
           consecutive_i2s_errors = 0;
+
+          // Convert 32-bit I2S samples to 16-bit for internal processing
+          if (i2s_bps == 4) {
+            auto *src32 = reinterpret_cast<int32_t *>(rx_buffer);
+            size_t total_i2s_samples = bytes_read / sizeof(int32_t);
+            for (size_t i = 0; i < total_i2s_samples; i++) {
+              rx_buffer[i] = static_cast<int16_t>(src32[i] >> 16);
+            }
+          }
+
           int16_t *output_buffer = mic_buffer;  // Default: no AEC processing
 
+#if SOC_I2S_SUPPORTS_TDM
           if (this->use_tdm_ref_) {
             // ── TDM PATH: deinterleave mic + ref from TDM frame ──
             // rx_buffer layout: [s0,s1,s2,s3, s0,s1,s2,s3, ...] (tdm_total_slots_ per sample)
@@ -672,7 +831,9 @@ void I2SAudioDuplex::audio_task_() {
                 spk_ref_buffer[i] = rx_buffer[i * total_slots + ref_slot];
               }
             }
-          } else if (ratio > 1) {
+          } else
+#endif  // SOC_I2S_SUPPORTS_TDM
+          if (ratio > 1) {
             // ── DECIMATION PATH: bus rate -> output rate ──
             if (this->use_stereo_aec_ref_) {
               // Stereo 48kHz: deinterleave L/R then decimate both channels
@@ -703,6 +864,16 @@ void I2SAudioDuplex::audio_task_() {
 
           // ── From here, all processing uses output-rate data ──
 
+          // DC offset correction: IIR high-pass filter removes mic DC bias (~15Hz cutoff)
+          // y[n] = x[n] - dc_avg, where dc_avg tracks via EMA with R = 1 - 2^-10
+          if (this->correct_dc_offset_) {
+            for (size_t i = 0; i < out_frame_size; i++) {
+              int32_t sample = mic_buffer[i];
+              dc_offset += (sample - dc_offset) >> 10;
+              mic_buffer[i] = static_cast<int16_t>(sample - dc_offset);
+            }
+          }
+
           // Apply pre-AEC mic attenuation for hot mics (ES8311)
           if (this->mic_attenuation_ != 1.0f) {
             for (size_t i = 0; i < out_frame_size; i++) {
@@ -718,6 +889,7 @@ void I2SAudioDuplex::audio_task_() {
           }
 
 #ifdef USE_ESP_AEC
+#if SOC_I2S_SUPPORTS_TDM
           if (this->use_tdm_ref_ && this->aec_ != nullptr && this->aec_enabled_.load(std::memory_order_relaxed) &&
               this->aec_->is_initialized() && spk_ref_buffer != nullptr && aec_output != nullptr) {
             // ── TDM MODE: hardware-synced reference from TDM slot ──
@@ -732,7 +904,9 @@ void I2SAudioDuplex::audio_task_() {
             }
             this->aec_->process(mic_buffer, spk_ref_buffer, aec_output, out_frame_size);
             output_buffer = aec_output;
-          } else if (!this->use_tdm_ref_ &&
+          } else
+#endif  // SOC_I2S_SUPPORTS_TDM
+          if (!this->use_tdm_ref_ &&
               this->aec_ != nullptr && this->aec_enabled_.load(std::memory_order_relaxed) && this->aec_->is_initialized() &&
               spk_ref_buffer != nullptr && aec_output != nullptr && this->speaker_running_.load(std::memory_order_relaxed) &&
               (millis() - this->last_speaker_audio_ms_ <= AEC_ACTIVE_TIMEOUT_MS)) {
@@ -820,17 +994,46 @@ void I2SAudioDuplex::audio_task_() {
           memset(spk_buffer, 0, bus_frame_bytes);
         }
 
-        // In TDM mode, expand mono spk_buffer into full TDM frame:
-        // speaker data in slot 0, zeros in slots 1-3.
-        const void *tx_data = spk_buffer;
-        size_t tx_bytes = bus_frame_bytes;
+        // Prepare TX data: expand to I2S bit depth and handle TDM interleave
+        const void *tx_data;
+        size_t tx_bytes;
+#if SOC_I2S_SUPPORTS_TDM
         if (this->use_tdm_ref_ && tdm_tx_buffer != nullptr) {
-          memset(tdm_tx_buffer, 0, tdm_tx_frame_bytes);
-          for (size_t i = 0; i < bus_frame_size; i++) {
-            tdm_tx_buffer[i * this->tdm_total_slots_] = spk_buffer[i];  // slot 0
+          // TDM: interleave mono into multi-slot frame at I2S bit depth
+          if (i2s_bps == 4) {
+            auto *tdm32 = reinterpret_cast<int32_t *>(tdm_tx_buffer);
+            memset(tdm32, 0, tdm_tx_frame_bytes);
+            for (size_t i = 0; i < bus_frame_size; i++) {
+              tdm32[i * this->tdm_total_slots_] = static_cast<int32_t>(spk_buffer[i]) << 16;
+            }
+          } else {
+            memset(tdm_tx_buffer, 0, tdm_tx_frame_bytes);
+            for (size_t i = 0; i < bus_frame_size; i++) {
+              tdm_tx_buffer[i * this->tdm_total_slots_] = spk_buffer[i];
+            }
           }
           tx_data = tdm_tx_buffer;
           tx_bytes = tdm_tx_frame_bytes;
+        } else
+#endif  // SOC_I2S_SUPPORTS_TDM
+        {
+          // Standard: mono→stereo expansion (if needed), then 16→32 expansion (if needed)
+          // Both are backward in-place expansions: stereo doubles sample count, 32-bit doubles sample size
+          if (num_ch == 2) {
+            for (int i = static_cast<int>(bus_frame_size) - 1; i >= 0; i--) {
+              spk_buffer[i * 2 + 1] = spk_buffer[i];  // R = duplicate
+              spk_buffer[i * 2] = spk_buffer[i];       // L = original
+            }
+          }
+          size_t total_tx_samples = bus_frame_size * num_ch;
+          if (i2s_bps == 4) {
+            auto *dst32 = reinterpret_cast<int32_t *>(spk_buffer);
+            for (int i = static_cast<int>(total_tx_samples) - 1; i >= 0; i--) {
+              dst32[i] = static_cast<int32_t>(spk_buffer[i]) << 16;
+            }
+          }
+          tx_data = spk_buffer;
+          tx_bytes = total_tx_samples * i2s_bps;
         }
 
         esp_err_t err = i2s_channel_write(this->tx_handle_, tx_data, tx_bytes, &bytes_written, I2S_IO_TIMEOUT_MS);
@@ -849,8 +1052,8 @@ void I2SAudioDuplex::audio_task_() {
         // For TDM, bytes_written includes all slots — convert back to mono frame count.
         if (err == ESP_OK && bytes_written > 0 && !this->speaker_output_callbacks_.empty()) {
           uint32_t frames_played = this->use_tdm_ref_
-              ? bytes_written / (this->tdm_total_slots_ * sizeof(int16_t))
-              : bytes_written / sizeof(int16_t);
+              ? bytes_written / (this->tdm_total_slots_ * i2s_bps)
+              : bytes_written / (num_ch * i2s_bps);
           int64_t timestamp = esp_timer_get_time();
           for (auto &cb : this->speaker_output_callbacks_) {
             cb(frames_played, timestamp);

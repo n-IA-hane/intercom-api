@@ -10,8 +10,21 @@ If output_sample_rate is omitted, no decimation occurs (backward compatible).
 """
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome import pins
-from esphome.const import CONF_ID, CONF_SAMPLE_RATE
+from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
+from esphome.components.esp32 import get_esp32_variant
+from esphome.components.esp32.const import (
+    VARIANT_ESP32,
+    VARIANT_ESP32C3,
+    VARIANT_ESP32C5,
+    VARIANT_ESP32C6,
+    VARIANT_ESP32C61,
+    VARIANT_ESP32H2,
+    VARIANT_ESP32P4,
+    VARIANT_ESP32S2,
+    VARIANT_ESP32S3,
+)
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
@@ -28,6 +41,15 @@ CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
+CONF_BITS_PER_SAMPLE = "bits_per_sample"
+CONF_SLOT_BIT_WIDTH = "slot_bit_width"
+CONF_CORRECT_DC_OFFSET = "correct_dc_offset"
+CONF_MIC_CHANNEL = "mic_channel"
+CONF_I2S_MODE = "i2s_mode"
+CONF_USE_APLL = "use_apll"
+CONF_I2S_NUM = "i2s_num"
+CONF_MCLK_MULTIPLE = "mclk_multiple"
+CONF_I2S_COMM_FMT = "i2s_comm_fmt"
 CONF_USE_TDM_REFERENCE = "use_tdm_reference"
 CONF_TDM_TOTAL_SLOTS = "tdm_total_slots"
 CONF_TDM_MIC_SLOT = "tdm_mic_slot"
@@ -37,9 +59,28 @@ CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
 
-# Forward declare esp_aec
-esp_aec_ns = cg.esphome_ns.namespace("esp_aec")
-EspAec = esp_aec_ns.class_("EspAec")
+# AecProcessor abstract interface (defined in esp_aec/aec_processor.h)
+# Both esp_aec::EspAec and future esp_afe::EspAfe inherit from this.
+AecProcessor = cg.esphome_ns.class_("AecProcessor")
+
+# I2S port count per SoC variant (from SOC_I2S_NUM in soc_caps.h)
+I2S_PORTS = {
+    VARIANT_ESP32: 2,
+    VARIANT_ESP32C3: 1,
+    VARIANT_ESP32C5: 1,
+    VARIANT_ESP32C6: 1,
+    VARIANT_ESP32C61: 1,
+    VARIANT_ESP32H2: 1,
+    VARIANT_ESP32P4: 3,
+    VARIANT_ESP32S2: 1,
+    VARIANT_ESP32S3: 2,
+}
+
+# SoC variants with TDM support (from SOC_I2S_SUPPORTS_TDM in soc_caps.h)
+TDM_VARIANTS = {
+    VARIANT_ESP32C3, VARIANT_ESP32C5, VARIANT_ESP32C6, VARIANT_ESP32C61,
+    VARIANT_ESP32H2, VARIANT_ESP32S3, VARIANT_ESP32P4,
+}
 
 
 def _validate_sample_rates(config):
@@ -90,6 +131,18 @@ def _validate_tdm_config(config):
     return config
 
 
+def _validate_pcm_format(config):
+    """Validate that PCM short/long formats require TDM mode."""
+    fmt = config.get(CONF_I2S_COMM_FMT, "philips")
+    use_tdm = config.get(CONF_USE_TDM_REFERENCE, False)
+    if fmt in ("pcm_short", "pcm_long") and not use_tdm:
+        raise cv.Invalid(
+            f"i2s_comm_fmt '{fmt}' requires use_tdm_reference: true "
+            f"(PCM short/long are TDM-only in ESP-IDF)"
+        )
+    return config
+
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema({
         cv.GenerateID(): cv.declare_id(I2SAudioDuplex),
@@ -108,10 +161,25 @@ CONFIG_SCHEMA = cv.All(
             pins.internal_gpio_output_pin_number,
         ),
         cv.Optional(CONF_SAMPLE_RATE, default=16000): cv.int_range(min=8000, max=48000),
+        cv.Optional(CONF_BITS_PER_SAMPLE, default=16): cv.one_of(16, 24, 32, int=True),
+        cv.Optional(CONF_SLOT_BIT_WIDTH, default="auto"): cv.Any(
+            cv.one_of("auto", lower=True),
+            cv.one_of(16, 24, 32, int=True),
+        ),
+        cv.Optional(CONF_CORRECT_DC_OFFSET, default=False): cv.boolean,
+        cv.Optional(CONF_NUM_CHANNELS, default=1): cv.one_of(1, 2, int=True),
+        cv.Optional(CONF_MIC_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
+        cv.Optional(CONF_I2S_MODE, default="primary"): cv.one_of("primary", "secondary", lower=True),
+        cv.Optional(CONF_USE_APLL, default=False): cv.boolean,
+        cv.Optional(CONF_I2S_NUM, default=0): cv.int_range(min=0, max=2),
+        cv.Optional(CONF_MCLK_MULTIPLE, default=256): cv.one_of(128, 256, 384, 512, int=True),
+        cv.Optional(CONF_I2S_COMM_FMT, default="philips"): cv.one_of(
+            "philips", "msb", "pcm_short", "pcm_long", lower=True,
+        ),
         # Output sample rate for mic/AEC/MWW/VA (decimated from bus rate)
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
-        cv.Optional(CONF_AEC_ID): cv.use_id(EspAec),
+        cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
         # AEC reference delay: 80ms for separate I2S, 20-40ms for integrated codecs like ES8311
         cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
         # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
@@ -129,7 +197,34 @@ CONFIG_SCHEMA = cv.All(
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
+    _validate_pcm_format,
 )
+
+
+def _final_validate(config):
+    """Validate i2s_num against SoC port count and TDM against SoC capability."""
+    variant = get_esp32_variant()
+    if variant not in I2S_PORTS:
+        raise cv.Invalid(f"Unsupported ESP32 variant: {variant}")
+
+    max_ports = I2S_PORTS[variant]
+    i2s_num = config.get(CONF_I2S_NUM, 0)
+    if i2s_num >= max_ports:
+        raise cv.Invalid(
+            f"i2s_num {i2s_num} exceeds available I2S ports on {variant} "
+            f"(max port index: {max_ports - 1})"
+        )
+
+    use_tdm = config.get(CONF_USE_TDM_REFERENCE, False)
+    if use_tdm and variant not in TDM_VARIANTS:
+        raise cv.Invalid(
+            f"use_tdm_reference requires TDM support, but {variant} does not have SOC_I2S_SUPPORTS_TDM"
+        )
+
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):
@@ -145,6 +240,24 @@ async def to_code(config):
     cg.add(var.set_din_pin(config[CONF_I2S_DIN_PIN]))
     cg.add(var.set_dout_pin(config[CONF_I2S_DOUT_PIN]))
     cg.add(var.set_sample_rate(config[CONF_SAMPLE_RATE]))
+    cg.add(var.set_bits_per_sample(config[CONF_BITS_PER_SAMPLE]))
+    cg.add(var.set_correct_dc_offset(config[CONF_CORRECT_DC_OFFSET]))
+    cg.add(var.set_num_channels(config[CONF_NUM_CHANNELS]))
+    cg.add(var.set_i2s_mode_secondary(config[CONF_I2S_MODE] == "secondary"))
+    cg.add(var.set_use_apll(config[CONF_USE_APLL]))
+    cg.add(var.set_i2s_num(config[CONF_I2S_NUM]))
+    cg.add(var.set_mclk_multiple(config[CONF_MCLK_MULTIPLE]))
+
+    # Map comm format string to enum index
+    comm_fmt_map = {"philips": 0, "msb": 1, "pcm_short": 2, "pcm_long": 3}
+    cg.add(var.set_i2s_comm_fmt(comm_fmt_map[config[CONF_I2S_COMM_FMT]]))
+
+    # Mic channel selection (for mono RX: which I2S slot to capture)
+    cg.add(var.set_mic_channel_right(config[CONF_MIC_CHANNEL] == "right"))
+
+    # Slot bit width: 0 = auto (match bits_per_sample)
+    sbw = config[CONF_SLOT_BIT_WIDTH]
+    cg.add(var.set_slot_bit_width(0 if sbw == "auto" else sbw))
 
     # Set output sample rate if specified (enables decimation)
     if CONF_OUTPUT_SAMPLE_RATE in config:

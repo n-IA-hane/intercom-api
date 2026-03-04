@@ -42,6 +42,7 @@ class I2SAudioDuplexSpeaker : public speaker::Speaker,
 
  protected:
   bool pause_state_{false};
+  bool finishing_{false};  // Non-blocking drain: finish() sets flag, loop() handles drain+stop
   // Reference counting for multiple listeners (media_player, voice_assistant, intercom, etc.)
   SemaphoreHandle_t active_listeners_semaphore_{nullptr};
   // Idempotency guard: prevents multiple xSemaphoreTake per stream session.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aec_processor.h"
 #include "esphome/core/component.h"
 
 #ifdef USE_ESP32
@@ -9,7 +10,7 @@
 namespace esphome {
 namespace esp_aec {
 
-class EspAec : public Component {
+class EspAec : public Component, public AecProcessor {
  public:
   void setup() override;
   void dump_config() override;
@@ -20,25 +21,12 @@ class EspAec : public Component {
   void set_filter_length(int filter_length) { this->filter_length_ = filter_length; }
   void set_mode(int mode) { this->mode_ = static_cast<aec_mode_t>(mode); }
 
-  // Runtime API
-  bool is_initialized() const { return this->handle_ != nullptr; }
+  // AecProcessor interface
+  bool is_initialized() const override { return this->handle_ != nullptr; }
+  int get_frame_size() const override;
+  void process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size) override;
 
-  /**
-   * @brief Get frame size in samples (not bytes)
-   * @return Frame size (typically 512 samples = 32ms at 16kHz)
-   */
-  int get_frame_size() const;
-
-  /**
-   * @brief Process one AEC frame
-   * @param mic_in Microphone input samples (frame_size samples)
-   * @param ref_in Speaker reference samples (frame_size samples)
-   * @param out Output with echo removed (frame_size samples)
-   * @param frame_size Number of samples to process
-   */
-  void process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size);
-
-  ~EspAec();
+  ~EspAec() override;
 
  protected:
   aec_handle_t *handle_{nullptr};

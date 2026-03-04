@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "2.0.0";
+const INTERCOM_CARD_VERSION = "2.1.2";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -50,6 +50,10 @@ class IntercomCard extends HTMLElement {
 
     // Audio streaming active (for P2P)
     this._audioStreaming = false;
+    this._scriptProcessor = null;
+
+    // Persistent error message (survives _render() DOM rebuild)
+    this._errorMsg = "";
   }
 
   setConfig(config) {
@@ -107,8 +111,11 @@ class IntercomCard extends HTMLElement {
       }
 
       // CRITICAL: Cleanup audio when ESP goes to Idle
-      if (espStateChanged && newEspState === "idle" && (this._audioStreaming || this._activeBridgeId)) {
-        this._cleanup();
+      if (espStateChanged && newEspState === "idle") {
+        if (this._audioStreaming || this._activeBridgeId) {
+          this._cleanup();
+        }
+        this._errorMsg = "";
       }
 
       if (needsRender) {
@@ -381,7 +388,7 @@ class IntercomCard extends HTMLElement {
           ${statusText}
         </div>
         <div class="stats" id="stats">${isFullMode ? (destination === 'Home Assistant' ? 'Browser ↔ ESP' : 'ESP ↔ ESP') : 'Sent: 0 | Recv: 0'}</div>
-        <div class="error" id="err"></div>
+        <div class="error" id="err">${this._errorMsg}</div>
         <div class="version">v${INTERCOM_CARD_VERSION}</div>
       </div>
     `;
@@ -448,8 +455,8 @@ class IntercomCard extends HTMLElement {
 
     this._activeDeviceInfo = deviceInfo;
     this._starting = true;
+    this._errorMsg = "";
     this._render();
-    this._showError("");
 
     try {
       const destination = this._getDestination();
@@ -470,7 +477,7 @@ class IntercomCard extends HTMLElement {
     }
   }
 
-  async _startP2P(deviceInfo) {
+  async _setupMicAndSpeaker() {
     // Setup mic
     this._mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -483,8 +490,9 @@ class IntercomCard extends HTMLElement {
     );
     if (this._audioContext.state === "suspended") await this._audioContext.resume();
 
-    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
     this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
+
+    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
     this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
     this._workletNode.port.onmessage = (e) => {
       if (e.data.type === "audio") this._sendAudio(new Int16Array(e.data.buffer));
@@ -496,8 +504,11 @@ class IntercomCard extends HTMLElement {
     this._gainNode = this._playbackContext.createGain();
     this._gainNode.gain.value = 1.0;
     this._gainNode.connect(this._playbackContext.destination);
+  }
 
-    // Start session
+  async _startP2P(deviceInfo) {
+    await this._setupMicAndSpeaker();
+
     const result = await this._hass.connection.sendMessagePromise({
       type: "intercom_native/start",
       device_id: deviceInfo.device_id,
@@ -505,7 +516,6 @@ class IntercomCard extends HTMLElement {
     });
     if (!result.success) throw new Error("Start failed");
 
-    // Subscribe to audio events
     this._unsubscribeAudio = await this._hass.connection.subscribeEvents(
       (e) => this._handleAudioEvent(e), "intercom_audio"
     );
@@ -516,36 +526,8 @@ class IntercomCard extends HTMLElement {
   }
 
   async _answerEspCall(deviceInfo) {
-    // Answer an ESP-initiated call (ESP called Home Assistant)
-    // Similar to _startP2P but sends ANSWER instead of START
+    await this._setupMicAndSpeaker();
 
-    // Setup mic
-    this._mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
-
-    const track = this._mediaStream.getAudioTracks()[0];
-    const trackSampleRate = track?.getSettings?.().sampleRate;
-    this._audioContext = new (window.AudioContext || window.webkitAudioContext)(
-      trackSampleRate ? { sampleRate: trackSampleRate } : undefined
-    );
-    if (this._audioContext.state === "suspended") await this._audioContext.resume();
-
-    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
-    this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
-    this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
-    this._workletNode.port.onmessage = (e) => {
-      if (e.data.type === "audio") this._sendAudio(new Int16Array(e.data.buffer));
-    };
-    this._source.connect(this._workletNode);
-
-    // Setup speaker
-    this._playbackContext = new (window.AudioContext || window.webkitAudioContext)();
-    this._gainNode = this._playbackContext.createGain();
-    this._gainNode.gain.value = 1.0;
-    this._gainNode.connect(this._playbackContext.destination);
-
-    // Answer ESP call (sends ANSWER, not START)
     const result = await this._hass.connection.sendMessagePromise({
       type: "intercom_native/answer_esp_call",
       device_id: deviceInfo.device_id,
@@ -553,7 +535,6 @@ class IntercomCard extends HTMLElement {
     });
     if (!result.success) throw new Error("Answer failed");
 
-    // Subscribe to audio events
     this._unsubscribeAudio = await this._hass.connection.subscribeEvents(
       (e) => this._handleAudioEvent(e), "intercom_audio"
     );
@@ -592,6 +573,7 @@ class IntercomCard extends HTMLElement {
 
     this._starting = true;
     this._activeDeviceInfo = deviceInfo;
+    this._errorMsg = "";
     this._render();
 
     try {
@@ -602,7 +584,6 @@ class IntercomCard extends HTMLElement {
       if ((espState === "outgoing" || espState === "calling") && destination === "Home Assistant") {
         // ESP is calling us - answer with proper ANSWER message (not START)
         await this._answerEspCall(deviceInfo);
-        this._showError("");
       } else {
         // Normal case: ESP is ringing (we called it), send answer command
         const res = await this._hass.connection.sendMessagePromise({
@@ -614,7 +595,6 @@ class IntercomCard extends HTMLElement {
           // Fallback: press call button on ESP
           await this._hass.callService("button", "press", { entity_id: this._callButtonEntityId });
         }
-        this._showError("");
       }
     } catch (err) {
       this._showError(err.message || String(err));
@@ -633,6 +613,7 @@ class IntercomCard extends HTMLElement {
     }
 
     this._stopping = true;
+    this._errorMsg = "";
     this._render();
 
     try {
@@ -655,7 +636,6 @@ class IntercomCard extends HTMLElement {
           device_id: deviceInfo.device_id,
         });
       }
-      this._showError("");
     } catch (err) {
       this._showError(err.message || String(err));
     } finally {
@@ -702,6 +682,7 @@ class IntercomCard extends HTMLElement {
     if (this._unsubscribeAudio) { this._unsubscribeAudio(); this._unsubscribeAudio = null; }
     if (this._mediaStream) { this._mediaStream.getTracks().forEach(t => t.stop()); this._mediaStream = null; }
     if (this._workletNode) { this._workletNode.disconnect(); this._workletNode = null; }
+    if (this._scriptProcessor) { this._scriptProcessor.disconnect(); this._scriptProcessor = null; }
     if (this._source) { this._source.disconnect(); this._source = null; }
     if (this._audioContext) { await this._audioContext.close().catch(() => {}); this._audioContext = null; }
     if (this._playbackContext) { await this._playbackContext.close().catch(() => {}); this._playbackContext = null; }
@@ -794,8 +775,13 @@ class IntercomCard extends HTMLElement {
   }
 
   _showError(msg) {
+    this._errorMsg = msg || "";
     const el = this.shadowRoot?.getElementById("err");
-    if (el) el.textContent = msg;
+    if (el) el.textContent = this._errorMsg;
+  }
+
+  disconnectedCallback() {
+    this._cleanup();
   }
 
   getCardSize() { return 3; }

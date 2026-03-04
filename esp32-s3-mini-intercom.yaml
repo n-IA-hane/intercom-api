@@ -82,7 +82,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # ==============================================================================
 external_components:
-  - source: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, esp_aec]
 
 # ==============================================================================

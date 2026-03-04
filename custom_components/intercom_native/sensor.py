@@ -41,21 +41,23 @@ class IntercomActiveDevicesSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
-        # Initial scan for intercom devices
+        # Initial scan — builds _tracked_entities cache
         await self._update_active_devices()
 
-        # Subscribe to all state changes to detect intercom devices going online/offline
-        # AND to detect when an ESP goes to "Outgoing" state (to auto-start bridge)
         @callback
         def state_change_listener(event):
-            """Handle state change events."""
+            """Handle state change events for tracked intercom entities."""
             entity_id = event.data.get("entity_id", "")
             new_state = event.data.get("new_state")
             old_state = event.data.get("old_state")
 
-            # Only care about intercom_state sensors
-            if "intercom_state" not in entity_id:
-                return
+            # Fast path: only care about known intercom_state entities
+            if entity_id not in self._tracked_entities:
+                # Check for new intercom devices (entity not yet cached)
+                if "intercom_state" in entity_id:
+                    self._tracked_entities.add(entity_id)
+                else:
+                    return
 
             # Check if availability changed
             old_available = old_state is not None and old_state.state != "unavailable"
@@ -66,7 +68,6 @@ class IntercomActiveDevicesSensor(SensorEntity):
                 self.hass.async_create_task(self._update_active_devices())
 
             # Auto-bridge: detect when ESP goes to "Outgoing" state
-            # This enables button-initiated ESP-to-ESP calls without HA service calls
             if new_state is not None and new_state.state.lower() == "outgoing":
                 old_value = old_state.state if old_state else None
                 if old_value is None or old_value.lower() != "outgoing":
@@ -93,21 +94,23 @@ class IntercomActiveDevicesSensor(SensorEntity):
         entity_registry = er.async_get(self.hass)
         device_registry = dr.async_get(self.hass)
 
-        names: set[str] = set()  # Use set for deduplication
+        # Rebuild cache if empty (first run or after reload)
+        if not self._tracked_entities:
+            for entity in entity_registry.entities.values():
+                if "intercom_state" in entity.entity_id:
+                    self._tracked_entities.add(entity.entity_id)
 
-        # Find all intercom_state entities and check if they're available
-        for entity in entity_registry.entities.values():
-            if "intercom_state" not in entity.entity_id:
-                continue
+        names: set[str] = set()
 
-            # Check if entity is available
-            state = self.hass.states.get(entity.entity_id)
+        # Only check cached intercom_state entities (not entire registry)
+        for entity_id in self._tracked_entities:
+            state = self.hass.states.get(entity_id)
             if state is None or state.state == "unavailable":
                 continue
 
-            # Get device name
-            if entity.device_id:
-                device = device_registry.async_get(entity.device_id)
+            entry = entity_registry.async_get(entity_id)
+            if entry and entry.device_id:
+                device = device_registry.async_get(entry.device_id)
                 if device and device.name:
                     names.add(device.name.strip())
 

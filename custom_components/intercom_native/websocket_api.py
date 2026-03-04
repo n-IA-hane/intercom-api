@@ -1074,6 +1074,12 @@ async def start_auto_bridge(hass: HomeAssistant, intercom_state_entity_id: str) 
                 dest_entity_id = entity.entity_id
                 break
 
+    if not dest_entity_id:
+        # No destination entity = simple mode device (no contacts list).
+        # Simple mode calls go directly to browser/card, no bridge needed.
+        _LOGGER.debug("Auto-bridge: skipping %s (no destination entity — simple mode)", source_name)
+        return
+
     if dest_entity_id:
         dest_state = hass.states.get(dest_entity_id)
         if dest_state:
@@ -1089,14 +1095,22 @@ async def start_auto_bridge(hass: HomeAssistant, intercom_state_entity_id: str) 
         _LOGGER.info("Auto-bridge: destination is 'Home Assistant' - this requires card/browser, skipping auto-bridge")
         return
 
-    # Find destination device by name
+    # Find destination device by name (only among intercom devices)
     dest_device = None
     dest_device_id = None
     dest_host = None
     dest_name = destination_name
 
-    # Search through all devices for one matching the destination name
+    # Build set of device IDs that have intercom_state entity
+    intercom_device_ids = set()
+    for entity in entity_registry.entities.values():
+        if "intercom_state" in entity.entity_id and entity.device_id:
+            intercom_device_ids.add(entity.device_id)
+
+    # Search only intercom devices for one matching the destination name
     for device in device_registry.devices.values():
+        if device.id not in intercom_device_ids:
+            continue
         if device.name and device.name.lower() == destination_name.lower():
             dest_device = device
             dest_device_id = device.id

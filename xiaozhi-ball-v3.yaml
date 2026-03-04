@@ -29,6 +29,16 @@
 # I2S bus at 48kHz (ES8311 native), mic decimated to 16kHz via FIR filter.
 # Wake word ALWAYS active. Mode switching is UI-only (display + buttons).
 #
+# Audio pipeline (i2s_audio_duplex at 48kHz, stereo AEC reference):
+#
+#   I2S RX 48kHz stereo → L=ref R=mic → FIR x3 ──┐
+#                                                ├── AEC → mic_aec → VA / Intercom TX
+#                                                └── mic_raw (pre-AEC) → MWW
+#
+#   TTS/media (16kHz) → va_speaker (resampler 16→48k) ───┐
+#                                                        ├── mixer (48kHz) → hw_speaker → ES8311
+#   Intercom RX (16kHz) → intercom_speaker (resampler) ──┘
+#
 # GPIO0 Button Behavior (page-aware):
 #   VA idle:           Click=start VA | Long press(1-3s)=switch to intercom
 #   VA active:         Click=stop VA
@@ -51,6 +61,12 @@ substitutions:
   timer_finished_illustration_file: images/assistant/timer_finished.png
 
   # Voice assistant phase IDs
+  ai_animation: yawn
+
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
   voice_assist_idle_phase_id: "1"
   voice_assist_listening_phase_id: "2"
   voice_assist_thinking_phase_id: "3"
@@ -151,7 +167,7 @@ psram:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -355,6 +371,8 @@ media_player:
     files:
       - id: timer_finished_sound
         file: sounds/timer_finished.flac
+      - id: intercom_ringing_sound
+        file: sounds/ringtone.flac
     on_announcement:
       # Restart MWW during TTS for barge-in (interrupt by saying wake word).
       # MWW uses mic_raw (pre-AEC) so it hears voice even while speaker plays.
@@ -418,6 +436,8 @@ micro_wake_word:
         wake_word: !lambda return wake_word;
   models:
     - model: "wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
 
 voice_assistant:
   id: va
@@ -666,7 +686,10 @@ intercom_api:
     - lvgl.label.update:
         id: ic_ringing_in_peer_label
         text: !lambda 'return id(peer_name);'
+    - media_player.stop:
+        announcement: true
     - script.execute: draw_display
+    - script.execute: intercom_ringing_loop
     - light.turn_on:
         id: led
         effect: "Ringing"
@@ -675,6 +698,9 @@ intercom_api:
     - logger.log: "Call answered"
 
   on_streaming:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - script.execute: backlight_timer
     - light.turn_on:
         id: led
@@ -700,6 +726,9 @@ intercom_api:
     - script.execute: draw_display
 
   on_idle:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - light.turn_off: led
     - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
     # Restore previous mode after call ends
@@ -716,11 +745,17 @@ intercom_api:
           - script.execute: draw_display
 
   on_hangup:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - logger.log:
         format: "Hangup: %s"
         args: ['reason.c_str()']
 
   on_call_failed:
+    - script.stop: intercom_ringing_loop
+    - media_player.stop:
+        announcement: true
     - logger.log:
         format: "Call failed: %s"
         args: ['reason.c_str()']
@@ -790,8 +825,8 @@ globals:
 # SCRIPTS
 # =============================================================================
 script:
-  # Yawn: 38 frames at 120ms = 4.56s animation, then 25s pause. Repeat while idle.
-  - id: yawn_loop
+  # Idle animation: 38 frames at 120ms = 4.56s, then 25s pause. Repeat while idle.
+  - id: ai_animation_loop
     mode: single
     then:
       - lambda: |-
@@ -1000,6 +1035,8 @@ script:
           // Skip page load if already showing (avoids redundant SPI transfer)
           bool page_changed = (target != lv_disp_get_scr_act(nullptr));
           if (page_changed) {
+            // Stop animation before page switch to prevent split-screen glitch
+            lv_anim_del(id(idle_anim), nullptr);
             lv_disp_load_scr(target);
           }
 
@@ -1204,15 +1241,31 @@ script:
             args: ['id(my_time).now().hour', 'id(my_time).now().minute']
       - if:
           condition:
-            and:
-              - binary_sensor.is_off: usb_connected
-              - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
+            - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
           then:
             - lvgl.label.update:
                 id: idle_battery_label
-                text:
-                  format: "%.0f%%"
-                  args: ['id(battery_percentage).state']
+                text: !lambda |-
+                  bool charging = id(usb_connected).state;
+                  float bat = id(battery_percentage).state;
+                  float wifi = id(wifi_pct).state;
+                  std::string ret;
+                  if (bat < 10) ret = charging ? "\U000F089F" : "\U000F008E";
+                  else if (bat < 20) ret = charging ? "\U000F089C" : "\U000F007A";
+                  else if (bat < 30) ret = charging ? "\U000F0086" : "\U000F007B";
+                  else if (bat < 40) ret = charging ? "\U000F0087" : "\U000F007C";
+                  else if (bat < 50) ret = charging ? "\U000F0088" : "\U000F007D";
+                  else if (bat < 60) ret = charging ? "\U000F089D" : "\U000F007E";
+                  else if (bat < 70) ret = charging ? "\U000F0089" : "\U000F007F";
+                  else if (bat < 80) ret = charging ? "\U000F089E" : "\U000F0080";
+                  else if (bat < 90) ret = charging ? "\U000F008A" : "\U000F0081";
+                  else if (bat < 100) ret = charging ? "\U000F008B" : "\U000F0082";
+                  else ret = "\U000F0079";
+                  if (wifi < 20) ret += "\U000F08BF";
+                  else if (wifi < 55) ret += "\U000F08BC";
+                  else if (wifi < 80) ret += "\U000F08BD";
+                  else ret += "\U000F08BE";
+                  return ret;
           else:
             - lvgl.label.update:
                 id: idle_battery_label
@@ -1273,26 +1326,41 @@ script:
                 announcement: true
             - delay: 6s
 
+  # Intercom ringing loop
+  - id: intercom_ringing_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            or:
+              - intercom_api.is_ringing: intercom
+              - intercom_api.is_incoming: intercom
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: intercom_ringing_sound
+                announcement: true
+            - delay: 3s
+
   # Backlight timer
   - id: backlight_timer
     mode: restart
     then:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      - delay: 30s
+      - light.turn_on:
+          id: backlight
+          brightness: 60%
+      - delay: 120s
       - if:
           condition:
             binary_sensor.is_on: usb_connected
           then:
             - light.turn_on:
                 id: backlight
-                brightness: 100%
+                brightness: 20%
           else:
-            - light.turn_on:
-                id: backlight
-                brightness: 100%
-            - delay: 30s
-            - light.turn_on:
-                id: backlight
-                brightness: 60%
-            - delay: 120s
             - light.turn_off: backlight
 
 # =============================================================================
@@ -1441,9 +1509,9 @@ binary_sensor:
             condition:
               binary_sensor.is_on: is_idle_screen
             then:
-              - script.execute: yawn_loop
+              - script.execute: ai_animation_loop
             else:
-              - script.stop: yawn_loop
+              - script.stop: ai_animation_loop
               - lambda: |-
                   lv_anim_del(id(idle_anim), nullptr);
                   lv_animimg_start(id(idle_anim));
@@ -1933,104 +2001,104 @@ image:
     type: RGB565
     transparency: alpha_channel
 
-  # Idle animation frames (20 frames, yawn @ 5fps)
-  - file: images/assistant/yawn_00.png
-    id: yawn_00
+  # Idle animation frames (20 frames @ 5fps)
+  - file: images/assistant/${ai_animation}_00.png
+    id: ${ai_animation}_00
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_01.png
-    id: yawn_01
+  - file: images/assistant/${ai_animation}_01.png
+    id: ${ai_animation}_01
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_02.png
-    id: yawn_02
+  - file: images/assistant/${ai_animation}_02.png
+    id: ${ai_animation}_02
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_03.png
-    id: yawn_03
+  - file: images/assistant/${ai_animation}_03.png
+    id: ${ai_animation}_03
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_04.png
-    id: yawn_04
+  - file: images/assistant/${ai_animation}_04.png
+    id: ${ai_animation}_04
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_05.png
-    id: yawn_05
+  - file: images/assistant/${ai_animation}_05.png
+    id: ${ai_animation}_05
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_06.png
-    id: yawn_06
+  - file: images/assistant/${ai_animation}_06.png
+    id: ${ai_animation}_06
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_07.png
-    id: yawn_07
+  - file: images/assistant/${ai_animation}_07.png
+    id: ${ai_animation}_07
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_08.png
-    id: yawn_08
+  - file: images/assistant/${ai_animation}_08.png
+    id: ${ai_animation}_08
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_09.png
-    id: yawn_09
+  - file: images/assistant/${ai_animation}_09.png
+    id: ${ai_animation}_09
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_10.png
-    id: yawn_10
+  - file: images/assistant/${ai_animation}_10.png
+    id: ${ai_animation}_10
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_11.png
-    id: yawn_11
+  - file: images/assistant/${ai_animation}_11.png
+    id: ${ai_animation}_11
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_12.png
-    id: yawn_12
+  - file: images/assistant/${ai_animation}_12.png
+    id: ${ai_animation}_12
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_13.png
-    id: yawn_13
+  - file: images/assistant/${ai_animation}_13.png
+    id: ${ai_animation}_13
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_14.png
-    id: yawn_14
+  - file: images/assistant/${ai_animation}_14.png
+    id: ${ai_animation}_14
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_15.png
-    id: yawn_15
+  - file: images/assistant/${ai_animation}_15.png
+    id: ${ai_animation}_15
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_16.png
-    id: yawn_16
+  - file: images/assistant/${ai_animation}_16.png
+    id: ${ai_animation}_16
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_17.png
-    id: yawn_17
+  - file: images/assistant/${ai_animation}_17.png
+    id: ${ai_animation}_17
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_18.png
-    id: yawn_18
+  - file: images/assistant/${ai_animation}_18.png
+    id: ${ai_animation}_18
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: images/assistant/yawn_19.png
-    id: yawn_19
+  - file: images/assistant/${ai_animation}_19.png
+    id: ${ai_animation}_19
     resize: 240x240
     type: RGB565
     transparency: opaque
@@ -2078,6 +2146,35 @@ font:
     id: font_clock
     size: 20
     glyphs: "0123456789:%"
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F0079" # battery-100
+          - "\U000F008E" # battery-alert (0%)
+          - "\U000F007A" # battery-10
+          - "\U000F007B" # battery-20
+          - "\U000F007C" # battery-30
+          - "\U000F007D" # battery-40
+          - "\U000F007E" # battery-50
+          - "\U000F007F" # battery-60
+          - "\U000F0080" # battery-70
+          - "\U000F0081" # battery-80
+          - "\U000F0082" # battery-90
+          - "\U000F0553" # battery-charging-100
+          - "\U000F089F" # battery-charging-outline (0%)
+          - "\U000F089C" # battery-charging-10
+          - "\U000F0086" # battery-charging-20
+          - "\U000F0087" # battery-charging-30
+          - "\U000F0088" # battery-charging-40
+          - "\U000F089D" # battery-charging-50
+          - "\U000F0089" # battery-charging-60
+          - "\U000F089E" # battery-charging-70
+          - "\U000F008A" # battery-charging-80
+          - "\U000F008B" # battery-charging-90
+          - "\U000F08BF" # wifi-strength-outline (<20%)
+          - "\U000F08BC" # wifi-strength-1 (<55%)
+          - "\U000F08BD" # wifi-strength-2 (<80%)
+          - "\U000F08BE" # wifi-strength-3 (>=80%)
   # Intercom fonts
   - file:
       type: gfonts
@@ -2189,80 +2286,80 @@ lvgl:
     - id: idle_page
       bg_color: 0x000000
       widgets:
-        # Yawn: fwd 0→19 + 2s hold (17×yawn_19) + bwd 18→0 = 55 frames @ 120ms = 6.6s
+        # Idle animation: fwd 0→19 + 2s hold + bwd 18→0 = 55 frames @ 120ms = 6.6s
         - animimg:
             id: idle_anim
             align: CENTER
             width: 240
             height: 240
             src:
-              - yawn_00
-              - yawn_01
-              - yawn_02
-              - yawn_03
-              - yawn_04
-              - yawn_05
-              - yawn_06
-              - yawn_07
-              - yawn_08
-              - yawn_09
-              - yawn_10
-              - yawn_11
-              - yawn_12
-              - yawn_13
-              - yawn_14
-              - yawn_15
-              - yawn_16
-              - yawn_17
-              - yawn_18
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_19
-              - yawn_18
-              - yawn_17
-              - yawn_16
-              - yawn_15
-              - yawn_14
-              - yawn_13
-              - yawn_12
-              - yawn_11
-              - yawn_10
-              - yawn_09
-              - yawn_08
-              - yawn_07
-              - yawn_06
-              - yawn_05
-              - yawn_04
-              - yawn_03
-              - yawn_02
-              - yawn_01
+              - ${ai_animation}_00
+              - ${ai_animation}_01
+              - ${ai_animation}_02
+              - ${ai_animation}_03
+              - ${ai_animation}_04
+              - ${ai_animation}_05
+              - ${ai_animation}_06
+              - ${ai_animation}_07
+              - ${ai_animation}_08
+              - ${ai_animation}_09
+              - ${ai_animation}_10
+              - ${ai_animation}_11
+              - ${ai_animation}_12
+              - ${ai_animation}_13
+              - ${ai_animation}_14
+              - ${ai_animation}_15
+              - ${ai_animation}_16
+              - ${ai_animation}_17
+              - ${ai_animation}_18
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_19
+              - ${ai_animation}_18
+              - ${ai_animation}_17
+              - ${ai_animation}_16
+              - ${ai_animation}_15
+              - ${ai_animation}_14
+              - ${ai_animation}_13
+              - ${ai_animation}_12
+              - ${ai_animation}_11
+              - ${ai_animation}_10
+              - ${ai_animation}_09
+              - ${ai_animation}_08
+              - ${ai_animation}_07
+              - ${ai_animation}_06
+              - ${ai_animation}_05
+              - ${ai_animation}_04
+              - ${ai_animation}_03
+              - ${ai_animation}_02
+              - ${ai_animation}_01
             duration: 6600ms
             auto_start: false
-        - label:
-            id: idle_battery_label
-            align: TOP_MID
-            y: 2
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_clock
         - label:
             id: idle_clock_label
             align: BOTTOM_MID
             y: -2
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_clock
+        - label:
+            id: idle_battery_label
+            align: BOTTOM_MID
+            y: -22
             text: ""
             text_color: 0xFFFFFF
             text_font: font_clock

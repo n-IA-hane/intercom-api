@@ -190,6 +190,7 @@ class IntercomApi : public Component {
 
   // Contacts management (full mode only)
   void set_contacts(const std::string &contacts_csv);
+  bool set_contact(const std::string &name);
   void next_contact();
   void prev_contact();
   const std::string &get_current_destination() const;
@@ -499,6 +500,15 @@ class SetContactsAction : public Action<Ts...>, public Parented<IntercomApi> {
   TEMPLATABLE_VALUE(std::string, contacts_csv)
   void play(const Ts &...x) override {
     this->parent_->set_contacts(this->contacts_csv_.value(x...));
+  }
+};
+
+template<typename... Ts>
+class SetContactAction : public Action<Ts...>, public Parented<IntercomApi> {
+ public:
+  TEMPLATABLE_VALUE(std::string, contact)
+  void play(const Ts &...x) override {
+    this->parent_->set_contact(this->contact_.value(x...));
   }
 };
 

@@ -568,6 +568,25 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
   ESP_LOGI(TAG, "Contacts updated: %zu devices", this->contacts_.size());
 }
 
+bool IntercomApi::set_contact(const std::string &name) {
+  if (this->contacts_.empty()) {
+    ESP_LOGW(TAG, "set_contact('%s') failed: contacts list is empty", name.c_str());
+    this->call_failed_trigger_.trigger(std::string("Contact not found: ") + name);
+    return false;
+  }
+  for (size_t i = 0; i < this->contacts_.size(); i++) {
+    if (this->contacts_[i] == name) {
+      this->contact_index_ = i;
+      this->publish_destination_();
+      ESP_LOGI(TAG, "Selected contact: %s", name.c_str());
+      return true;
+    }
+  }
+  ESP_LOGW(TAG, "set_contact('%s') failed: not found in %zu contacts", name.c_str(), this->contacts_.size());
+  this->call_failed_trigger_.trigger(std::string("Contact not found: ") + name);
+  return false;
+}
+
 void IntercomApi::next_contact() {
   if (!this->full_mode_) return;  // Full mode only
   if (this->contacts_.empty()) return;

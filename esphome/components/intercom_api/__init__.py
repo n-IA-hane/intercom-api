@@ -51,6 +51,7 @@ CallToggleAction = intercom_api_ns.class_("CallToggleAction", automation.Action)
 SetVolumeAction = intercom_api_ns.class_("SetVolumeAction", automation.Action)
 SetMicGainDbAction = intercom_api_ns.class_("SetMicGainDbAction", automation.Action)
 SetContactsAction = intercom_api_ns.class_("SetContactsAction", automation.Action)
+SetContactAction = intercom_api_ns.class_("SetContactAction", automation.Action)
 
 # === Condition classes (for YAML: intercom_api.is_idle, etc.) ===
 IntercomIsIdleCondition = intercom_api_ns.class_("IntercomIsIdleCondition", automation.Condition)
@@ -352,6 +353,28 @@ async def set_contacts_action_to_code(config, action_id, template_arg, args):
     cg.add(var.set_parent(parent))
     templ = await cg.templatable(config[CONF_CONTACTS_CSV], args, cg.std_string)
     cg.add(var.set_contacts_csv(templ))
+    return var
+
+
+CONF_CONTACT = "contact"
+
+
+@automation.register_action(
+    "intercom_api.set_contact",
+    SetContactAction,
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.use_id(IntercomApi),
+            cv.Required(CONF_CONTACT): cv.templatable(cv.string),
+        }
+    ),
+)
+async def set_contact_action_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
+    templ = await cg.templatable(config[CONF_CONTACT], args, cg.std_string)
+    cg.add(var.set_contact(templ))
     return var
 
 
