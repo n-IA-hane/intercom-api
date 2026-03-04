@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "2.0.0";
+const INTERCOM_CARD_VERSION = "2.1.2-dev";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -50,6 +50,9 @@ class IntercomCard extends HTMLElement {
 
     // Audio streaming active (for P2P)
     this._audioStreaming = false;
+
+    // Persistent error message (survives _render() DOM rebuild)
+    this._errorMsg = "";
   }
 
   setConfig(config) {
@@ -107,8 +110,11 @@ class IntercomCard extends HTMLElement {
       }
 
       // CRITICAL: Cleanup audio when ESP goes to Idle
-      if (espStateChanged && newEspState === "idle" && (this._audioStreaming || this._activeBridgeId)) {
-        this._cleanup();
+      if (espStateChanged && newEspState === "idle") {
+        if (this._audioStreaming || this._activeBridgeId) {
+          this._cleanup();
+        }
+        this._errorMsg = "";
       }
 
       if (needsRender) {
@@ -381,7 +387,7 @@ class IntercomCard extends HTMLElement {
           ${statusText}
         </div>
         <div class="stats" id="stats">${isFullMode ? (destination === 'Home Assistant' ? 'Browser ↔ ESP' : 'ESP ↔ ESP') : 'Sent: 0 | Recv: 0'}</div>
-        <div class="error" id="err"></div>
+        <div class="error" id="err">${this._errorMsg}</div>
         <div class="version">v${INTERCOM_CARD_VERSION}</div>
       </div>
     `;
@@ -448,8 +454,8 @@ class IntercomCard extends HTMLElement {
 
     this._activeDeviceInfo = deviceInfo;
     this._starting = true;
+    this._errorMsg = "";
     this._render();
-    this._showError("");
 
     try {
       const destination = this._getDestination();
@@ -592,6 +598,7 @@ class IntercomCard extends HTMLElement {
 
     this._starting = true;
     this._activeDeviceInfo = deviceInfo;
+    this._errorMsg = "";
     this._render();
 
     try {
@@ -602,7 +609,6 @@ class IntercomCard extends HTMLElement {
       if ((espState === "outgoing" || espState === "calling") && destination === "Home Assistant") {
         // ESP is calling us - answer with proper ANSWER message (not START)
         await this._answerEspCall(deviceInfo);
-        this._showError("");
       } else {
         // Normal case: ESP is ringing (we called it), send answer command
         const res = await this._hass.connection.sendMessagePromise({
@@ -614,7 +620,6 @@ class IntercomCard extends HTMLElement {
           // Fallback: press call button on ESP
           await this._hass.callService("button", "press", { entity_id: this._callButtonEntityId });
         }
-        this._showError("");
       }
     } catch (err) {
       this._showError(err.message || String(err));
@@ -633,6 +638,7 @@ class IntercomCard extends HTMLElement {
     }
 
     this._stopping = true;
+    this._errorMsg = "";
     this._render();
 
     try {
@@ -655,7 +661,6 @@ class IntercomCard extends HTMLElement {
           device_id: deviceInfo.device_id,
         });
       }
-      this._showError("");
     } catch (err) {
       this._showError(err.message || String(err));
     } finally {
@@ -794,8 +799,13 @@ class IntercomCard extends HTMLElement {
   }
 
   _showError(msg) {
+    this._errorMsg = msg || "";
     const el = this.shadowRoot?.getElementById("err");
-    if (el) el.textContent = msg;
+    if (el) el.textContent = this._errorMsg;
+  }
+
+  disconnectedCallback() {
+    this._cleanup();
   }
 
   getCardSize() { return 3; }
