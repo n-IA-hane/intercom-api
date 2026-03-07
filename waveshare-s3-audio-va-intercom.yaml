@@ -208,11 +208,17 @@ i2s_audio_duplex:
 # =============================================================================
 # Microphone (ES7210 ADC, 16kHz output after FIR decimation)
 # =============================================================================
-# mic_aec: post-AEC, shared by VA STT, intercom TX, and MWW
+# mic_aec: post-AEC for VA STT and intercom TX (clean audio, no speaker echo)
+# mic_raw: pre-AEC for MWW (raw signal — AEC suppresses voice during TTS,
+#          making wake word detection unreliable; neural MWW handles echo better)
 microphone:
   - platform: i2s_audio_duplex
     id: mic_aec
     i2s_audio_duplex_id: i2s_duplex
+  - platform: i2s_audio_duplex
+    id: mic_raw
+    i2s_audio_duplex_id: i2s_duplex
+    pre_aec: true
 
 # =============================================================================
 # Speaker Pipeline: i2s_audio_duplex → resampler → mixer (all at 48kHz)
@@ -310,7 +316,7 @@ media_player:
 # =============================================================================
 micro_wake_word:
   id: mww
-  microphone: mic_aec
+  microphone: mic_raw    # Pre-AEC: hears voice through TTS echo
   on_wake_word_detected:
     # Barge-in: interrupt TTS if playing
     - if:
@@ -333,6 +339,7 @@ micro_wake_word:
     - model: "wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
+    - model: alexa
 
 # =============================================================================
 # Voice Assistant
@@ -695,6 +702,23 @@ switch:
           effect: "Fast Pulse"
       - delay: 2s
       - light.turn_off: status_led
+
+  # MWW active status + control
+  - platform: template
+    name: Wake Word
+    id: wake_word_switch
+    icon: mdi:account-voice
+    restore_mode: DISABLED
+    lambda: 'return id(mww).is_running();'
+    turn_on_action:
+      - if:
+          condition:
+            not:
+              lambda: 'return id(mww).is_running();'
+          then:
+            - micro_wake_word.start:
+    turn_off_action:
+      - micro_wake_word.stop:
 
   # Intercom switches
   - platform: intercom_api

@@ -9,7 +9,7 @@
   ],
   "version": 2,
   "micro": {
-    "probability_cutoff": 0.95,
+    "probability_cutoff": 0.60,
     "sliding_window_size": 6,
     "feature_step_size": 10,
     "tensor_arena_size": 30000,

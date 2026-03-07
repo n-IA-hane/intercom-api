@@ -438,6 +438,7 @@ micro_wake_word:
     - model: "wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
+    - model: alexa
 
 voice_assistant:
   id: va
@@ -1734,6 +1735,23 @@ switch:
       - script.execute: timer_alarm_loop
       - delay: 15min
       - switch.turn_off: timer_ringing
+
+  # MWW active status + control
+  - platform: template
+    name: Wake Word
+    id: wake_word_switch
+    icon: mdi:account-voice
+    restore_mode: DISABLED
+    lambda: 'return id(mww).is_running();'
+    turn_on_action:
+      - if:
+          condition:
+            not:
+              lambda: 'return id(mww).is_running();'
+          then:
+            - micro_wake_word.start:
+    turn_off_action:
+      - micro_wake_word.stop:
 
   # Intercom switches
   - platform: intercom_api

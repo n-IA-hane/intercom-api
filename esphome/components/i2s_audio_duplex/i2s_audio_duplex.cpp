@@ -475,7 +475,7 @@ void I2SAudioDuplex::start() {
       "i2s_duplex",
       8192,
       this,
-      12,  // Below lwIP(18) and Event Loop(20); I2S DMA provides ~32ms buffering
+      19,  // Above lwIP(18): must not miss I2S DMA frames — MWW needs continuous audio
       &this->audio_task_handle_,
       0   // Core 0: canonical Espressif AEC pattern; frees Core 1 for MWW inference
   );
@@ -647,10 +647,9 @@ void I2SAudioDuplex::audio_task_() {
       heap_caps_malloc(rx_frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 
   // mic_buffer: holds output-rate mic data (decimated or direct)
-  // PSRAM-safe: not DMA, not ISR — all devices using duplex have PSRAM
   bool mic_separate = (ratio > 1) || this->use_stereo_aec_ref_ || this->use_tdm_ref_;
   int16_t *mic_buffer = mic_separate
-      ? static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_DEFAULT))
+      ? static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_INTERNAL))
       : rx_buffer;  // mono, no decimation: alias rx_buffer
 
   // spk_buffer: DMA-capable, TX output at bus rate (read from ring buffer, write to I2S)
@@ -659,26 +658,25 @@ void I2SAudioDuplex::audio_task_() {
       heap_caps_malloc(bus_frame_size * num_ch * i2s_bps, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA));
 
   // spk_ref_buffer: output-rate AEC reference (from stereo/TDM split or mono ring buffer after decimation)
-  // PSRAM-safe: processing buffers, not DMA
   int16_t *spk_ref_buffer = nullptr;
   if (this->use_stereo_aec_ref_ || this->use_tdm_ref_) {
-    spk_ref_buffer = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_DEFAULT));
+    spk_ref_buffer = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_INTERNAL));
   }
 
   // Intermediate 48kHz buffers for stereo deinterleave before decimation
   int16_t *deint_ref = nullptr;
   int16_t *deint_mic = nullptr;
   if (this->use_stereo_aec_ref_ && ratio > 1) {
-    deint_ref = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_DEFAULT));
-    deint_mic = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_DEFAULT));
+    deint_ref = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL));
+    deint_mic = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL));
   }
 
   // TDM buffers: intermediate deinterleave at bus rate (only when TDM + decimation)
   int16_t *tdm_deint_mic = nullptr;
   int16_t *tdm_deint_ref = nullptr;
   if (this->use_tdm_ref_ && ratio > 1) {
-    tdm_deint_mic = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_DEFAULT));
-    tdm_deint_ref = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_DEFAULT));
+    tdm_deint_mic = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL));
+    tdm_deint_ref = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL));
   }
 
   // TDM TX buffer: expanded frame with all slots (speaker data in slot 0, zeros in 1-3)
@@ -696,13 +694,12 @@ void I2SAudioDuplex::audio_task_() {
 
 #ifdef USE_ESP_AEC
   if (this->aec_ != nullptr) {
-    // PSRAM-safe: AEC processing buffers, not DMA. ESP-SR aec_process() accepts any heap pointer.
     if (!spk_ref_buffer && !this->use_tdm_ref_)
-      spk_ref_buffer = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_DEFAULT));
-    aec_output = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_DEFAULT));
+      spk_ref_buffer = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_INTERNAL));
+    aec_output = static_cast<int16_t *>(heap_caps_malloc(out_frame_bytes, MALLOC_CAP_INTERNAL));
     // For mono mode: need temp buffer for bus-rate ref read from ring buffer
     if (!this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
-      ref_bus_buffer = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_DEFAULT));
+      ref_bus_buffer = static_cast<int16_t *>(heap_caps_malloc(bus_frame_bytes, MALLOC_CAP_INTERNAL));
     }
   }
 #endif
@@ -758,7 +755,8 @@ void I2SAudioDuplex::audio_task_() {
   {
     size_t bytes_read, bytes_written;
     int consecutive_i2s_errors = 0;
-    int32_t dc_offset = 0;  // DC offset tracking (EMA, ~15Hz cutoff)
+    int32_t dc_prev_input = 0;   // DC-block filter state (musicdsp.org high-pass, R = 1 - 2^-10)
+    int32_t dc_prev_output = 0;
     // Pre-compute AEC delay bytes outside loop (L12: avoid per-frame recalculation)
     const size_t aec_delay_bytes = (this->sample_rate_ * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
 
@@ -860,13 +858,18 @@ void I2SAudioDuplex::audio_task_() {
 
           // ── From here, all processing uses output-rate data ──
 
-          // DC offset correction: IIR high-pass filter removes mic DC bias (~15Hz cutoff)
-          // y[n] = x[n] - dc_avg, where dc_avg tracks via EMA with R = 1 - 2^-10
+          // DC offset correction: high-pass filter (musicdsp.org DC-block, matches ESPHome upstream)
+          // y[n] = x[n] - x[n-1] + R * y[n-1], R = 1 - 2^-10 (~2.5Hz cutoff at 16kHz)
+          // Operates in Q31 (int32 full range) so >>10 feedback has sufficient precision.
+          // In 16-bit range, >>10 truncates to ~0 for typical audio levels → filter becomes
+          // an unstable integrator. Q31 shift avoids this (matches upstream unpack_audio_sample_to_q31).
           if (this->correct_dc_offset_) {
             for (size_t i = 0; i < out_frame_size; i++) {
-              int32_t sample = mic_buffer[i];
-              dc_offset += (sample - dc_offset) >> 10;
-              mic_buffer[i] = static_cast<int16_t>(sample - dc_offset);
+              int32_t input = (int32_t) mic_buffer[i] << 16;  // 16-bit to Q31
+              int32_t output = input - dc_prev_input + dc_prev_output - (dc_prev_output >> 10);
+              dc_prev_input = input;
+              dc_prev_output = output;
+              mic_buffer[i] = static_cast<int16_t>(output >> 16);  // Q31 back to 16-bit
             }
           }
 
