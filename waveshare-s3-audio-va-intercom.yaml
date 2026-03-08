@@ -112,12 +112,9 @@ psram:
 api:
   on_client_connected:
     - lambda: |-
-        // Publish entity states once (not on every log viewer connect)
-        static bool published = false;
-        if (!published) {
-          id(intercom).publish_entity_states();
-          published = true;
-        }
+        id(intercom).publish_entity_states();
+        // Force media_player to re-publish volume to HA (prevents stale slider)
+        id(speaker_media_player).publish_state();
     # Start MWW on HA connection
     - if:
         condition:
@@ -271,6 +268,8 @@ media_player:
       - id: intercom_ringing_sound
         file: sounds/ringtone.flac
     on_announcement:
+      # Only show LED for announcements when intercom is idle
+      # During intercom calls, keep current intercom LED state
       - if:
           condition:
             intercom_api.is_idle: intercom
@@ -282,10 +281,6 @@ media_player:
                 blue: 0%
                 brightness: 100%
                 effect: "Spin"
-          else:
-            - light.turn_on:
-                id: status_led
-                effect: "Ringing"
       # Restart MWW for barge-in support during TTS
       - if:
           condition:
@@ -296,11 +291,7 @@ media_player:
           then:
             - micro_wake_word.start:
     on_idle:
-      - if:
-          condition:
-            intercom_api.is_idle: intercom
-          then:
-            - light.turn_off: status_led
+      - script.execute: restore_led
       # Restart MWW after media finishes
       - if:
           condition:
@@ -393,21 +384,7 @@ voice_assistant:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
-    # Restore intercom LED if call active
-    - if:
-        condition:
-          not:
-            - intercom_api.is_idle: intercom
-        then:
-          - light.turn_on:
-              id: status_led
-              red: 30%
-              green: 69%
-              blue: 31%
-              brightness: 100%
-              effect: none
-        else:
-          - light.turn_off: status_led
+    - script.execute: restore_led
 
   on_error:
     - light.turn_on:
@@ -424,7 +401,7 @@ voice_assistant:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
-    - light.turn_off: status_led
+    - script.execute: restore_led
 
   on_client_connected:
     - if:
@@ -460,7 +437,6 @@ intercom_api:
 
   on_streaming:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
     - light.turn_on:
         id: status_led
         red: 30%
@@ -471,8 +447,7 @@ intercom_api:
 
   on_idle:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-    - light.turn_off: status_led
+    - script.execute: restore_led
     # Restart MWW when intercom call ends (resilience)
     - if:
         condition:
@@ -482,12 +457,10 @@ intercom_api:
 
   on_hangup:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-    - light.turn_off: status_led
+    - script.execute: restore_led
 
   on_call_failed:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
     - light.turn_on:
         id: status_led
         red: 100%
@@ -496,20 +469,64 @@ intercom_api:
         brightness: 70%
         effect: none
     - delay: 2s
-    - light.turn_off: status_led
+    - script.execute: restore_led
 
 # =============================================================================
 # Scripts
 # =============================================================================
 script:
+  # Restore LED to correct base state based on priority:
+  # Muted > Intercom streaming > Off
+  # Ringing/Calling LEDs are set by their own handlers, not here.
+  - id: restore_led
+    mode: restart
+    then:
+      - if:
+          condition:
+            switch.is_on: mute
+          then:
+            - light.turn_on:
+                id: status_led
+                red: 100%
+                green: 0%
+                blue: 0%
+                brightness: 30%
+                effect: none
+          else:
+            - if:
+                condition:
+                  intercom_api.is_in_call: intercom
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      red: 30%
+                      green: 69%
+                      blue: 31%
+                      brightness: 100%
+                      effect: none
+                else:
+                  - if:
+                      condition:
+                        media_player.is_announcing:
+                      then:
+                        - light.turn_on:
+                            id: status_led
+                            red: 0%
+                            green: 100%
+                            blue: 0%
+                            brightness: 100%
+                            effect: "Spin"
+                      else:
+                        - light.turn_off: status_led
+
   - id: intercom_ringing_loop
     mode: restart
     then:
       - while:
           condition:
-            lambda: |-
-              auto s = id(intercom).get_state_str();
-              return s == "Ringing" || s == "Incoming";
+            or:
+              - intercom_api.is_ringing: intercom
+              - intercom_api.is_incoming: intercom
           then:
             - media_player.speaker.play_on_device_media_file:
                 media_file: intercom_ringing_sound
@@ -683,13 +700,7 @@ switch:
           brightness: 60%
           effect: "Fast Pulse"
       - delay: 2s
-      - light.turn_on:
-          id: status_led
-          red: 100%
-          green: 0%
-          blue: 0%
-          brightness: 30%
-          effect: none
+      - script.execute: restore_led
     on_turn_off:
       # Restart MWW on unmute (resilience)
       - micro_wake_word.start:
@@ -701,7 +712,7 @@ switch:
           brightness: 60%
           effect: "Fast Pulse"
       - delay: 2s
-      - light.turn_off: status_led
+      - script.execute: restore_led
 
   # MWW active status + control
   - platform: template
@@ -724,15 +735,19 @@ switch:
   - platform: intercom_api
     intercom_api_id: intercom
     auto_answer:
+      id: auto_answer_switch
       name: Auto Answer
       icon: mdi:phone-in-talk
+      restore_mode: RESTORE_DEFAULT_OFF
 
   # AEC switch via i2s_audio_duplex (avoids double-processing with mic_aec)
   - platform: i2s_audio_duplex
     i2s_audio_duplex_id: i2s_duplex
     aec:
+      id: aec_switch
       name: Echo Cancellation
       icon: mdi:ear-hearing
+      restore_mode: RESTORE_DEFAULT_ON
 
 # =============================================================================
 # Number Entities
