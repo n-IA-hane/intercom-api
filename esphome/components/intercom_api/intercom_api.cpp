@@ -1187,7 +1187,7 @@ bool IntercomApi::receive_message_(int socket, MessageHeader &header, uint8_t *b
   // Read header - handle partial reads (non-blocking socket)
   size_t header_read = 0;
   int retry = 0;
-  const int MAX_RETRY = 50;  // 50ms max wait for complete message
+  const int MAX_RETRY = 300;  // 300ms max wait for complete message (50ms was too tight under mixer load)
 
   while (header_read < HEADER_SIZE && retry < MAX_RETRY) {
     ssize_t received = recv(socket, buffer + header_read, HEADER_SIZE - header_read, 0);

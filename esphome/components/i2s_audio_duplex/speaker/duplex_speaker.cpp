@@ -9,6 +9,27 @@ namespace i2s_audio_duplex {
 
 static const char *const TAG = "i2s_duplex.spk";
 
+// dB volume curve matching upstream i2s_audio speaker (silence + 49dB..0dB in 0.5dB steps).
+// Q15 fixed-point factors from esphome/components/i2s_audio/speaker/i2s_audio_speaker.cpp
+static const int16_t Q15_VOLUME_FACTORS[] = {
+    0,     116,   122,   130,   137,   146,   154,   163,   173,   183,   194,   206,   218,   231,   244,
+    259,   274,   291,   308,   326,   345,   366,   388,   411,   435,   461,   488,   517,   548,   580,
+    615,   651,   690,   731,   774,   820,   868,   920,   974,   1032,  1094,  1158,  1227,  1300,  1377,
+    1459,  1545,  1637,  1734,  1837,  1946,  2061,  2184,  2313,  2450,  2596,  2750,  2913,  3085,  3269,
+    3462,  3668,  3885,  4116,  4360,  4619,  4893,  5183,  5490,  5816,  6161,  6527,  6914,  7324,  7758,
+    8218,  8706,  9222,  9770,  10349, 10963, 11613, 12302, 13032, 13805, 14624, 15491, 16410, 17384, 18415,
+    19508, 20665, 21891, 23189, 24565, 26022, 27566, 29201, 30933, 32767};
+static constexpr size_t Q15_VOLUME_FACTORS_COUNT = sizeof(Q15_VOLUME_FACTORS) / sizeof(Q15_VOLUME_FACTORS[0]);
+
+// Convert linear volume (0.0-1.0) to dB-scaled float factor using the Q15 table.
+static float volume_to_db_factor(float volume) {
+  if (volume <= 0.0f) return 0.0f;
+  if (volume >= 1.0f) return 1.0f;
+  size_t idx = static_cast<size_t>(volume * (Q15_VOLUME_FACTORS_COUNT - 1));
+  if (idx >= Q15_VOLUME_FACTORS_COUNT) idx = Q15_VOLUME_FACTORS_COUNT - 1;
+  return static_cast<float>(Q15_VOLUME_FACTORS[idx]) / 32767.0f;
+}
+
 void I2SAudioDuplexSpeaker::setup() {
   ESP_LOGCONFIG(TAG, "Setting up I2S Audio Duplex Speaker...");
 
@@ -98,7 +119,7 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
   } else
 #endif
   {
-    this->parent_->set_speaker_volume(volume);
+    this->parent_->set_speaker_volume(volume_to_db_factor(volume));
   }
 }
 
@@ -118,7 +139,7 @@ void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
     if (mute_state) {
       this->parent_->set_speaker_volume(0.0f);
     } else {
-      this->parent_->set_speaker_volume(this->volume_);
+      this->parent_->set_speaker_volume(volume_to_db_factor(this->volume_));
     }
   }
 }

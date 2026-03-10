@@ -175,7 +175,6 @@ api:
           id(intercom).publish_entity_states();
           published = true;
         }
-    - script.execute: start_wake_word
     - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
     - delay: 5s
@@ -2429,24 +2428,63 @@ binary_sensor:
 # SWITCHES
 # =============================================================================
 switch:
+  # Mic Mute — silences microphone + stops wake word detection
   - platform: template
-    name: Mute
+    name: Mic Mute
     id: mute
     icon: mdi:microphone-off
     optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_OFF
     on_turn_on:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute ON — microphone silenced, MWW stopped"
+      - microphone.mute: mic_aec
+      - microphone.mute: mic_raw
       - micro_wake_word.stop:
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_muted_phase_id}'
       - script.execute: draw_display
     on_turn_off:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute OFF — microphone active, MWW started"
+      - microphone.unmute: mic_aec
+      - microphone.unmute: mic_raw
       - micro_wake_word.start:
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_idle_phase_id}'
       - script.execute: draw_display
+
+  # Speaker Mute — DAC mute (clean silence) + amp off (power saving)
+  - platform: template
+    name: Speaker Mute
+    id: speaker_mute
+    icon: mdi:volume-off
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      # DAC mute first (clean silence), then amp off (no click)
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Speaker mute ON — DAC muted, amplifier off"
+      - speaker.mute_on: hw_speaker
+      - delay: 50ms
+      - output.turn_off: speaker_enable
+    on_turn_off:
+      # Amp on first (stabilize), then DAC unmute (no pop)
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Speaker mute OFF — amplifier on, DAC unmuted"
+      - output.turn_on: speaker_enable
+      - delay: 50ms
+      - speaker.mute_off: hw_speaker
 
   - platform: template
     id: timer_ringing

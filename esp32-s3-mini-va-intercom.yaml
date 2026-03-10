@@ -31,6 +31,11 @@ esphome:
   min_version: 2025.5.0
   platformio_options:
     board_build.flash_mode: dio
+  on_boot:
+    priority: -100
+    then:
+      - delay: 1s
+      - micro_wake_word.start:
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -53,11 +58,6 @@ psram:
 api:
   on_client_connected:
     - lambda: 'id(intercom).publish_entity_states();'
-    - if:
-        condition:
-          switch.is_off: mute
-        then:
-          - micro_wake_word.start:
   on_client_disconnected:
     - voice_assistant.stop:
 
@@ -210,6 +210,14 @@ voice_assistant:
   noise_suppression_level: 2
   auto_gain: 31dBFS
   volume_multiplier: 2.0
+  on_client_connected:
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
+  on_client_disconnected:
+    - micro_wake_word.stop:
   on_listening:
     - light.turn_on:
         id: status_led
@@ -253,20 +261,7 @@ voice_assistant:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
-    - light.turn_off: status_led
-    # If intercom call is active, restore streaming LED
-    - if:
-        condition:
-          not:
-            intercom_api.is_idle:
-              id: intercom
-        then:
-          - light.turn_on:
-              id: status_led
-              effect: none
-              red: 0%
-              green: 100%
-              blue: 0%
+    - script.execute: restore_led
   on_error:
     - light.turn_on:
         id: status_led
@@ -275,12 +270,12 @@ voice_assistant:
         green: 0%
         blue: 0%
     - delay: 1s
-    - light.turn_off: status_led
     - if:
         condition:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
+    - script.execute: restore_led
 
 # =============================================================================
 # INTERCOM API (TCP-based, port 6054)
@@ -332,7 +327,7 @@ intercom_api:
         blue: 0%
 
   on_idle:
-    - light.turn_off: status_led
+    - script.execute: restore_led
 
   on_hangup:
     - logger.log:
@@ -343,6 +338,39 @@ intercom_api:
     - logger.log:
         format: "Call failed: %s"
         args: ['reason.c_str()']
+
+# =============================================================================
+# SCRIPTS
+# =============================================================================
+script:
+  - id: restore_led
+    mode: restart
+    then:
+      - if:
+          condition:
+            switch.is_on: mute
+          then:
+            - light.turn_on:
+                id: status_led
+                red: 100%
+                green: 0%
+                blue: 0%
+                brightness: 30%
+                effect: none
+          else:
+            - if:
+                condition:
+                  intercom_api.is_in_call: intercom
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      red: 0%
+                      green: 100%
+                      blue: 0%
+                      brightness: 100%
+                      effect: none
+                else:
+                  - light.turn_off: status_led
 
 # =============================================================================
 # BUTTONS
@@ -401,10 +429,15 @@ switch:
 
   - platform: template
     id: mute
-    name: "Mute"
+    name: "Mic Mute"
     icon: "mdi:microphone-off"
     optimistic: true
+    restore_mode: ALWAYS_OFF
     on_turn_on:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute ON — microphone silenced, MWW stopped"
       - micro_wake_word.stop:
       - voice_assistant.stop:
       - microphone.mute:
@@ -417,14 +450,12 @@ switch:
           brightness: 60%
           effect: "Fast Pulse"
       - delay: 2s
-      - light.turn_on:
-          id: status_led
-          red: 100%
-          green: 0%
-          blue: 0%
-          brightness: 30%
-          effect: none
+      - script.execute: restore_led
     on_turn_off:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute OFF — microphone active, MWW started"
       - microphone.unmute:
           id: mic_component
       - micro_wake_word.start:
@@ -436,7 +467,7 @@ switch:
           brightness: 60%
           effect: "Fast Pulse"
       - delay: 2s
-      - light.turn_off: status_led
+      - script.execute: restore_led
 
 # =============================================================================
 # NUMBERS

@@ -662,12 +662,13 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | Microphone | Speaker | I2S Mode | Component | AEC Reference | VA/MWW |
-|--------|------------|---------|----------|-----------|---------------|--------|
-| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) |
-| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) |
-| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) |
-| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path, LVGL touch display) |
+| Device | Microphone | Speaker | I2S Mode | Component | AEC Reference | VA/MWW | Tested by |
+|--------|------------|---------|----------|-----------|---------------|--------|-----------|
+| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path, LVGL touch display) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| [Onju Voice](https://github.com/justLV/onju-voice) | MEMS (dual) | DAC + mute GPIO | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (dual mic path) | [@rmeissn](https://github.com/rmeissn) |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -1016,34 +1017,62 @@ views:
         cards:
           - type: custom:intercom-card
             entity_id: <your_device_id>
-            name: Intercom Mini
+            name: Waveshare S3 Audio
             mode: full
           - type: entities
             entities:
-              - entity: number.intercom_mini_speaker_volume
+              - entity: number.<your_device>_speaker_volume
                 name: Volume
-              - entity: number.intercom_mini_mic_gain
+              - entity: number.<your_device>_mic_gain
                 name: Mic gain
-              - entity: switch.intercom_mini_echo_cancellation
-              - entity: switch.intercom_mini_auto_answer
-              - entity: sensor.intercom_mini_contacts
-              - entity: button.intercom_mini_refresh_contacts
+              - entity: switch.<your_device>_echo_cancellation
+              - entity: switch.<your_device>_auto_answer
+              - entity: button.<your_device>_restart
+              - entity: sensor.<your_device>_contacts
+              - entity: select.<your_device>_wake_word
+              - entity: switch.<your_device>_wake_word
+              - entity: switch.<your_device>_mic_mute
+              - entity: switch.<your_device>_speaker_mute
       - type: grid
         cards:
           - type: custom:intercom-card
             entity_id: <your_device_id>
-            name: Intercom Xiaozhi
+            name: Xiaozhi Ball V3
             mode: full
           - type: entities
             entities:
-              - entity: number.intercom_xiaozhi_speaker_volume
+              - entity: number.<your_device>_speaker_volume
                 name: Volume
-              - entity: number.intercom_xiaozhi_mic_gain
+              - entity: number.<your_device>_mic_gain
                 name: Mic gain
-              - entity: switch.intercom_xiaozhi_echo_cancellation
-              - entity: switch.intercom_xiaozhi_auto_answer
-              - entity: sensor.intercom_xiaozhi_contacts
-              - entity: button.intercom_xiaozhi_refresh_contacts
+              - entity: switch.<your_device>_echo_cancellation
+              - entity: switch.<your_device>_auto_answer
+              - entity: button.<your_device>_restart
+              - entity: sensor.<your_device>_contacts
+              - entity: select.<your_device>_wake_word
+              - entity: switch.<your_device>_wake_word
+              - entity: switch.<your_device>_mic_mute
+              - entity: switch.<your_device>_speaker_mute
+      - type: grid
+        cards:
+          - type: custom:intercom-card
+            entity_id: <your_device_id>
+            name: Waveshare P4 Touch
+            mode: full
+          - type: entities
+            entities:
+              - entity: number.<your_device>_speaker_volume
+                name: Volume
+              - entity: number.<your_device>_mic_gain
+                name: Mic gain
+              - entity: switch.<your_device>_echo_cancellation
+              - entity: switch.<your_device>_auto_answer
+              - entity: button.<your_device>_restart
+              - entity: sensor.<your_device>_contacts
+              - entity: select.<your_device>_wake_word
+              - entity: switch.<your_device>_wake_word
+              - entity: switch.<your_device>_mic_mute
+              - entity: switch.<your_device>_speaker_mute
 ```
 
 ---
