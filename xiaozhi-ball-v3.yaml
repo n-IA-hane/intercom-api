@@ -239,17 +239,23 @@ time:
 # I2C BUS (ES8311 codec control)
 # =============================================================================
 i2c:
-  id: i2c_bus
-  sda: GPIO15
-  scl: GPIO14
-  scan: false
-
+  - id: i2c_bus
+    sda: GPIO15
+    scl: GPIO14
+    scan: false
+    
+  - id: touchscreen_i2c_bus
+    sda: GPIO11
+    scl: GPIO7
+    scan: false
+    
 # =============================================================================
 # AUDIO CODEC (ES8311)
 # =============================================================================
 audio_dac:
   - platform: es8311
     id: es8311_dac
+    i2c_id: i2c_bus
     bits_per_sample: 16bit
     sample_rate: 48000
     mic_gain: 24DB
@@ -1599,21 +1605,54 @@ binary_sensor:
     on_release:
       - script.execute: backlight_timer
 
-  # Capacitive touch
-  - platform: gpio
-    pin:
-      number: GPIO12
-      mode: INPUT_PULLUP
-      inverted: true
-    id: touch_input
+  - platform: template
+    id: swipe
     on_press:
-      then:
+      - if:
+          condition:
+            lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+          then:
+            - script.execute: switch_to_va
+          else:
+            - script.execute: switch_to_intercom
+
+# =============================================================================
+# TOUCHSCREEN
+# =============================================================================
+touchscreen:
+  - platform: cst816
+    display: s3_box_lcd
+    i2c_id: touchscreen_i2c_bus
+    transform:
+      mirror_x: false
+      mirror_y: false
+      swap_xy: false
+    interrupt_pin: GPIO12
+    reset_pin: GPIO6
+    on_touch:
         - script.execute: backlight_timer
         - if:
             condition:
               switch.is_on: timer_ringing
             then:
               - switch.turn_off: timer_ringing
+    on_update:
+      lambda: |-
+        for (auto touch : touches) {
+          // Check if it's a valid, ongoing touch (state <= 2)
+          if (touch.state > 0 && touch.state <= 2) {
+            // Check for horizontal swipe (e.g., more than 50 pixels)
+            if ((touch.x - touch.x_org) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Right - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe).publish_state(true);
+            } else if ((touch.x_org - touch.x) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Left - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe).publish_state(true);
+            }
+          }
+        }
+    on_release:
+      lambda: id(swipe).publish_state(false);
 
 # =============================================================================
 # OUTPUTS AND LIGHTS
