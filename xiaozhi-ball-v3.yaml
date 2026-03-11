@@ -1608,14 +1608,16 @@ binary_sensor:
 
   - platform: template
     id: swipe
+    filters:
+      - delayed_off: 100ms
     on_press:
       - if:
           condition:
-            lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+            binary_sensor.is_on: is_idle_screen
           then:
-            - script.execute: switch_to_va
-          else:
             - script.execute: switch_to_intercom
+          else:
+            - script.execute: switch_to_va
 
 # =============================================================================
 # TOUCHSCREEN
