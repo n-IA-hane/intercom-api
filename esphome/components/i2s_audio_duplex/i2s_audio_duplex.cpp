@@ -11,7 +11,7 @@
 #ifdef USE_ESP_AEC
 #include "../esp_aec/aec_processor.h"
 #endif
-#include "../esp_aec/audio_utils.h"
+#include "audio_utils.h"
 
 namespace esphome {
 namespace i2s_audio_duplex {
