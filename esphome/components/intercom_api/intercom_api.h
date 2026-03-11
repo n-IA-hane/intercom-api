@@ -217,15 +217,28 @@ class IntercomApi : public Component {
   const char *get_call_state_str() const { return call_state_to_str(this->call_state_.load(std::memory_order_acquire)); }
 
  protected:
+  // Returns true when intercom_api has its own AEC (aec_id configured on intercom_api component)
+  // When false, speaker_task and tx_task are eliminated to save ~34KB internal RAM
+  bool has_intercom_aec_() const {
+#ifdef USE_ESP_AEC
+    return this->aec_ != nullptr;
+#else
+    return false;
+#endif
+  }
+
   // Server task - handles incoming connections and receiving data
+  // When !has_intercom_aec_(), also handles TX (mic→network) and direct speaker playback
   static void server_task(void *param);
   void server_task_();
 
   // TX task - handles mic capture and sending to network (Core 0)
+  // Only created when has_intercom_aec_() (AEC processing needs dedicated task)
   static void tx_task(void *param);
   void tx_task_();
 
   // Speaker task - handles playback from speaker buffer (Core 0)
+  // Only created when has_intercom_aec_() (needs to feed AEC reference buffer)
   static void speaker_task(void *param);
   void speaker_task_();
 

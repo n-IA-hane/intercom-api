@@ -31,44 +31,77 @@ void IntercomApi::setup() {
     return;
   }
 
-  // Create speaker stop semaphore (for single-owner speaker model)
-  this->speaker_stopped_sem_ = xSemaphoreCreateBinary();
-  if (!this->speaker_stopped_sem_) {
-    ESP_LOGE(TAG, "Failed to create speaker semaphore");
+  const bool use_intercom_aec = this->has_intercom_aec_();
+  ESP_LOGI(TAG, "Intercom AEC: %s (tasks: %s)", use_intercom_aec ? "YES" : "NO",
+           use_intercom_aec ? "server+tx+speaker" : "server only");
+
+  if (use_intercom_aec) {
+    // Full 3-task mode: need speaker semaphore, speaker_buffer, audio_tx_buffer, spk_ref_scaled
+    this->speaker_stopped_sem_ = xSemaphoreCreateBinary();
+    if (!this->speaker_stopped_sem_) {
+      ESP_LOGE(TAG, "Failed to create speaker semaphore");
+      this->mark_failed();
+      return;
+    }
+  }
+
+  // Allocate ring buffers
+  // mic_buffer always needed (mic callback writes here, server_task or tx_task reads)
+  this->mic_buffer_ = RingBuffer::create(TX_BUFFER_SIZE);
+  if (!this->mic_buffer_) {
+    ESP_LOGE(TAG, "Failed to allocate mic ring buffer");
     this->mark_failed();
     return;
   }
 
-  // Allocate ring buffers
-  this->mic_buffer_ = RingBuffer::create(TX_BUFFER_SIZE);
-  this->speaker_buffer_ = RingBuffer::create(RX_BUFFER_SIZE);
-
-  if (!this->mic_buffer_ || !this->speaker_buffer_) {
-    ESP_LOGE(TAG, "Failed to allocate ring buffers");
-    this->mark_failed();
-    return;
+  if (use_intercom_aec) {
+    // speaker_buffer only needed when speaker_task exists (bridges network→speaker with AEC ref)
+    this->speaker_buffer_ = RingBuffer::create(RX_BUFFER_SIZE);
+    if (!this->speaker_buffer_) {
+      ESP_LOGE(TAG, "Failed to allocate speaker ring buffer");
+      this->mark_failed();
+      return;
+    }
   }
 
   // Allocate frame buffers (internal RAM — intercom_api must work on devices without PSRAM)
   this->tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
   this->rx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
-  this->audio_tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
 
-  if (!this->tx_buffer_ || !this->rx_buffer_ || !this->audio_tx_buffer_) {
+  if (!this->tx_buffer_ || !this->rx_buffer_) {
     ESP_LOGE(TAG, "Failed to allocate frame buffers");
     this->mark_failed();
     return;
   }
 
+  if (use_intercom_aec) {
+    // audio_tx_buffer only needed by tx_task (dedicated send buffer, no mutex)
+    this->audio_tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
+    if (!this->audio_tx_buffer_) {
+      ESP_LOGE(TAG, "Failed to allocate audio TX buffer");
+      this->mark_failed();
+      return;
+    }
+  }
+
   // Pre-allocate audio processing buffers (avoid stack VLAs on 8KB FreeRTOS tasks)
   static constexpr size_t MIC_BUF_SAMPLES = 512;  // MAX_SAMPLES in on_microphone_data_
-  static constexpr size_t SPK_BUF_SAMPLES = AUDIO_CHUNK_SIZE * 4 / sizeof(int16_t);  // 1024
   this->mic_converted_ = static_cast<int16_t *>(heap_caps_malloc(MIC_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
-  this->spk_ref_scaled_ = static_cast<int16_t *>(heap_caps_malloc(SPK_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
-  if (!this->mic_converted_ || !this->spk_ref_scaled_) {
-    ESP_LOGE(TAG, "Failed to allocate audio processing buffers");
+  if (!this->mic_converted_) {
+    ESP_LOGE(TAG, "Failed to allocate mic processing buffer");
     this->mark_failed();
     return;
+  }
+
+  if (use_intercom_aec) {
+    // spk_ref_scaled only needed by speaker_task (AEC reference scaling)
+    static constexpr size_t SPK_BUF_SAMPLES = AUDIO_CHUNK_SIZE * 4 / sizeof(int16_t);  // 1024
+    this->spk_ref_scaled_ = static_cast<int16_t *>(heap_caps_malloc(SPK_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
+    if (!this->spk_ref_scaled_) {
+      ESP_LOGE(TAG, "Failed to allocate speaker ref buffer");
+      this->mark_failed();
+      return;
+    }
   }
 
   // Setup microphone callback
@@ -98,6 +131,7 @@ void IntercomApi::setup() {
 #endif
 
   // Create server task (Core 1) - handles TCP connections and receiving
+  // When !use_intercom_aec, also handles TX (mic→network) and direct speaker playback
   // Priority 5: i2s_duplex moved to Core 0, so Core 1 is audio-free; prio 5 sufficient
   // 8KB stack: callbacks trigger YAML automations that may do LVGL operations (must stay Core 1)
   BaseType_t ok = xTaskCreatePinnedToCore(
@@ -116,41 +150,41 @@ void IntercomApi::setup() {
     return;
   }
 
-  // Create TX task (Core 0) - handles mic capture, AEC processing, and sending
-  // Priority 5: matches Espressif canonical AEC feed-task priority (esp-skainet pattern)
-  // Stack increased to 12KB for AEC processing (uses FFT internally)
-  ok = xTaskCreatePinnedToCore(
-      IntercomApi::tx_task,
-      "intercom_tx",
-      12288,  // 12KB stack for AEC processing
-      this,
-      5,  // Canonical AEC priority; i2s_duplex(19) on Core 0 handles real-time, TX is best-effort
-      &this->tx_task_handle_,
-      0  // Core 0 - same as i2s_duplex; intercom AEC and main AEC are mutually exclusive
-  );
+  if (use_intercom_aec) {
+    // Create TX task (Core 0) - handles mic capture, AEC processing, and sending
+    // Only needed when intercom has its own AEC (AEC processing needs dedicated Core 0 task)
+    ok = xTaskCreatePinnedToCore(
+        IntercomApi::tx_task,
+        "intercom_tx",
+        12288,  // 12KB stack for AEC processing
+        this,
+        5,  // Canonical AEC priority; i2s_duplex(19) on Core 0 handles real-time, TX is best-effort
+        &this->tx_task_handle_,
+        0  // Core 0 - same as i2s_duplex; intercom AEC and main AEC are mutually exclusive
+    );
 
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "Failed to create TX task");
-    this->mark_failed();
-    return;
-  }
+    if (ok != pdPASS) {
+      ESP_LOGE(TAG, "Failed to create TX task");
+      this->mark_failed();
+      return;
+    }
 
-  // Create speaker task (Core 0) - handles playback
-  // Lower priority (4) - if speaker blocks, it shouldn't starve TX or i2s_duplex
-  ok = xTaskCreatePinnedToCore(
-      IntercomApi::speaker_task,
-      "intercom_spk",
-      8192,  // Larger stack for audio buffer
-      this,
-      4,  // Lower priority than TX(5) and i2s_duplex(19)
-      &this->speaker_task_handle_,
-      0  // Core 0 - same as i2s_duplex and TX; Core 1 reserved for LVGL and MWW
-  );
+    // Create speaker task (Core 0) - handles playback + AEC reference feed
+    ok = xTaskCreatePinnedToCore(
+        IntercomApi::speaker_task,
+        "intercom_spk",
+        8192,  // Larger stack for audio buffer
+        this,
+        4,  // Lower priority than TX(5) and i2s_duplex(19)
+        &this->speaker_task_handle_,
+        0  // Core 0 - same as i2s_duplex and TX; Core 1 reserved for LVGL and MWW
+    );
 
-  if (ok != pdPASS) {
-    ESP_LOGE(TAG, "Failed to create speaker task");
-    this->mark_failed();
-    return;
+    if (ok != pdPASS) {
+      ESP_LOGE(TAG, "Failed to create speaker task");
+      this->mark_failed();
+      return;
+    }
   }
 
   // Load persisted settings from flash (volume, mic gain, auto-answer, AEC)
@@ -219,6 +253,8 @@ void IntercomApi::dump_config() {
     ESP_LOGCONFIG(TAG, "  AEC: none");
   }
 #endif
+  ESP_LOGCONFIG(TAG, "  Tasks: %s", this->has_intercom_aec_() ?
+                "server+tx+speaker" : "server only");
 }
 
 void IntercomApi::publish_entity_states() {
@@ -656,47 +692,40 @@ void IntercomApi::set_active_(bool on) {
   bool was = this->active_.exchange(on, std::memory_order_acq_rel);
   if (was == on) return;  // No change
 
-  ESP_LOGI(TAG, "set_active_(%s) — heap: free=%lu largest=%lu",
-           on ? "true" : "false",
-           (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-
   if (on) {
     // Starting - clear any pending stop request and start hardware
     this->speaker_stop_requested_.store(false, std::memory_order_release);
 
 #ifdef USE_MICROPHONE
     if (this->microphone_source_) {
-      ESP_LOGI(TAG, "Starting microphone...");
       this->microphone_source_->start();
     }
 #endif
 #ifdef USE_SPEAKER
     if (this->speaker_) {
-      ESP_LOGI(TAG, "Starting speaker...");
       this->speaker_->start();
     }
 #endif
-    ESP_LOGI(TAG, "set_active_(true) done — heap: free=%lu largest=%lu",
-             (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     this->start_trigger_.trigger();
   } else {
-    // Stopping - use single-owner model for speaker to avoid race conditions
-    // 1. Request speaker_task to stop the speaker
-    // 2. Wait for acknowledgment (with timeout)
-    // 3. Speaker task will call speaker_->stop() safely
+    // Stopping
 
 #ifdef USE_SPEAKER
-    if (this->speaker_ && this->speaker_stopped_sem_) {
-      // Request speaker task to stop
-      this->speaker_stop_requested_.store(true, std::memory_order_release);
-
-      // Wait for speaker task to acknowledge (max 500ms)
-      if (xSemaphoreTake(this->speaker_stopped_sem_, pdMS_TO_TICKS(500)) != pdTRUE) {
-        ESP_LOGW(TAG, "Speaker stop timeout");
+    if (this->speaker_) {
+      if (this->has_intercom_aec_() && this->speaker_stopped_sem_) {
+        // AEC mode: use single-owner model — speaker_task owns the hardware
+        // 1. Request speaker_task to stop the speaker
+        // 2. Wait for acknowledgment (with timeout)
+        this->speaker_stop_requested_.store(true, std::memory_order_release);
+        if (xSemaphoreTake(this->speaker_stopped_sem_, pdMS_TO_TICKS(500)) != pdTRUE) {
+          ESP_LOGW(TAG, "Speaker stop timeout");
+        }
+        this->speaker_stop_requested_.store(false, std::memory_order_release);
+      } else {
+        // No AEC: no speaker_task exists, stop speaker directly from server_task (Core 1)
+        // speaker_->stop() is safe here — it just sets state + signals the mixer
+        this->speaker_->stop();
       }
-      this->speaker_stop_requested_.store(false, std::memory_order_release);
     }
 #endif
 
@@ -711,11 +740,6 @@ void IntercomApi::set_active_(bool on) {
 }
 
 void IntercomApi::set_streaming_(bool on) {
-  ESP_LOGI(TAG, "set_streaming_(%s) — heap: free=%lu largest=%lu",
-           on ? "true" : "false",
-           (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-
   this->client_.streaming.store(on, std::memory_order_release);
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
   if (on) {
@@ -724,7 +748,7 @@ void IntercomApi::set_streaming_(bool on) {
     if (this->mic_buffer_) {
       this->mic_buffer_->reset();
     }
-    if (this->speaker_buffer_) {
+    if (this->speaker_buffer_) {  // Only exists when has_intercom_aec_()
       this->speaker_buffer_->reset();
     }
     this->dc_offset_ = 0;  // Reset DC filter state for new session
@@ -878,6 +902,26 @@ void IntercomApi::server_task_() {
           millis() - this->client_.last_ping > PING_INTERVAL_MS) {
         this->send_message_(this->client_.socket.load(), MessageType::PING);
         this->client_.last_ping = millis();
+      }
+
+      // Inline TX: when no tx_task exists, read mic_buffer and send from server_task
+      // Cannot call send() from mic callback (runs in audio_task prio 19 on Core 0)
+      // so we use mic_buffer as the bridge, same as tx_task does
+      if (!this->has_intercom_aec_() &&
+          this->active_.load(std::memory_order_acquire) &&
+          this->client_.streaming.load(std::memory_order_acquire) &&
+          client_fd >= 0) {
+        // Drain mic_buffer — send all available chunks
+        while (this->mic_buffer_->available() >= AUDIO_CHUNK_SIZE) {
+          uint8_t audio_chunk[AUDIO_CHUNK_SIZE];
+          size_t read = this->mic_buffer_->read(audio_chunk, AUDIO_CHUNK_SIZE, 0);
+          if (read != AUDIO_CHUNK_SIZE) break;
+
+          // Use send_message_ (takes send_mutex_, uses tx_buffer_) — safe because
+          // server_task is the only sender when tx_task doesn't exist
+          this->send_message_(client_fd, MessageType::AUDIO, MessageFlags::NONE,
+                              audio_chunk, AUDIO_CHUNK_SIZE);
+        }
       }
     }
 
@@ -1274,16 +1318,26 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
 
   switch (type) {
     case MessageType::AUDIO: {
-      // Write to speaker buffer (RingBuffer is thread-safe, no mutex needed)
-      size_t written = this->speaker_buffer_->write(data, header.length);
-      if (written != header.length) {
-        static uint32_t spk_drop = 0;
-        spk_drop++;
-        if (spk_drop <= 5 || spk_drop % 100 == 0) {
-          ESP_LOGW(TAG, "SPK buffer overflow: %zu/%d (drops=%lu)",
-                   written, header.length, (unsigned long)spk_drop);
+#ifdef USE_SPEAKER
+      if (this->speaker_buffer_) {
+        // AEC mode: write to speaker_buffer, speaker_task reads and feeds AEC ref
+        size_t written = this->speaker_buffer_->write(data, header.length);
+        if (written != header.length) {
+          static uint32_t spk_drop = 0;
+          spk_drop++;
+          if (spk_drop <= 5 || spk_drop % 100 == 0) {
+            ESP_LOGW(TAG, "SPK buffer overflow: %zu/%d (drops=%lu)",
+                     written, header.length, (unsigned long)spk_drop);
+          }
+        }
+      } else if (this->speaker_) {
+        // No AEC: play directly from server_task — speaker_->play() is non-blocking
+        // (writes to mixer ring buffer, mixer task does the actual I2S output)
+        if (this->volume_ > 0.001f) {
+          this->speaker_->play(data, header.length, 0);
         }
       }
+#endif
       if (this->state_ != ConnectionState::STREAMING) {
         this->state_ = ConnectionState::STREAMING;
       }

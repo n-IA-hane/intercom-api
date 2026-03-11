@@ -103,13 +103,15 @@ esp32:
       # PSRAM optimizations for wake word performance
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
+      # mbedTLS buffers in PSRAM (frees ~20KB internal per TLS connection)
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       # Network — tuned for concurrent media HTTP + intercom TCP + API WS
-      CONFIG_LWIP_MAX_SOCKETS: "24"
+      CONFIG_LWIP_MAX_SOCKETS: "10"
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "16384"
       CONFIG_LWIP_TCP_WND_DEFAULT: "16384"
       CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT: "5000"
       CONFIG_LWIP_TCP_MSL: "10000"
-      CONFIG_LWIP_MAX_ACTIVE_TCP: "20"
+      CONFIG_LWIP_MAX_ACTIVE_TCP: "10"
 
 psram:
   mode: octal
@@ -270,7 +272,7 @@ media_player:
     id: speaker_media_player
     name: Media Player
     internal: false
-    buffer_size: 65536  # 64KB (default 1MB — troppo per concurrent media+VA+intercom)
+    buffer_size: 524288  # 512KB (default 1MB)
     media_pipeline:
       speaker: media_speaker
       sample_rate: 48000
@@ -306,6 +308,10 @@ media_player:
                   voice_assistant.is_running:
           then:
             - micro_wake_word.start:
+    on_play:
+      - script.execute: restore_led
+    on_pause:
+      - script.execute: restore_led
     on_idle:
       - script.execute: restore_led
       # Restart MWW after media finishes (but NOT during intercom calls)
@@ -501,7 +507,6 @@ intercom_api:
 
   on_idle:
     - script.stop: intercom_ringing_loop
-    # Restore media volume — but only if VA isn't still ducking
     - if:
         condition:
           not:
@@ -512,7 +517,6 @@ intercom_api:
               decibel_reduction: 0
               duration: 500ms
     - script.execute: restore_led
-    # Restart MWW when intercom call ends (resilience)
     - if:
         condition:
           switch.is_off: mute
@@ -521,7 +525,6 @@ intercom_api:
 
   on_hangup:
     - script.stop: intercom_ringing_loop
-    # Restore media volume — but only if VA isn't still ducking
     - if:
         condition:
           not:
@@ -532,10 +535,14 @@ intercom_api:
               decibel_reduction: 0
               duration: 500ms
     - script.execute: restore_led
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
 
   on_call_failed:
     - script.stop: intercom_ringing_loop
-    # Restore media volume — but only if VA isn't still ducking
     - if:
         condition:
           not:
@@ -620,7 +627,9 @@ script:
                             else:
                               - if:
                                   condition:
-                                    media_player.is_announcing:
+                                    or:
+                                      - media_player.is_announcing:
+                                      - media_player.is_playing:
                                   then:
                                     - light.turn_on:
                                         id: status_led
@@ -641,9 +650,17 @@ script:
               - intercom_api.is_ringing: intercom
               - intercom_api.is_incoming: intercom
           then:
-            - media_player.speaker.play_on_device_media_file:
-                media_file: intercom_ringing_sound
-                announcement: true
+            # Ringtone only when media pipeline is fully idle (no resources allocated).
+            # PAUSED still holds 20KB internal read_task stack — starting a 2nd
+            # pipeline with insufficient RAM leaves it in a broken state that
+            # freezes the main loop on hangup.
+            - if:
+                condition:
+                  media_player.is_idle:
+                then:
+                  - media_player.speaker.play_on_device_media_file:
+                      media_file: intercom_ringing_sound
+                      announcement: true
             - delay: 3s
 
 # =============================================================================
