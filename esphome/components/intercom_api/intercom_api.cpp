@@ -11,7 +11,7 @@
 
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
-#include "../esp_aec/audio_utils.h"
+#include "audio_utils.h"
 
 namespace esphome {
 namespace intercom_api {
