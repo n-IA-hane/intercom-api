@@ -117,7 +117,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "${name} Fallback"
+    ssid: "Ball v3 Hotspot"
 
 # ==============================================================================
 # EXTERNAL COMPONENTS
@@ -510,7 +510,7 @@ binary_sensor:
           - OFF for 50ms to 400ms
           - ON for 50ms to 500ms
         then:
-          - button.press: refresh_contacts_button
+          - logger.log: "Triple click: no action"
 
   - platform: gpio
     pin:

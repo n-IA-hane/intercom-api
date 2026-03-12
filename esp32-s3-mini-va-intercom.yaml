@@ -66,10 +66,9 @@ ota:
 
 logger:
   hardware_uart: UART0
-  level: DEBUG
+  level: INFO
   logs:
     intercom_api: INFO
-    micro_wake_word: DEBUG
 
 network:
   enable_high_performance: true
@@ -160,6 +159,7 @@ media_player:
               - not:
                   voice_assistant.is_running:
               - switch.is_off: mute
+              - intercom_api.is_idle: intercom
           then:
             - micro_wake_word.start:
 
@@ -290,6 +290,7 @@ intercom_api:
   ringing_timeout: 30s
 
   on_outgoing_call:
+    - micro_wake_word.stop:
     - light.turn_on:
         id: status_led
         effect: "Ringing"
@@ -308,6 +309,7 @@ intercom_api:
                 type: "doorbell"
 
   on_ringing:
+    - micro_wake_word.stop:
     - light.turn_on:
         id: status_led
         effect: "Ringing"
@@ -319,6 +321,7 @@ intercom_api:
     - logger.log: "Call answered"
 
   on_streaming:
+    - micro_wake_word.stop:
     - light.turn_on:
         id: status_led
         effect: none
@@ -328,13 +331,28 @@ intercom_api:
 
   on_idle:
     - script.execute: restore_led
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
 
   on_hangup:
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - logger.log:
         format: "Hangup: %s"
         args: ['reason.c_str()']
 
   on_call_failed:
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - logger.log:
         format: "Call failed: %s"
         args: ['reason.c_str()']
@@ -425,7 +443,7 @@ switch:
     aec:
       id: aec_switch
       name: "Echo Cancellation"
-      restore_mode: RESTORE_DEFAULT_OFF
+      restore_mode: RESTORE_DEFAULT_ON
 
   - platform: template
     id: mute

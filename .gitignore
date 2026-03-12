@@ -25,6 +25,13 @@ images/assistant/idle.mp4
 xiaozhi-ball-v3-local.yaml
 waveshare-p4-touch-lcd-va-intercom-local.yaml
 
+# Test YAML configs (WIP / experimental)
+*-test.yaml
+
+# Debug/JTAG configs
+esp32s3-builtin-jtag.cfg
+debug.gdb
+
 # Brand images (submitted to home-assistant/brands repo)
 brands/
 

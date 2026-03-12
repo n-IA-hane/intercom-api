@@ -265,7 +265,7 @@ switch:
     aec:
       id: aec_switch
       name: "Echo Cancellation"
-      restore_mode: RESTORE_DEFAULT_OFF
+      restore_mode: RESTORE_DEFAULT_ON
 
 # ==============================================================================
 # NUMBERS (native platform with restore_value)

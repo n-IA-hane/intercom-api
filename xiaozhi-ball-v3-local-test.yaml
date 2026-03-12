@@ -35,7 +35,7 @@
 #                                                ├── AEC → mic_aec → VA / Intercom TX
 #                                                └── mic_raw (pre-AEC) → MWW
 #
-#   Music/radio → media_speaker (resampler) ────────────┐
+#   Music/radio → media_speaker (resampler) ───────────┐
 #   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311
 #   Intercom RX → intercom_speaker (resampler) ────────┘
 #

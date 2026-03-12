@@ -378,11 +378,7 @@ media_player:
       # MWW uses mic_raw (pre-AEC) so it hears voice even while speaker plays.
       - if:
           condition:
-            and:
-              - select.is:
-                  id: wake_word_engine_location
-                  options: "On device"
-              - switch.is_off: mute
+            switch.is_off: mute
           then:
             - micro_wake_word.start:
       # Set replying phase for non-VA announcements (e.g., timer sound)
@@ -564,14 +560,8 @@ voice_assistant:
               announcement: true
     - delay: 100ms
     - voice_assistant.stop:
-    - if:
-        condition:
-          select.is:
-            id: wake_word_engine_location
-            options: "On device"
-        then:
-          - lambda: id(va).set_use_wake_word(false);
-          - micro_wake_word.start:
+    - lambda: id(va).set_use_wake_word(false);
+    - micro_wake_word.start:
     - script.stop: reply_pagination_timer
     - script.execute: backlight_timer
     - text_sensor.template.publish:
@@ -1135,49 +1125,20 @@ script:
 
           lv_obj_clear_flag(id(timer_overlay), LV_OBJ_FLAG_HIDDEN);
 
-  # Wake word management
+  # Wake word management (always on-device MWW)
   - id: start_wake_word
     then:
       - if:
           condition:
-            and:
-              - not:
-                  - voice_assistant.is_running:
-              - select.is:
-                  id: wake_word_engine_location
-                  options: "On device"
+            not:
+              - voice_assistant.is_running:
           then:
             - lambda: id(va).set_use_wake_word(false);
             - micro_wake_word.start:
-      - if:
-          condition:
-            and:
-              - not:
-                  - voice_assistant.is_running:
-              - select.is:
-                  id: wake_word_engine_location
-                  options: "In Home Assistant"
-          then:
-            - lambda: id(va).set_use_wake_word(true);
-            - voice_assistant.start_continuous:
 
   - id: stop_wake_word
     then:
-      - if:
-          condition:
-            select.is:
-              id: wake_word_engine_location
-              options: "In Home Assistant"
-          then:
-            - lambda: id(va).set_use_wake_word(false);
-            - voice_assistant.stop:
-      - if:
-          condition:
-            select.is:
-              id: wake_word_engine_location
-              options: "On device"
-          then:
-            - micro_wake_word.stop:
+      - micro_wake_word.stop:
 
   - id: set_idle_or_mute_phase
     then:
@@ -1797,55 +1758,6 @@ switch:
       id: aec_switch
       name: "Echo Cancellation"
       restore_mode: RESTORE_DEFAULT_ON
-
-select:
-  - platform: template
-    entity_category: config
-    name: Wake word engine location
-    id: wake_word_engine_location
-    icon: "mdi:account-voice"
-    optimistic: true
-    restore_value: true
-    options:
-      - In Home Assistant
-      - On device
-    initial_option: On device
-    on_value:
-      - if:
-          condition:
-            lambda: return !id(init_in_progress);
-          then:
-            - wait_until:
-                condition:
-                  lambda: return id(voice_assistant_phase) == ${voice_assist_muted_phase_id} || id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
-            - if:
-                condition:
-                  select.is:
-                    id: wake_word_engine_location
-                    options: "In Home Assistant"
-                then:
-                  - micro_wake_word.stop:
-                  - delay: 500ms
-                  - if:
-                      condition:
-                        switch.is_off: mute
-                      then:
-                        - lambda: id(va).set_use_wake_word(true);
-                        - voice_assistant.start_continuous:
-            - if:
-                condition:
-                  select.is:
-                    id: wake_word_engine_location
-                    options: "On device"
-                then:
-                  - lambda: id(va).set_use_wake_word(false);
-                  - voice_assistant.stop:
-                  - delay: 500ms
-                  - if:
-                      condition:
-                        switch.is_off: mute
-                      then:
-                        - micro_wake_word.start:
 
 # =============================================================================
 # NUMBERS

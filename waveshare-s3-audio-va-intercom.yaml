@@ -87,6 +87,11 @@ esphome:
           id(es7210_adc).write_byte(0x46, 0x10);  // MIC4: PGA_ON + 0dB (unused, keep tidy)
 
           ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, sdp2=0x02, MIC3 gain=0dB", reg01);
+      # Restore ES8311 volume and sync AEC reference
+      - lambda: |-
+          float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
+          id(es8311_dac).set_volume(vol);
+          id(i2s_duplex).set_aec_reference_volume(vol);
       - delay: 1s
       - micro_wake_word.start:
 
@@ -834,10 +839,25 @@ switch:
 number:
   - platform: intercom_api
     intercom_api_id: intercom
-    speaker_volume:
-      name: Speaker Volume
     mic_gain:
       name: Mic Gain
+
+  - platform: template
+    id: speaker_volume
+    name: "Speaker Volume"
+    icon: "mdi:volume-high"
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    set_action:
+      - lambda: |-
+          float es8311_vol = 0.15 + (x / 100.0) * 0.60;
+          id(es8311_dac).set_volume(es8311_vol);
+          id(i2s_duplex).set_aec_reference_volume(es8311_vol);
 
 # =============================================================================
 # WS2812 RGB LED Ring (7 LEDs)
