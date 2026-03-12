@@ -132,6 +132,8 @@ esphome:
           id(i2s_duplex).set_aec_reference_volume(vol);
           id(peer_name) = id(intercom).get_current_destination();
       - micro_wake_word.start:
+      - lambda: id(swipe).publish_state(true);
+      - lambda: id(swipe).publish_state(false);
       - delay: 30s
       - if:
           condition:
