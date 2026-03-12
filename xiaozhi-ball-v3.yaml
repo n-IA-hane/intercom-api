@@ -924,7 +924,7 @@ script:
             lv_obj_set_y(obj, y_center - fh / 2);
           };
 
-          // --- IC idle page (6 children in YAML order) ---
+          // --- IC idle page (10 children in YAML order) ---
           lv_obj_t* p = id(ic_idle_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Intercom:"
@@ -932,13 +932,17 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Destination:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer name
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // contacts
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+          set_center_y(lv_obj_get_child(p, 8), ym[7] + 12);   // left contacts button
+          set_center_y(lv_obj_get_child(p, 9), ym[7] + 12);   // right contacts button
 
           // --- top layer (2 children in YAML order) ---
           p = lv_layer_top();
           set_center_y(lv_obj_get_child(p, 1), ym[11]);  // clock
           set_center_y(lv_obj_get_child(p, 2), ym[10]);  // battery wifi HA
 
-          // --- IC ringing in page (6 children) ---
+          // --- IC ringing in page (8 children) ---
           p = id(ic_ringing_in_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -946,8 +950,10 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Incoming call from:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
-          // --- IC ringing out page (6 children) ---
+          // --- IC ringing out page (8 children) ---
           p = id(ic_ringing_out_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -955,8 +961,10 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Calling:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
-          // --- IC in call page (6 children) ---
+          // --- IC in call page (8 children) ---
           p = id(ic_in_call_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -964,6 +972,8 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Connected to:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
           // --- Thinking page: chord-width labels (10 children after image) ---
           lv_obj_t* think[] = {
@@ -2287,6 +2297,14 @@ font:
       weight: 400
     id: font_debug
     size: 14
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: ic_icons
+    size: 28
+    glyphs:
+      - "\U000F03F2" # phone
+      - "\U000F03F5" # phone-hangup
+      - "\U000F0731" # arrow left bold
+      - "\U000F0734" # arrow right bold
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2818,9 +2836,8 @@ lvgl:
             long_mode: DOT
         - button:
             id: ic_idle_page_left_btn
-            align: LEFT_MID
+            align: TOP_LEFT
             x: 4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -2836,9 +2853,8 @@ lvgl:
               - button.press: call_button
         - button:
             id: ic_idle_page_right_btn
-            align: RIGHT_MID
+            align: TOP_RIGHT
             x: -4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -2850,6 +2866,40 @@ lvgl:
                   align: CENTER
                   text_color: 0x808080
                   text_font: ic_icons
+        - button:
+            id: ic_idle_page_left_contacts_btn
+            align: TOP_LEFT
+            x: 25
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_contacts_lbl
+                  text: "\U000F0731"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: prev_contact_button
+        - button:
+            id: ic_idle_page_right_contacts_btn
+            align: TOP_RIGHT
+            x: -25
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_contacts_btn_lbl
+                  text: "\U000F0734"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: next_contact_button
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -2904,9 +2954,8 @@ lvgl:
             text_align: CENTER
         - button:
             id: ic_ringing_in_page_left_btn
-            align: LEFT_MID
+            align: TOP_LEFT
             x: 4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -2922,9 +2971,8 @@ lvgl:
               - button.press: call_button
         - button:
             id: ic_ringing_in_page_right_btn
-            align: RIGHT_MID
+            align: TOP_RIGHT
             x: -4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -2937,8 +2985,6 @@ lvgl:
                   text_color: 0x800000
                   text_font: ic_icons
             on_short_click:
-              - lambda: |-
-                  ESP_LOGI("ic_ringing_in_page_right_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
               - if:
                   condition:
                     lambda: |-
@@ -3008,9 +3054,8 @@ lvgl:
             text_align: CENTER
         - button:
             id: ic_ringing_out_page_left_btn
-            align: LEFT_MID
+            align: TOP_LEFT
             x: 4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -3024,9 +3069,8 @@ lvgl:
                   text_font: ic_icons
         - button:
             id: ic_ringing_out_page_right_btn
-            align: RIGHT_MID
+            align: TOP_RIGHT
             x: -4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -3039,15 +3083,13 @@ lvgl:
                   text_color: 0xFF0000
                   text_font: ic_icons
             on_short_click:
-              - lambda: |-
-                  ESP_LOGI("ic_ringing_out_page_right_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
               - button.press: call_button
-
+              
     # ========================================================================
     # INTERCOM: IN CALL PAGE
     # ========================================================================
     - id: ic_in_call_page
-      bg_color: 0x00FF00
+      bg_color: 0x008800
       widgets:
         # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
         # All y set by reposition_widgets from y_metrics
@@ -3096,9 +3138,8 @@ lvgl:
             text_align: CENTER
         - button:
             id: ic_in_call_page_left_btn
-            align: LEFT_MID
+            align: TOP_LEFT
             x: 4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -3112,9 +3153,8 @@ lvgl:
                   text_font: ic_icons
         - button:
             id: ic_in_call_page_right_btn
-            align: RIGHT_MID
+            align: TOP_RIGHT
             x: -4
-            y: -20
             width: 60
             height: 40
             bg_opa: TRANSP
@@ -3127,8 +3167,6 @@ lvgl:
                   text_color: 0xFF0000
                   text_font: ic_icons
             on_short_click:
-              - lambda: |-
-                  ESP_LOGI("ic_in_call_page_left_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
               - button.press: call_button
 
 # =============================================================================
