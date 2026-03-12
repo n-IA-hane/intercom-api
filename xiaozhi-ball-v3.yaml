@@ -1600,7 +1600,7 @@ binary_sensor:
     name: "USB Connected"
     id: usb_connected
     device_class: plug
-    lambda: return id(battery_voltage).state > 3.9;
+    lambda: return id(battery_voltage).state > 4.0;
     on_press:
       - script.execute: backlight_timer
     on_release:
