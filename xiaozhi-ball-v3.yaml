@@ -2814,6 +2814,40 @@ lvgl:
             width: 200
             text_align: CENTER
             long_mode: DOT
+        - button:
+            id: ic_idle_page_left_btn
+            align: LEFT_MID
+            x: 4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_idle_page_right_btn
+            align: RIGHT_MID
+            x: -4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -2866,6 +2900,58 @@ lvgl:
             text_color: 0xFFFF00
             text_font: font_debug
             text_align: CENTER
+        - button:
+            id: ic_ringing_in_page_left_btn
+            align: LEFT_MID
+            x: 4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_ringing_in_page_right_btn
+            align: RIGHT_MID
+            x: -4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x800000
+                  text_font: ic_icons
+            on_short_click:
+              - lambda: |-
+                  ESP_LOGI("ic_ringing_in_page_right_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
+              - if:
+                  condition:
+                    lambda: |-
+                      auto s = id(intercom).get_state_str();
+                      return s == "Ringing" || s == "Incoming";
+                  then:
+                    - button.press: decline_button
+                  else:
+                    - if:
+                        condition:
+                          lambda: |-
+                            auto s = id(intercom).get_state_str();
+                            return s == "Calling" || s == "Outgoing";
+                        then:
+                          - button.press: call_button
 
     # ========================================================================
     # INTERCOM: RINGING OUT PAGE
@@ -2918,6 +3004,42 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        - button:
+            id: ic_ringing_out_page_left_btn
+            align: LEFT_MID
+            x: 4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_ringing_out_page_right_btn
+            align: RIGHT_MID
+            x: -4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - lambda: |-
+                  ESP_LOGI("ic_ringing_out_page_right_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
+              - button.press: call_button
 
     # ========================================================================
     # INTERCOM: IN CALL PAGE
@@ -2970,6 +3092,42 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        - button:
+            id: ic_in_call_page_left_btn
+            align: LEFT_MID
+            x: 4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_in_call_page_right_btn
+            align: RIGHT_MID
+            x: -4
+            y: -20
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - lambda: |-
+                  ESP_LOGI("ic_in_call_page_left_btn", "%d - %s", id(current_mode), id(intercom).get_state_str());
+              - button.press: call_button
 
 # =============================================================================
 # PERIODIC UPDATES
