@@ -23,7 +23,9 @@ With i2s_audio_duplex:
   - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference, no delay tuning needed. Enable with `use_stereo_aec_reference: true`. The digital loopback is post-DSP-volume — no `aec_reference_volume` scaling needed.
   - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data, no ring buffer delay. Enable with `use_tdm_reference: true`. The analog reference already reflects hardware volume — no scaling needed.
 - **Dual Mic Path**: `pre_aec` option for raw mic (MWW) alongside AEC-processed mic (VA/STT)
-- **Volume Controls**: Mic gain, mic attenuation (pre-AEC), speaker volume, AEC reference volume
+- **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic attenuation (pre-AEC), speaker volume, AEC reference volume
+- **Number Platform**: Native `mic_gain` and `speaker_volume` entities with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, `i2s_audio_duplex` owns the number entities and `intercom_api` defers to avoid conflicts.
+- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` prevents dual AEC (both `i2s_audio_duplex` and `intercom_api` with `aec_id`) and dual DC offset removal, catching configuration errors at compile time
 - **AEC Gating**: Auto-disables AEC when speaker is silent (prevents filter drift)
 - **Reference Counting**: Multiple mic consumers share the I2S bus safely (MWW + VA + intercom)
 - **CPU-Aware Scheduling**: `taskYIELD()` between frames for MWW inference headroom during AEC
@@ -89,7 +91,7 @@ graph TD
 
 ## Requirements
 
-- **ESP32**, **ESP32-S3**, or **ESP32-P4** (tested on S3 and P4). Single-core SoCs (C3, C5, C6, H2, S2) supported but cannot pin `task_core` to Core 1.
+- **ESP32**, **ESP32-S3**, or **ESP32-P4** (tested on S3 and P4, including RISC-V dual-core P4 with 32MB PSRAM). Single-core SoCs (C3, C5, C6, H2, S2) supported but cannot pin `task_core` to Core 1.
 - AEC requires PSRAM (S3/P4). TDM requires `SOC_I2S_SUPPORTS_TDM` (S3, P4, C3, C5, C6, H2).
 - Audio codec with shared I2S bus (ES8311 recommended)
 - ESP-IDF framework
@@ -547,6 +549,34 @@ binary_sensor:
 - **AEC Gating**: Processes AEC only when speaker had real audio within last 250ms
 - **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed` — including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`, `aec_ref_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`, `request_ref_prefill_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
+- **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. The gain does NOT affect wake word detection (MWW receives pre-AEC audio).
+- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure AEC (`aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of AEC and DC offset processing; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
+
+### PSRAM and sdkconfig Requirements
+
+For reliable audio on PSRAM-based devices, these sdkconfig options are **critical** and are NOT defaults:
+
+**ESP32-S3:**
+```yaml
+sdkconfig_options:
+  CONFIG_ESP32S3_DATA_CACHE_64KB: "y"       # Default is 32KB — too small for audio+PSRAM
+  CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"   # Default is 32B — 64B reduces cache misses
+  CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"     # Move code to PSRAM, frees internal SRAM
+  CONFIG_SPIRAM_RODATA: "y"                 # Move read-only data to PSRAM
+  CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"    # TLS buffers in PSRAM (saves ~40KB internal)
+```
+
+**ESP32-P4:**
+```yaml
+sdkconfig_options:
+  CONFIG_CACHE_L2_CACHE_256KB: "y"          # Default is 128KB — 256KB for MIPI DSI+audio+LVGL
+  CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+  CONFIG_SPIRAM_RODATA: "y"
+  CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"       # esp32_hosted + MIPI can block main loop
+  CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+```
+
+Removing any of these causes audio glitch at stream startup (cache cold-start: every PSRAM access is a miss until the working set loads, ~1 second).
 
 ## Troubleshooting
 

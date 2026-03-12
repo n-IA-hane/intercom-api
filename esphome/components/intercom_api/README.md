@@ -193,8 +193,10 @@ number:
     mic_gain:
       id: mic_gain
       name: "Mic Gain"
-      # Range: -20 to +20 dB
+      # Range: -20 to +30 dB
 ```
+
+> **Note**: When `i2s_audio_duplex` is also present, `i2s_audio_duplex` owns the `mic_gain` and `speaker_volume` number entities with full dB-scale control and persistence. In that case, `intercom_api`'s number entities serve as **fallback only** for non-duplex setups (e.g., ESP32-S3 Mini with separate I2S buses). A `FINAL_VALIDATE_SCHEMA` at compile time prevents conflicts by detecting when both components try to own the same functionality (dual AEC, dual DC offset).
 
 ## Actions
 
@@ -383,7 +385,7 @@ id(intercom).start();
 id(intercom).stop();
 id(intercom).answer_call();
 id(intercom).set_volume(0.8f);        // 0.0 - 1.0
-id(intercom).set_mic_gain_db(6.0f);   // -20 to +20
+id(intercom).set_mic_gain_db(6.0f);   // -20 to +30
 id(intercom).set_aec_enabled(true);
 id(intercom).set_auto_answer(false);
 ```
@@ -452,7 +454,7 @@ api:
 
 ## Hardware Requirements
 
-- **ESP32-S3** with PSRAM (required for AEC)
+- **ESP32-S3** or **ESP32-P4** with PSRAM (required for AEC)
 - I2S microphone component
 - I2S speaker component
 - ESP-IDF framework
@@ -469,11 +471,13 @@ api:
 
 ## FreeRTOS Task Configuration
 
-| Task | Core | Priority | Stack |
-|------|------|----------|-------|
-| server_task | 1 | 7 | 8192 |
-| tx_task | 0 | 6 | 12288 |
-| speaker_task | 0 | 4 | 8192 |
+| Task | Core | Priority | Stack | Notes |
+|------|------|----------|-------|-------|
+| server_task | 1 | 5 | 8192 | Always created. Handles TCP RX, call FSM, YAML callbacks. |
+| tx_task | 0 | 5 | 12288 | **Only created when `aec_id` is set on `intercom_api`**. Mic→network + AEC. |
+| speaker_task | 0 | 4 | 8192 | **Only created when `aec_id` is set on `intercom_api`**. Network→speaker, AEC ref. |
+
+> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case — AEC is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
 
 ## Troubleshooting
 

@@ -1284,15 +1284,26 @@ script:
     then:
       - if:
           condition:
-            switch.is_off: mute
+            switch.is_on: mute
           then:
             - globals.set:
                 id: voice_assistant_phase
-                value: '${voice_assist_idle_phase_id}'
-          else:
-            - globals.set:
-                id: voice_assistant_phase
                 value: '${voice_assist_muted_phase_id}'
+          else:
+            - if:
+                condition:
+                  media_player.is_playing:
+                then:
+                  # Music playing — show neutral mood screen instead of idle animation
+                  - lambda: |-
+                      lv_img_set_src(id(mood_bg), id(mood_neutral));
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_replying_phase_id}'
+                else:
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_idle_phase_id}'
 
   # Mode switching scripts
   - id: switch_to_va

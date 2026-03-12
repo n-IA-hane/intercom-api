@@ -288,10 +288,10 @@ media_player:
           then:
             - light.turn_on:
                 id: status_led
-                red: 0%
-                green: 100%
-                blue: 0%
-                brightness: 100%
+                red: 30%
+                green: 30%
+                blue: 70%
+                brightness: 60%
                 effect: "Spin"
       # Restart MWW for barge-in support during TTS (but NOT during intercom calls)
       - if:
@@ -344,13 +344,6 @@ micro_wake_word:
           - delay: 100ms
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
-    - light.turn_on:
-        id: status_led
-        red: 30%
-        green: 30%
-        blue: 70%
-        brightness: 60%
-        effect: "Spin"
   models:
     - model: "wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
@@ -372,8 +365,8 @@ voice_assistant:
   on_listening:
     - light.turn_on:
         id: status_led
-        red: 0%
-        green: 100%
+        red: 100%
+        green: 0%
         blue: 0%
         brightness: 70%
         effect: "Spin"
@@ -390,10 +383,10 @@ voice_assistant:
   on_tts_start:
     - light.turn_on:
         id: status_led
-        red: 0%
-        green: 100%
-        blue: 0%
-        brightness: 100%
+        red: 30%
+        green: 30%
+        blue: 70%
+        brightness: 60%
         effect: none
 
   on_end:
@@ -612,31 +605,40 @@ script:
                       else:
                         - if:
                             condition:
-                              intercom_api.is_in_call: intercom
+                              or:
+                                - intercom_api.is_ringing: intercom
+                                - intercom_api.is_incoming: intercom
                             then:
-                              - light.turn_on:
-                                  id: status_led
-                                  red: 30%
-                                  green: 69%
-                                  blue: 31%
-                                  brightness: 100%
-                                  effect: none
+                              # Ringing/incoming — don't touch LED (strobe set by on_ringing)
+                              - logger.log: "restore_led: ringing, keeping strobe"
                             else:
                               - if:
                                   condition:
-                                    or:
-                                      - media_player.is_announcing:
-                                      - media_player.is_playing:
+                                    intercom_api.is_in_call: intercom
                                   then:
                                     - light.turn_on:
                                         id: status_led
-                                        red: 0%
-                                        green: 100%
-                                        blue: 0%
+                                        red: 30%
+                                        green: 69%
+                                        blue: 31%
                                         brightness: 100%
-                                        effect: "Spin"
+                                        effect: none
                                   else:
-                                    - light.turn_off: status_led
+                                    - if:
+                                        condition:
+                                          or:
+                                            - media_player.is_announcing:
+                                            - media_player.is_playing:
+                                        then:
+                                          - light.turn_on:
+                                              id: status_led
+                                              red: 0%
+                                              green: 100%
+                                              blue: 0%
+                                              brightness: 100%
+                                              effect: "Spin"
+                                        else:
+                                          - light.turn_off: status_led
 
   - id: intercom_ringing_loop
     mode: restart

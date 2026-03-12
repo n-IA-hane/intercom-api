@@ -678,6 +678,7 @@ sequenceDiagram
 - I2S microphone (INMP441, SPH0645, ES8311, etc.)
 - I2S speaker amplifier (MAX98357A, ES8311, etc.)
 - ESP-IDF framework (not Arduino)
+- **sdkconfig tuning** for PSRAM devices: `DATA_CACHE_64KB` + `DATA_CACHE_LINE_64B` (S3) or `CACHE_L2_CACHE_256KB` (P4), plus `SPIRAM_FETCH_INSTRUCTIONS` + `SPIRAM_RODATA`. See [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md#psram-and-sdkconfig-requirements) for details.
 
 ---
 
@@ -894,7 +895,7 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 
 - **Try different `filter_length` values** (4 vs 8), longer isn't always better if your acoustic path is short
 - **Toggle AEC on/off during calls** to hear the difference; the `aec` switch is available in HA
-- **Adjust `mic_gain`**: higher gain helps voice detection but can introduce noise
+- **Adjust `mic_gain`** (-20 to +30 dB): higher gain helps voice detection but can introduce noise
 - **Test MWW during TTS** with your specific wake word, some words are more robust than others
 - **Compare `voip_low_cost` vs `voip_high_perf`**: the difference may be subtle in your environment
 - **Monitor ESP logs**: AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
@@ -1094,7 +1095,19 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.1.3 (Current)
+### v2.1.4 (Current)
+
+- **Mic gain range extended**: Increased from -20..+20 dB to **-20..+30 dB** for better intercom call volume at distance. The `mic_gain` number entity on `i2s_audio_duplex` uses dB scale with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, duplex owns the entity and intercom defers (fallback-only for non-duplex setups).
+
+- **PSRAM/cache sdkconfig fixes**: Restored critical non-default sdkconfig options that were accidentally stripped during v2.1.3 cleanup. On ESP32-S3: `CONFIG_ESP32S3_DATA_CACHE_64KB` (default 32KB) and `CONFIG_ESP32S3_DATA_CACHE_LINE_64B` (default 32B) are essential for PSRAM audio performance. On ESP32-P4: added `CONFIG_CACHE_L2_CACHE_256KB` (default 128KB), `CONFIG_SPIRAM_FETCH_INSTRUCTIONS`, `CONFIG_SPIRAM_RODATA`. Removing these causes audio glitch at stream startup (~1s cache cold-start).
+
+- **S3 Audio LED fixes**: Fixed ringing LED strobe stopping after a few seconds (`restore_led` now checks `is_ringing`/`is_incoming` before falling through to media/idle states). Reworked VA pipeline LED color scheme: red spin (listening) → orange spin (thinking) → blue spin (announcement loading) → blue fixed (TTS speaking).
+
+- **Xiaozhi display state fix**: After intercom call ends while music is playing, display now returns to neutral mood screen (not idle animation). `set_idle_or_mute_phase` checks `media_player.is_playing` and preserves the music-playing state.
+
+- **P4 PSRAM optimization**: Added `CONFIG_CACHE_L2_CACHE_256KB`, `CONFIG_SPIRAM_FETCH_INSTRUCTIONS`, `CONFIG_SPIRAM_RODATA` to both P4 YAML configs. 256KB L2 cache (vs default 128KB) improves hit rate for concurrent MIPI DSI + audio + LVGL workload.
+
+### v2.1.3
 
 - **Non-admin user fix**: Replaced event bus audio delivery (`hass.bus.async_fire("intercom_audio")`) with custom WS subscription command (`intercom_native/subscribe_audio`). Non-admin HA users can now use the intercom card. Card v2.1.3.
 
