@@ -2,19 +2,19 @@
 # GENERIC ESP32-S3 VA INTERCOM - Voice Assistant + Intercom
 # =============================================================================
 # Combines voice_assistant + micro_wake_word with intercom_api.
-# Uses standard i2s_audio (separate I2S buses: MSM261S4030H0R mic + MAX98357A speaker).
+# Uses standard i2s_audio (separate I2S buses for mic + speaker).
 # Mixer speaker shares hardware speaker between VA and Intercom.
 #
-# HARDWARE:
-#   - Board: Generic ESP32-S3 (8MB Flash, PSRAM)
-#   - Microphone: MSM261S4030H0R I2S MEMS (I2S_NUM_0) - right channel (L/R tied to VCC)
-#   - Speaker: MAX98357A I2S amplifier (I2S_NUM_1) - external, wire to pin header
-#   - LED: SK6812 RGB (GPIO38, onboard)
+# HARDWARE (example config, adapt GPIOs and settings to YOUR board):
+#   - Board: Any ESP32-S3 with PSRAM
+#   - Microphone: Any I2S MEMS (see MICROPHONE ALTERNATIVES below)
+#   - Speaker: Any I2S amplifier (see SPEAKER ALTERNATIVES below)
+#   - LED: WS2812/SK6812 RGB (optional, change pin to match your board)
 #
-# GPIO PINOUT:
-#   Microphone (MSM261S4030H0R): WS=GPIO37, SCK=GPIO36, SD=GPIO35  (onboard)
-#   Speaker (MAX98357A):          LRC=GPIO6, BCLK=GPIO5, DIN=GPIO7  (wire to header)
-#   LED (SK6812):                 DATA=GPIO38                       (onboard)
+# GPIO PINOUT (example, change to match your wiring):
+#   Microphone I2S bus:  WS=GPIO37, SCK=GPIO36, SD=GPIO35
+#   Speaker I2S bus:     LRC=GPIO6, BCLK=GPIO5, DIN=GPIO7
+#   LED:                 DATA=GPIO38
 #
 # MAX98357A WIRING:
 #   MAX98357A pin  ->  ESP32-S3 pin
@@ -25,6 +25,45 @@
 #   GND            ->  GND
 #   VIN            ->  5V (or 3.3V, check your amp board)
 #   SD (shutdown)  ->  leave unconnected or pull HIGH to enable
+#
+# MICROPHONE ALTERNATIVES:
+#   If you're using a different I2S mic, change the microphone section below.
+#   Adjust i2s_mic_bus GPIOs to match your wiring.
+#
+#   MSM261S4030H0R (default, this board):
+#     bits_per_sample: 32bit
+#     channel: left        (L/R pin tied to VCC, but convention is inverted)
+#     dc_offset_removal: false (intercom_api)
+#
+#   INMP441:
+#     bits_per_sample: 32bit
+#     channel: left        (L/R to GND) or right (L/R to VCC)
+#     dc_offset_removal: false (intercom_api)
+#
+#   SPH0645:
+#     bits_per_sample: 32bit
+#     channel: left
+#     dc_offset_removal: true  (intercom_api, this mic has a large DC offset)
+#
+# SPEAKER ALTERNATIVES:
+#   Adjust i2s_spk_bus GPIOs and hw_speaker settings to match your amp.
+#
+#   MAX98357A (default):
+#     dac_type: external
+#     bits_per_sample: 16bit
+#     i2s_mode: primary
+#
+#   PCM5102A (HiFi DAC):
+#     dac_type: external
+#     bits_per_sample: 16bit
+#     i2s_mode: primary
+#     (wire SCK to GND, FMT to GND for I2S mode)
+#
+#   NS4168 (common on cheap boards):
+#     dac_type: external
+#     bits_per_sample: 16bit
+#     i2s_mode: primary
+#
 # =============================================================================
 
 substitutions:
