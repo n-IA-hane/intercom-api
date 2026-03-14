@@ -960,34 +960,88 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 When an ESP device calls "Home Assistant", it fires an `esphome.intercom_call` event. Use this automation to receive push notifications:
 
 ```yaml
-alias: Doorbell Notification
-description: Send push notification when doorbell rings - tap to open intercom
+alias: Intercom Call
+description: ""
 triggers:
   - trigger: event
     event_type: esphome.intercom_call
 conditions: []
 actions:
-  - action: notify.mobile_app_your_phone
+  - variables:
+      intercom_state: >-
+        sensor.{{ trigger.event.data.caller | lower | replace(' ', '_')
+        }}_intercom_state
+      intercom_decline: >-
+        button.{{ trigger.event.data.caller | lower | replace(' ', '_')
+        }}_decline
+      intercom_uri: >-
+        /lovelace/{{ trigger.event.data.caller | lower | replace(' ', '-')
+        }}
+  - delay:
+      hours: 0
+      minutes: 0
+      seconds: 1
+      milliseconds: 0
+  - repeat:
+      while:
+        - condition: template
+          value_template: "{{ repeat.index <= 6 }}"
+        - condition: template
+          value_template: "{{ is_state(intercom_state, 'Outgoing') }}"
+      sequence:
+        - action: notify.mobile_app_<your_phone>
+          metadata: {}
+          data:
+            message: ☎️ {{ trigger.event.data.caller }} is calling..."
+            data:
+              clickAction: "{{ intercom_uri }}"
+              tag: intercom
+              channel: Intercom
+              importance: high
+              ttl: 0
+              priority: high
+              actions:
+                - action: URI
+                  title: 📱 Open
+                  uri: "{{ intercom_uri }}"
+                - action: DECLINE
+                  title: ⛔ Decline
+        - wait_for_trigger:
+            - trigger: event
+              event_type: mobile_app_notification_action
+          timeout:
+            hours: 0
+            minutes: 0
+            seconds: 10
+            milliseconds: 0
+        - choose:
+            - conditions:
+                - condition: template
+                  value_template: "{{ wait.trigger.event.data.action == 'DECLINE' }}"
+              sequence:
+                - action: button.press
+                  metadata: {}
+                  target:
+                    entity_id: "{{ intercom_decline }}"
+                  data: {}
+                - action: persistent_notification.create
+                  metadata: {}
+                  data:
+                    title: 🔔 Call Declined
+                    message: "⛔ Call from {{ trigger.event.data.caller }} was declined "
+                    notification_id: intercom_call_declined
+        - delay:
+            hours: 0
+            minutes: 0
+            seconds: 1
+            milliseconds: 0
+  - action: notify.mobile_app_<your_phone>
+    metadata: {}
     data:
-      title: "🔔 Incoming Call"
-      message: "📞 {{ trigger.event.data.caller }} is calling..."
+      message: clear_notification
       data:
-        clickAction: /lovelace/intercom
-        channel: doorbell
-        importance: high
-        ttl: 0
-        priority: high
-        actions:
-          - action: URI
-            title: "📱 Open"
-            uri: /lovelace/intercom
-          - action: ANSWER
-            title: "✅ Answer"
-  - action: persistent_notification.create
-    data:
-      title: "🔔 Incoming Call"
-      message: "📞 {{ trigger.event.data.caller }} is calling..."
-      notification_id: intercom_call
+        tag: intercom
+        channel: Intercom
 mode: single
 ```
 

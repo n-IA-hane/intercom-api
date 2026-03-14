@@ -132,6 +132,8 @@ esphome:
           id(i2s_duplex).set_aec_reference_volume(vol);
           id(peer_name) = id(intercom).get_current_destination();
       - micro_wake_word.start:
+      - lambda: id(swipe).publish_state(true);
+      - lambda: id(swipe).publish_state(false);
       - delay: 30s
       - if:
           condition:
@@ -239,17 +241,23 @@ time:
 # I2C BUS (ES8311 codec control)
 # =============================================================================
 i2c:
-  id: i2c_bus
-  sda: GPIO15
-  scl: GPIO14
-  scan: false
-
+  - id: i2c_bus
+    sda: GPIO15
+    scl: GPIO14
+    scan: false
+    
+  - id: touchscreen_i2c_bus
+    sda: GPIO11
+    scl: GPIO7
+    scan: false
+    
 # =============================================================================
 # AUDIO CODEC (ES8311)
 # =============================================================================
 audio_dac:
   - platform: es8311
     id: es8311_dac
+    i2c_id: i2c_bus
     bits_per_sample: 16bit
     sample_rate: 48000
     mic_gain: 24DB
@@ -916,7 +924,7 @@ script:
             lv_obj_set_y(obj, y_center - fh / 2);
           };
 
-          // --- IC idle page (8 children in YAML order) ---
+          // --- IC idle page (10 children in YAML order) ---
           lv_obj_t* p = id(ic_idle_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Intercom:"
@@ -924,10 +932,17 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Destination:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer name
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // contacts
-          set_center_y(lv_obj_get_child(p, 6), ym[10]);  // wifi
-          set_center_y(lv_obj_get_child(p, 7), ym[11]);  // HA
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+          set_center_y(lv_obj_get_child(p, 8), ym[7] + 12);   // left contacts button
+          set_center_y(lv_obj_get_child(p, 9), ym[7] + 12);   // right contacts button
 
-          // --- IC ringing in page (6 children) ---
+          // --- top layer (2 children in YAML order) ---
+          p = lv_layer_top();
+          set_center_y(lv_obj_get_child(p, 1), ym[11]);  // clock
+          set_center_y(lv_obj_get_child(p, 2), ym[10]);  // battery wifi HA
+
+          // --- IC ringing in page (8 children) ---
           p = id(ic_ringing_in_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -935,8 +950,10 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Incoming call from:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
-          // --- IC ringing out page (6 children) ---
+          // --- IC ringing out page (8 children) ---
           p = id(ic_ringing_out_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -944,8 +961,10 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Calling:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
-          // --- IC in call page (6 children) ---
+          // --- IC in call page (8 children) ---
           p = id(ic_in_call_page)->obj;
           set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
           set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
@@ -953,6 +972,8 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Connected to:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
 
           // --- Thinking page: chord-width labels (10 children after image) ---
           lv_obj_t* think[] = {
@@ -1042,12 +1063,8 @@ script:
             lv_disp_load_scr(target);
           }
 
-      # Update dynamic labels when on idle page
-      - if:
-          condition:
-            binary_sensor.is_on: is_idle_screen
-          then:
-            - script.execute: update_idle_labels
+      # Update top labels 
+      - script.execute: update_top_labels
       # Self-heal: ensure MWW is active when in VA idle (catches any missed restarts)
       - if:
           condition:
@@ -1224,29 +1241,23 @@ script:
             char buf[32];
             snprintf(buf, sizeof(buf), "Contacts: %d", count);
             return std::string(buf);
-      - lvgl.label.update:
-          id: ic_idle_wifi_label
-          text:
-            format: "WiFi: %.0f%%"
-            args: ['id(wifi_pct).state']
-      - lvgl.label.update:
-          id: ic_idle_ha_label
-          text: !lambda 'return id(node_status).state ? std::string("HA: OK") : std::string("HA: --");'
 
   # Update clock and battery labels on idle page
-  - id: update_idle_labels
+  - id: update_top_labels
     then:
       - lvgl.label.update:
-          id: idle_clock_label
+          id: top_clock_label
           text:
             format: "%02d:%02d"
             args: ['id(my_time).now().hour', 'id(my_time).now().minute']
       - if:
           condition:
-            - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
+            and:
+              - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
+              - lambda: return id(wifi_pct).has_state() && !std::isnan(id(wifi_pct).state);
           then:
             - lvgl.label.update:
-                id: idle_battery_label
+                id: top_battery_label
                 text: !lambda |-
                   bool charging = id(usb_connected).state;
                   float bat = id(battery_percentage).state;
@@ -1267,10 +1278,11 @@ script:
                   else if (wifi < 55) ret += "\U000F08BC";
                   else if (wifi < 80) ret += "\U000F08BD";
                   else ret += "\U000F08BE";
+                  ret += id(node_status).state ? "\U000F07D0" : "\U000F15D0";
                   return ret;
           else:
             - lvgl.label.update:
-                id: idle_battery_label
+                id: top_battery_label
                 text: ""
 
   # Update replying page labels with current page of wrapped text
@@ -1600,27 +1612,62 @@ binary_sensor:
     name: "USB Connected"
     id: usb_connected
     device_class: plug
-    lambda: return id(battery_voltage).state > 3.9;
+    lambda: return id(battery_voltage).state > 4.0;
     on_press:
       - script.execute: backlight_timer
     on_release:
       - script.execute: backlight_timer
 
-  # Capacitive touch
-  - platform: gpio
-    pin:
-      number: GPIO12
-      mode: INPUT_PULLUP
-      inverted: true
-    id: touch_input
+  - platform: template
+    id: swipe
+    filters:
+      - delayed_off: 100ms
     on_press:
-      then:
+      - if:
+          condition:
+            binary_sensor.is_on: is_idle_screen
+          then:
+            - script.execute: switch_to_intercom
+          else:
+            - script.execute: switch_to_va
+
+# =============================================================================
+# TOUCHSCREEN
+# =============================================================================
+touchscreen:
+  - platform: cst816
+    display: s3_box_lcd
+    i2c_id: touchscreen_i2c_bus
+    transform:
+      mirror_x: false
+      mirror_y: false
+      swap_xy: false
+    interrupt_pin: GPIO12
+    reset_pin: GPIO6
+    on_touch:
         - script.execute: backlight_timer
         - if:
             condition:
               switch.is_on: timer_ringing
             then:
               - switch.turn_off: timer_ringing
+    on_update:
+      lambda: |-
+        for (auto touch : touches) {
+          // Check if it's a valid, ongoing touch (state <= 2)
+          if (touch.state > 0 && touch.state <= 2) {
+            // Check for horizontal swipe (e.g., more than 50 pixels)
+            if ((touch.x - touch.x_org) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Right - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe).publish_state(true);
+            } else if ((touch.x_org - touch.x) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Left - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe).publish_state(true);
+            }
+          }
+        }
+    on_release:
+      lambda: id(swipe).publish_state(false);
 
 # =============================================================================
 # OUTPUTS AND LIGHTS
@@ -2223,6 +2270,8 @@ font:
           - "\U000F08BC" # wifi-strength-1 (<55%)
           - "\U000F08BD" # wifi-strength-2 (<80%)
           - "\U000F08BE" # wifi-strength-3 (>=80%)
+          - "\U000F15D0" # Home Alert
+          - "\U000F07D0" # Home Assistant
   # Intercom fonts
   - file:
       type: gfonts
@@ -2248,6 +2297,14 @@ font:
       weight: 400
     id: font_debug
     size: 14
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: ic_icons
+    size: 28
+    glyphs:
+      - "\U000F03F2" # phone
+      - "\U000F03F5" # phone-hangup
+      - "\U000F0731" # arrow left bold
+      - "\U000F0734" # arrow right bold
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2258,10 +2315,15 @@ spi:
     mosi_pin: 2
 
 # =============================================================================
-# DISPLAY (ILI9XXX - stripped of pages, LVGL handles rendering)
+# DISPLAY (mipi_spi - stripped of pages, LVGL handles rendering)
 # =============================================================================
+# https://esphome.io/components/display/ili9xxx/
+# WARNING (ILI9xxx)
+# This component has been made redundant since this class of displays is now
+# supported by the MIPI SPI Display Driver. This component may be removed 
+# in a future release.
 display:
-  - platform: ili9xxx
+  - platform: mipi_spi
     id: s3_box_lcd
     model: GC9A01A
     invert_colors: true
@@ -2317,6 +2379,18 @@ lvgl:
                 text: ""
                 text_color: 0x000000
                 text_font: font_timer
+      - label:
+          id: top_clock_label
+          align: TOP_MID
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
+      - label:
+          id: top_battery_label
+          align: TOP_MID
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
   pages:
     # ========================================================================
     # INITIALIZATION PAGE
@@ -2760,22 +2834,72 @@ lvgl:
             width: 200
             text_align: CENTER
             long_mode: DOT
-        - label:
-            id: ic_idle_wifi_label
-            align: TOP_MID
-            y: 0
-            text: "WiFi: --%"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            id: ic_idle_ha_label
-            align: TOP_MID
-            y: 0
-            text: "HA: --"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
+        - button:
+            id: ic_idle_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_idle_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_idle_page_left_contacts_btn
+            align: TOP_LEFT
+            x: 25
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_contacts_lbl
+                  text: "\U000F0731"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: prev_contact_button
+        - button:
+            id: ic_idle_page_right_contacts_btn
+            align: TOP_RIGHT
+            x: -25
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_contacts_btn_lbl
+                  text: "\U000F0734"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: next_contact_button
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -2828,6 +2952,54 @@ lvgl:
             text_color: 0xFFFF00
             text_font: font_debug
             text_align: CENTER
+        - button:
+            id: ic_ringing_in_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_ringing_in_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x800000
+                  text_font: ic_icons
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      auto s = id(intercom).get_state_str();
+                      return s == "Ringing" || s == "Incoming";
+                  then:
+                    - button.press: decline_button
+                  else:
+                    - if:
+                        condition:
+                          lambda: |-
+                            auto s = id(intercom).get_state_str();
+                            return s == "Calling" || s == "Outgoing";
+                        then:
+                          - button.press: call_button
 
     # ========================================================================
     # INTERCOM: RINGING OUT PAGE
@@ -2880,12 +3052,44 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
-
+        - button:
+            id: ic_ringing_out_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_ringing_out_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+              
     # ========================================================================
     # INTERCOM: IN CALL PAGE
     # ========================================================================
     - id: ic_in_call_page
-      bg_color: 0x00FF00
+      bg_color: 0x008800
       widgets:
         # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
         # All y set by reposition_widgets from y_metrics
@@ -2932,6 +3136,38 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        - button:
+            id: ic_in_call_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_in_call_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 40
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
 
 # =============================================================================
 # PERIODIC UPDATES
@@ -2939,7 +3175,7 @@ lvgl:
 interval:
   - interval: 30s
     then:
-      - script.execute: update_idle_labels
+      - script.execute: update_top_labels
 
 
 # =============================================================================

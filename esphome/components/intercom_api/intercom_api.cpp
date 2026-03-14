@@ -380,6 +380,16 @@ void IntercomApi::answer_call() {
 }
 
 void IntercomApi::decline_call() {
+  if (this->call_state_ == CallState::OUTGOING) {
+    ESP_LOGI(TAG, "Outgoing decline_call - sending STOP");
+    // close_client_socket_() sends STOP before closing
+    this->close_client_socket_();
+    this->set_active_(false);  // Stop mic/speaker (start() enabled them)
+    this->state_ = ConnectionState::DISCONNECTED;
+    this->end_call_(CallEndReason::DECLINED);
+    return;
+  }
+  
   // Decline incoming call when auto_answer is OFF
   if (!this->is_ringing()) {
     ESP_LOGW(TAG, "decline_call() called but not ringing");
