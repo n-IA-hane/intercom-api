@@ -366,20 +366,17 @@ void IntercomApi::save_settings_() {
 }
 
 void IntercomApi::start() {
-  // Use FSM state instead of atomic flag - FSM is the source of truth
   if (this->call_state_ != CallState::IDLE) {
-    ESP_LOGW(TAG, "Already in call (state=%s)", call_state_to_str(this->call_state_));
+    ESP_LOGW(TAG, "Cannot start call: already %s", call_state_to_str(this->call_state_));
     return;
   }
 
-  ESP_LOGI(TAG, "Calling %s...", this->get_current_destination().c_str());
+  const auto &dest = this->get_current_destination();
+  ESP_LOGI(TAG, "%s -> %s: calling...", this->device_name_.c_str(), dest.c_str());
   this->set_active_(true);
-
-  // Set FSM to OUTGOING - this triggers on_outgoing_call callback
   this->set_call_state_(CallState::OUTGOING);
-  this->outgoing_start_time_ = millis();  // Start timeout counter
+  this->outgoing_start_time_ = millis();
 
-  // Notify tasks to wake up
   if (this->server_task_handle_) xTaskNotifyGive(this->server_task_handle_);
   if (this->tx_task_handle_) xTaskNotifyGive(this->tx_task_handle_);
   if (this->speaker_task_handle_) xTaskNotifyGive(this->speaker_task_handle_);
@@ -390,68 +387,63 @@ void IntercomApi::stop() {
     return;
   }
 
-  ESP_LOGI(TAG, "Hanging up");
-
-  // set_active_(false) handles synchronization: waits for tasks, then stops hardware
+  ESP_LOGI(TAG, "%s: hanging up", this->device_name_.c_str());
   this->set_active_(false);
-
-  // Close client connection — close_client_socket_() sends STOP before closing
   this->close_client_socket_();
-
   this->state_ = ConnectionState::DISCONNECTED;
-  this->end_call_(CallEndReason::LOCAL_HANGUP);  // FSM with reason
+  this->end_call_(CallEndReason::LOCAL_HANGUP);
 }
 
 void IntercomApi::answer_call() {
-  // Answer incoming call when auto_answer is OFF
   if (!this->is_ringing()) {
-    ESP_LOGW(TAG, "answer_call() called but not ringing");
+    ESP_LOGW(TAG, "Cannot answer: not ringing (state=%s)", call_state_to_str(this->call_state_));
     return;
   }
 
   int sock = this->client_.socket.load();
   if (sock < 0) {
-    ESP_LOGW(TAG, "answer_call() but no client connected");
+    ESP_LOGW(TAG, "Cannot answer: no connection");
     return;
   }
 
-  ESP_LOGI(TAG, "Answering call");
+  ESP_LOGI(TAG, "%s: answering call", this->device_name_.c_str());
   this->send_message_(sock, MessageType::ANSWER);
-  this->set_call_state_(CallState::ANSWERING);  // FSM
+  this->set_call_state_(CallState::ANSWERING);
   this->set_active_(true);
-  this->set_streaming_(true);  // This will set CallState::STREAMING
+  this->set_streaming_(true);
 }
 
 void IntercomApi::decline_call() {
-  // Decline incoming call when auto_answer is OFF
-  if (!this->is_ringing()) {
-    ESP_LOGW(TAG, "decline_call() called but not ringing");
+  if (this->is_ringing()) {
+    ESP_LOGI(TAG, "%s: declining incoming call", this->device_name_.c_str());
+  } else if (this->is_outgoing()) {
+    ESP_LOGI(TAG, "%s: cancelling outgoing call to %s",
+             this->device_name_.c_str(), this->get_current_destination().c_str());
+  } else {
+    ESP_LOGW(TAG, "Cannot decline: no active call (state=%s)", call_state_to_str(this->call_state_));
     return;
   }
 
+  // Send ERROR to remote if connected, then close
   int sock = this->client_.socket.load();
-  if (sock < 0) {
-    return;
+  if (sock >= 0) {
+    uint8_t reason = static_cast<uint8_t>(ErrorCode::BUSY);
+    this->send_message_(sock, MessageType::ERROR, MessageFlags::NONE, &reason, 1);
+    this->close_client_socket_();
   }
 
-  ESP_LOGI(TAG, "Declining call");
-  uint8_t reason = static_cast<uint8_t>(ErrorCode::BUSY);
-  this->send_message_(sock, MessageType::ERROR, MessageFlags::NONE, &reason, 1);
-  this->close_client_socket_();
+  // Always end the call locally (outgoing may not have a socket yet)
+  this->set_active_(false);
   this->state_ = ConnectionState::DISCONNECTED;
-  this->end_call_(CallEndReason::DECLINED);  // FSM with reason
+  this->end_call_(CallEndReason::DECLINED);
 }
 
 void IntercomApi::call_toggle() {
-  // Smart call toggle: ringing → answer, active → hangup, idle → start
   if (this->is_ringing()) {
-    ESP_LOGD(TAG, "call_toggle: answering");
     this->answer_call();
   } else if (this->is_active()) {
-    ESP_LOGD(TAG, "call_toggle: hanging up");
     this->stop();
   } else {
-    ESP_LOGD(TAG, "call_toggle: starting call");
     this->start();
   }
 }
@@ -777,7 +769,8 @@ void IntercomApi::set_call_state_(CallState new_state) {
   CallState old_state = this->call_state_;
   this->call_state_ = new_state;
 
-  ESP_LOGI(TAG, "Call state: %s -> %s", call_state_to_str(old_state), call_state_to_str(new_state));
+  ESP_LOGI(TAG, "%s: %s -> %s", this->device_name_.c_str(),
+           call_state_to_str(old_state), call_state_to_str(new_state));
 
   // Fire appropriate trigger
   switch (new_state) {
@@ -807,7 +800,7 @@ void IntercomApi::end_call_(CallEndReason reason) {
   if (this->call_state_ == CallState::IDLE) return;
 
   std::string reason_str = call_end_reason_to_str(reason);
-  ESP_LOGI(TAG, "Call ended: %s", reason_str.c_str());
+  ESP_LOGI(TAG, "%s: call ended (%s)", this->device_name_.c_str(), reason_str.c_str());
 
   // Fire appropriate trigger based on reason type
   if (reason == CallEndReason::UNREACHABLE ||
@@ -1369,13 +1362,12 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         caller_name.assign(reinterpret_cast<const char *>(data), name_len);
       }
 
-      // Log user-friendly message
+      const char *local = this->device_name_.c_str();
+      const char *remote = caller_name.empty() ? "Home Assistant" : caller_name.c_str();
       if (no_ring) {
-        // We are the caller in a bridge, destination is the caller_name
-        ESP_LOGI(TAG, "Calling %s...", caller_name.empty() ? "unknown" : caller_name.c_str());
+        ESP_LOGI(TAG, "%s -> %s: calling (bridged)...", local, remote);
       } else {
-        // We are being called
-        ESP_LOGI(TAG, "Incoming call from %s", caller_name.empty() ? "Home Assistant" : caller_name.c_str());
+        ESP_LOGI(TAG, "%s <- %s: incoming call", local, remote);
       }
 
       // Publish caller name (even if empty - clears previous)
@@ -1405,7 +1397,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         this->set_call_state_(CallState::INCOMING);  // FSM: incoming call first
         this->state_ = ConnectionState::CONNECTED;  // Stay connected but not streaming
         this->send_message_(this->client_.socket.load(), MessageType::RING);
-        ESP_LOGI(TAG, "Auto-answer OFF - sending RING, waiting for local answer");
+        ESP_LOGI(TAG, "%s: ringing (waiting for local answer)", this->device_name_.c_str());
         this->ringing_start_time_ = millis();  // Start ringing timeout timer
         this->set_call_state_(CallState::RINGING);  // FSM: then ringing (triggers on_ringing)
       }
@@ -1413,7 +1405,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
     }
 
     case MessageType::STOP:
-      ESP_LOGI(TAG, "Received STOP from client");
+      ESP_LOGI(TAG, "%s: remote hung up", this->device_name_.c_str());
       // Clear caller name in full mode
       if (this->full_mode_) {
         this->publish_caller_("");
@@ -1441,18 +1433,17 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
       // ANSWER: call was answered (either our outgoing call or remote answer)
       if (this->call_state_ == CallState::OUTGOING) {
         // We called them, they answered - start streaming
-        ESP_LOGI(TAG, "Call answered");
-        this->set_streaming_(true);  // This will set CallState::STREAMING
+        ESP_LOGI(TAG, "%s: destination answered, streaming", this->device_name_.c_str());
+        this->set_streaming_(true);
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
       } else if (this->call_state_ == CallState::RINGING) {
-        // We were ringing, HA answered for us remotely
-        ESP_LOGI(TAG, "Call answered (remote)");
+        ESP_LOGI(TAG, "%s: answered remotely (by HA)", this->device_name_.c_str());
         this->set_call_state_(CallState::ANSWERING);  // FSM
         this->set_active_(true);
         this->set_streaming_(true);  // This will set CallState::STREAMING
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
       } else {
-        ESP_LOGW(TAG, "ANSWER received in unexpected state");
+        ESP_LOGW(TAG, "ANSWER received in unexpected state: %s", call_state_to_str(this->call_state_));
       }
       break;
 

@@ -153,6 +153,7 @@ class IntercomApi : public Component {
   void answer_call();
   void decline_call();
   bool is_ringing() const { return this->call_state_.load(std::memory_order_acquire) == CallState::RINGING; }
+  bool is_outgoing() const { return this->call_state_.load(std::memory_order_acquire) == CallState::OUTGOING; }
   bool is_idle() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IDLE; }
   bool is_streaming() const { return this->call_state_.load(std::memory_order_acquire) == CallState::STREAMING; }
 
