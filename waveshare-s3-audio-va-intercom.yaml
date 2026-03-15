@@ -140,9 +140,7 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source:
-      type: local
-      path: esphome/components
+  - source: github://n-IA-hane/intercom-api@main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================

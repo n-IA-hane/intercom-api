@@ -119,7 +119,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # ==============================================================================
 external_components:
-  - source: github://n-IA-hane/intercom-api
+  - source: github://n-IA-hane/intercom-api@main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # ==============================================================================
