@@ -53,7 +53,7 @@ substitutions:
   friendly_name: Xiaozhi Ball V3 LVGL
 
   # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/n-IA-hane/intercom-api/raw/dev/"
+  assets_base: "https://github.com/n-IA-hane/intercom-api/raw/main/"
   # ---- Local mode (for development, clone repo first) ----
   # assets_base: ""
 
