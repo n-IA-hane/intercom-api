@@ -725,17 +725,9 @@ script:
               - intercom_api.is_ringing: intercom
               - intercom_api.is_incoming: intercom
           then:
-            # Ringtone only when media pipeline is fully idle (no resources allocated).
-            # PAUSED still holds 20KB internal read_task stack — starting a 2nd
-            # pipeline with insufficient RAM leaves it in a broken state that
-            # freezes the main loop on hangup.
-            - if:
-                condition:
-                  media_player.is_idle:
-                then:
-                  - media_player.speaker.play_on_device_media_file:
-                      media_file: intercom_ringing_sound
-                      announcement: true
+            - media_player.speaker.play_on_device_media_file:
+                media_file: intercom_ringing_sound
+                announcement: true
             - delay: 3s
 
 # =============================================================================
