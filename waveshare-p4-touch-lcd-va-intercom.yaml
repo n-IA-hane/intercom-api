@@ -2015,24 +2015,34 @@ script:
       - lambda: |-
           lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
 
+          // Stop idle animation when leaving main page (prevents LVGL memory leak)
+          auto stop_anim = [&]() {
+            id(ai_animation_loop).stop();
+            lv_anim_del(id(idle_animation), nullptr);
+          };
+
           // Overlay pages (full-screen, cover everything)
           if (!wifi::global_wifi_component->is_connected()) {
+            stop_anim();
             if (active_scr != id(no_wifi_page)->obj)
               lv_disp_load_scr(id(no_wifi_page)->obj);
             return;
           }
           if (!api::global_api_server->is_connected()) {
+            stop_anim();
             if (active_scr != id(no_ha_page)->obj)
               lv_disp_load_scr(id(no_ha_page)->obj);
             return;
           }
           int phase = id(voice_assistant_phase);
           if (phase == ${voice_assist_not_ready_phase_id}) {
+            stop_anim();
             if (active_scr != id(no_ha_page)->obj)
               lv_disp_load_scr(id(no_ha_page)->obj);
             return;
           }
           if (phase == ${voice_assist_timer_finished_phase_id}) {
+            stop_anim();
             if (active_scr != id(timer_finished_page)->obj)
               lv_disp_load_scr(id(timer_finished_page)->obj);
             return;
