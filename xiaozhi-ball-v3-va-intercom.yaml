@@ -126,7 +126,6 @@ esphome:
       - lambda: |-
           float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
           id(es8311_dac).set_volume(vol);
-
           id(peer_name) = id(intercom).get_current_destination();
       - micro_wake_word.start:
       - delay: 30s
@@ -1882,7 +1881,6 @@ number:
       - lambda: |-
           float es8311_vol = 0.15 + (x / 100.0) * 0.60;
           id(es8311_dac).set_volume(es8311_vol);
-
 
 # =============================================================================
 # Select Entities
