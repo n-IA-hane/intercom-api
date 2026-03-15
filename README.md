@@ -547,16 +547,16 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `filter_length` | int | 4 | Echo tail in frames (4 = 64ms) |
 | `mode` | string | `voip_low_cost` | AEC algorithm mode |
 
-**AEC modes** (ESP-SR closed-source Espressif library):
+**AEC modes** (ESP-SR library - two completely different engines):
 
-| Mode | CPU | Memory | Use Case |
-|------|-----|--------|----------|
-| `voip_low_cost` | Low | Low | **Recommended**, sufficient for all setups including VA + MWW |
-| `voip_high_perf` | Medium | Medium | Better filter quality, try if not using display/heavy workloads |
-| `sr_low_cost` | Medium | Medium | Speech recognition optimized, alternative to voip modes |
-| `sr_high_perf` | High | **Very High** | Best cancellation but may exhaust DMA memory on ESP32-S3 |
+| Mode | Engine | CPU (Core 0) | RES | MWW on post-AEC | Recommended |
+|------|--------|-------------|-----|-----------------|-------------|
+| `sr_low_cost` | `esp_aec3` (linear) | **~22%** | No | **10/10** | **Yes - for VA + MWW** |
+| `sr_high_perf` | `esp_aec3` (FFT) | ~25% | No | 10/10 | No (DMA memory issues on S3) |
+| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58% | Yes | 2/10 | Only if MWW not needed |
+| `voip_high_perf` | `dios_ssp_aec` | ~64% | Yes | 2/10 | No |
 
-> **Note**: All modes have similar CPU cost per frame (~7ms). The difference is primarily in memory allocation and adaptive filter quality.
+> **Important**: SR modes use a **linear-only** adaptive filter that preserves spectral features for neural wake word detection. VOIP modes add a **residual echo suppressor** (RES) that distorts features, reducing MWW detection from 10/10 to 2/10. Use `sr_low_cost` for VA + MWW setups. SR mode requires `buffers_in_psram: true` on ESP32-S3 (512-sample frames need more memory). See [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md#aec-cpu-impact) for details.
 
 ---
 
@@ -659,10 +659,10 @@ sequenceDiagram
 | Device | Microphone | Speaker | I2S Mode | Component | AEC Reference | VA/MWW | Tested by |
 |--------|------------|---------|----------|-----------|---------------|--------|-----------|
 | ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (dual mic path) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3) | Yes (dual mic path, LVGL touch display) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| [Onju Voice](https://github.com/justLV/onju-voice) | MEMS (dual) | DAC + mute GPIO | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (dual mic path) | [@rmeissn](https://github.com/rmeissn) |
+| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (SR AEC) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3, 30dB) | Yes (SR AEC) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3, 30dB) | Yes (SR AEC, LVGL touch display) | [@n-IA-hane](https://github.com/n-IA-hane) |
+| [Onju Voice](https://github.com/justLV/onju-voice) | MEMS (dual) | DAC + mute GPIO | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (SR AEC) | [@rmeissn](https://github.com/rmeissn) |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -682,7 +682,8 @@ This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex
 
 - **True full-duplex** on a single I2S bus
 - **Built-in AEC integration**: stereo digital feedback, TDM hardware reference, or ring buffer
-- **Dual mic paths**: raw (pre-AEC) for wake word + AEC-processed for voice assistant
+- **Single mic path for all**: with `sr_low_cost` AEC, MWW + VA + intercom all use the same post-AEC mic (linear AEC preserves spectral features)
+- **PSRAM buffer support**: `buffers_in_psram` option frees ~28KB internal heap (required for SR AEC mode)
 - **FIR decimation**: the bus runs at 48kHz (codec native) for full-quality speaker output; microphone audio is decimated to 16kHz only for components that require it (AEC, Voice Assistant STT, Intercom)
 - **Reference counting**: multiple consumers share the same mic safely
 
