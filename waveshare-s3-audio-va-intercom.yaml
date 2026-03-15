@@ -304,16 +304,6 @@ media_player:
                 blue: 70%
                 brightness: 60%
                 effect: "Spin"
-      # Restart MWW for barge-in support during TTS (but NOT during intercom calls)
-      - if:
-          condition:
-            and:
-              - switch.is_off: mute
-              - intercom_api.is_idle: intercom
-              - not:
-                  voice_assistant.is_running:
-          then:
-            - micro_wake_word.start:
     on_play:
       - script.execute: restore_led
     on_pause:
@@ -322,39 +312,39 @@ media_player:
       - media_player.stop:
     on_idle:
       - script.execute: restore_led
-      # Restart MWW after media finishes (but NOT during intercom calls)
-      - if:
-          condition:
-            and:
-              - switch.is_off: mute
-              - intercom_api.is_idle: intercom
-              - not:
-                  voice_assistant.is_running:
-          then:
-            - micro_wake_word.start:
 
 # =============================================================================
 # Micro Wake Word
 # =============================================================================
 micro_wake_word:
   id: mww
-  microphone: mic_aec    # Post-AEC: SR mode (linear, no RES) preserves spectral features for MWW
+  microphone: mic_aec    # Post-AEC: SR linear AEC preserves spectral features for MWW
+  stop_after_detection: false  # MWW stays always-on (no scattered restart needed)
   on_wake_word_detected:
-    # Duck media audio so mic hears user clearly
+    # Acquire audio focus: duck media
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
         duration: 200ms
-    # Barge-in: interrupt TTS if playing
+    # Barge-in: if VA/TTS active, stop and restart
     - if:
         condition:
-          media_player.is_announcing:
+          or:
+            - media_player.is_announcing:
+            - voice_assistant.is_running:
         then:
-          - media_player.stop:
+          - globals.set:
+              id: restart_intent
+              value: "true"
           - voice_assistant.stop:
-          - delay: 100ms
+          - media_player.stop:
+              announcement: true
+          - delay: 500ms
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
+    - globals.set:
+        id: restart_intent
+        value: "false"
   models:
     - model: "wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
@@ -364,6 +354,9 @@ micro_wake_word:
 # =============================================================================
 # Voice Assistant
 # =============================================================================
+# State machine: IDLE -> LISTENING -> THINKING -> SPEAKING -> IDLE
+# MWW is always-on (stop_after_detection: false). Callbacks only set LEDs.
+# Ducking is managed by on_wake_word_detected (acquire) and on_end (release).
 voice_assistant:
   id: va
   microphone: mic_aec
@@ -401,81 +394,29 @@ voice_assistant:
         effect: none
 
   on_end:
-    # Wait for TTS to start playing (if any)
-    - wait_until:
-        condition:
-          - media_player.is_announcing:
-        timeout: 0.5s
-    # Wait for TTS to finish
-    - wait_until:
-        condition:
-          and:
-            - not:
-                media_player.is_announcing:
-            - not:
-                speaker.is_playing:
-                    id: tts_speaker
-        timeout: 30s
-    # Fallback: force cleanup if stuck
-    - if:
-        condition:
-          or:
-            - media_player.is_announcing:
-            - speaker.is_playing:
-                id: tts_speaker
-        then:
-          - logger.log:
-              level: WARN
-              format: "VA on_end: timeout waiting for TTS drain, forcing cleanup"
-          - media_player.stop:
-              announcement: true
-    - delay: 100ms
-    - voice_assistant.stop:
-    # Restore media volume after VA finishes (only if no intercom call active)
-    - if:
-        condition:
-          intercom_api.is_idle: intercom
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_speaker_mix
-              decibel_reduction: 0
-              duration: 500ms
-    # Restart MWW (resilience: always restart unless muted)
-    - if:
-        condition:
-          switch.is_off: mute
-        then:
-          - micro_wake_word.start:
-    - script.execute: restore_led
+    - script.execute: va_end_handler
 
   on_error:
-    # Restore media volume on error (only if no intercom call active)
-    - if:
-        condition:
-          intercom_api.is_idle: intercom
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_speaker_mix
-              decibel_reduction: 0
-              duration: 300ms
-    - light.turn_on:
-        id: status_led
-        red: 100%
-        green: 0%
-        blue: 0%
-        brightness: 70%
-        effect: none
+    # Always release audio focus on error
+    - globals.set:
+        id: restart_intent
+        value: "false"
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 0
+        duration: 300ms
     - if:
         condition:
           lambda: return !id(init_in_progress);
         then:
+          - light.turn_on:
+              id: status_led
+              red: 100%
+              green: 0%
+              blue: 0%
+              brightness: 70%
+              effect: none
           - delay: 2s
-          # Restart MWW after error (resilience)
-          - if:
-              condition:
-                switch.is_off: mute
-              then:
-                - micro_wake_word.start:
           - script.execute: restore_led
 
   on_client_connected:
@@ -616,11 +557,59 @@ globals:
     type: bool
     restore_value: false
     initial_value: "true"
+  - id: restart_intent
+    type: bool
+    restore_value: false
+    initial_value: "false"
 
 # =============================================================================
 # Scripts
 # =============================================================================
 script:
+  # VA end handler — mode: restart ensures barge-in cancels previous on_end
+  - id: va_end_handler
+    mode: restart
+    then:
+      # Wait for TTS to finish playing
+      - wait_until:
+          condition:
+            - media_player.is_announcing:
+          timeout: 0.5s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+                      id: tts_speaker
+          timeout: 30s
+      - if:
+          condition:
+            or:
+              - media_player.is_announcing:
+              - speaker.is_playing:
+                  id: tts_speaker
+          then:
+            - logger.log:
+                level: WARN
+                format: "VA: TTS drain timeout, forcing cleanup"
+            - media_player.stop:
+                announcement: true
+      - delay: 100ms
+      - voice_assistant.stop:
+      # Release audio focus only if NOT a barge-in
+      - if:
+          condition:
+            not:
+              lambda: 'return id(restart_intent);'
+          then:
+            - mixer_speaker.apply_ducking:
+                id: media_speaker_mix
+                decibel_reduction: 0
+                duration: 500ms
+            - script.execute: restore_led
+
   # Wake word management (guarded: won't start during active VA session)
   - id: start_wake_word
     then:
