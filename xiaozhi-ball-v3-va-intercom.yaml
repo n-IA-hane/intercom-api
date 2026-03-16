@@ -1011,8 +1011,8 @@ script:
           set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Destination:"
           set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer name
           set_center_y(lv_obj_get_child(p, 5), ym[8]);   // contacts
-          set_center_y(lv_obj_get_child(p, 6), ym[10]);  // wifi
-          set_center_y(lv_obj_get_child(p, 7), ym[11]);  // HA
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
           set_center_y(lv_obj_get_child(p, 8), ym[7] + 12);   // left contacts button
           set_center_y(lv_obj_get_child(p, 9), ym[7] + 12);   // right contacts button
 
@@ -1308,7 +1308,7 @@ script:
   - id: update_idle_labels
     then:
       - lvgl.label.update:
-          id: idle_clock_label
+          id: top_clock_label
           text:
             format: "%02d:%02d"
             args: ['id(my_time).now().hour', 'id(my_time).now().minute']
@@ -1317,7 +1317,7 @@ script:
             - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
           then:
             - lvgl.label.update:
-                id: idle_battery_label
+                id: top_battery_label
                 text: !lambda |-
                   bool charging = id(usb_connected).state;
                   float bat = id(battery_percentage).state;
@@ -2530,20 +2530,6 @@ lvgl:
               - idle_01
             duration: 6600ms
             auto_start: false
-        - label:
-            id: idle_clock_label
-            align: BOTTOM_MID
-            y: -2
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_clock
-        - label:
-            id: idle_battery_label
-            align: BOTTOM_MID
-            y: -22
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_clock
 
     # ========================================================================
     # VA: LISTENING PAGE (placeholder)
@@ -2893,22 +2879,6 @@ lvgl:
             width: 200
             text_align: CENTER
             long_mode: DOT
-        - label:
-            id: ic_idle_wifi_label
-            align: TOP_MID
-            y: 0
-            text: "WiFi: --%"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            id: ic_idle_ha_label
-            align: TOP_MID
-            y: 0
-            text: "HA: --"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
         - button:
             id: ic_idle_page_left_btn
             align: TOP_LEFT
