@@ -21,6 +21,7 @@ CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 
 CONF_AEC_ID = "aec_id"
+CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_STREAMING = "on_streaming"
@@ -82,6 +83,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
         cv.Optional(CONF_AEC_ID): _aec_schema,
+        # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
+        cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
         # Ringing timeout: auto-decline call if not answered within this time
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
         # Trigger when incoming call (auto_answer OFF)
@@ -156,11 +159,13 @@ async def to_code(config):
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
 
     # Set device name (for full mode: exclude self from contacts list)
-    cg.add(var.set_device_name(cg.RawExpression('App.get_friendly_name()')))
+    from esphome.core import CORE
+    cg.add(var.set_device_name(CORE.friendly_name or CORE.name))
 
     if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
         aec = await cg.get_variable(config[CONF_AEC_ID])
         cg.add(var.set_aec(aec))
+        cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
         cg.add_define("USE_ESP_AEC")
 
     # Ringing timeout (auto-decline if not answered)

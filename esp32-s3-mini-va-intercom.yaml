@@ -303,7 +303,7 @@ intercom_api:
           - homeassistant.event:
               event: esphome.intercom_call
               data:
-                caller: !lambda 'return App.get_friendly_name();'
+                caller: "${friendly_name}"
                 destination: "Home Assistant"
                 type: "doorbell"
 

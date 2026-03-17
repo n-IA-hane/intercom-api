@@ -483,16 +483,17 @@ void IntercomApi::reset_aec_buffers_() {
     this->spk_ref_buffer_->reset();
     // Pre-fill reference buffer with silence to create delay
     // This compensates for I2S DMA latency + acoustic delay
-    // The mic captures echo from audio played ~80ms ago, so we delay the reference
+    // The mic captures echo from audio played N ms ago, so we delay the reference
     // Use stack-based loop instead of heap allocation for the silence block
+    const size_t delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * sizeof(int16_t);
     uint8_t zeros[256] = {};
-    size_t remaining = AEC_REF_DELAY_BYTES;
+    size_t remaining = delay_bytes;
     while (remaining > 0) {
       size_t chunk = std::min(remaining, sizeof(zeros));
       this->spk_ref_buffer_->write(zeros, chunk);
       remaining -= chunk;
     }
-    ESP_LOGD(TAG, "AEC buffers reset, pre-filled %ums silence", static_cast<unsigned>(AEC_REF_DELAY_MS));
+    ESP_LOGD(TAG, "AEC buffers reset, pre-filled %ums silence", (unsigned) this->aec_ref_delay_ms_);
     xSemaphoreGive(this->spk_ref_mutex_);
   }
 }
@@ -508,7 +509,8 @@ void IntercomApi::set_aec_enabled(bool enabled) {
     // Lazy allocate AEC buffers on first enable (saves ~13KB when AEC unused)
     if (this->aec_mic_ == nullptr) {
       const size_t frame_bytes = static_cast<size_t>(this->aec_frame_samples_) * sizeof(int16_t);
-      this->spk_ref_buffer_ = RingBuffer::create(AEC_REF_DELAY_BYTES + RX_BUFFER_SIZE);
+      const size_t ref_delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * sizeof(int16_t);
+      this->spk_ref_buffer_ = RingBuffer::create(ref_delay_bytes + RX_BUFFER_SIZE);
       this->aec_mic_ = static_cast<int16_t *>(heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
       this->aec_ref_ = static_cast<int16_t *>(heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
       this->aec_out_ = static_cast<int16_t *>(heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -521,8 +523,9 @@ void IntercomApi::set_aec_enabled(bool enabled) {
         this->aec_enabled_ = false;
         return;
       }
-      ESP_LOGI(TAG, "AEC buffers allocated (frame=%d samples, ref_buf=%zu bytes)",
-               this->aec_frame_samples_, AEC_REF_DELAY_BYTES + RX_BUFFER_SIZE);
+      ESP_LOGI(TAG, "AEC buffers allocated (frame=%d samples, ref_buf=%zu bytes, delay=%ums)",
+               this->aec_frame_samples_, ref_delay_bytes + RX_BUFFER_SIZE,
+               (unsigned) this->aec_ref_delay_ms_);
     }
   }
   this->aec_enabled_ = enabled;
@@ -967,81 +970,67 @@ void IntercomApi::tx_task_() {
     }
 
 #ifdef USE_ESP_AEC
-    // AEC Processing: accumulate samples, process when full frame ready
+    // AEC Processing: accumulate mic samples, process in AEC-frame-sized chunks.
+    // Mic chunk (AUDIO_CHUNK_SIZE) can be larger than AEC frame (e.g. 512 vs 256 in VOIP mode).
+    // Uses a while loop to process ALL complete frames from each chunk, avoiding buffer overflow.
     if (this->aec_enabled_ && this->aec_ != nullptr && this->aec_mic_ != nullptr) {
       const int16_t *mic_samples = reinterpret_cast<const int16_t *>(audio_chunk);
-      size_t num_samples = AUDIO_CHUNK_SIZE / sizeof(int16_t);  // = SAMPLES_PER_CHUNK
+      size_t num_samples = AUDIO_CHUNK_SIZE / sizeof(int16_t);
+      const size_t frame_size = static_cast<size_t>(this->aec_frame_samples_);
+      size_t consumed = 0;
 
-      // Copy mic samples to accumulator
-      size_t samples_to_copy = std::min(num_samples,
-                                        static_cast<size_t>(this->aec_frame_samples_) - this->aec_mic_fill_);
-      memcpy(this->aec_mic_ + this->aec_mic_fill_, mic_samples, samples_to_copy * sizeof(int16_t));
-      this->aec_mic_fill_ += samples_to_copy;
+      while (consumed < num_samples) {
+        // Copy as many samples as fit in the accumulator
+        size_t space = frame_size - this->aec_mic_fill_;
+        size_t to_copy = std::min(num_samples - consumed, space);
+        memcpy(this->aec_mic_ + this->aec_mic_fill_, mic_samples + consumed, to_copy * sizeof(int16_t));
+        this->aec_mic_fill_ += to_copy;
+        consumed += to_copy;
 
-      // If we have a full AEC frame, process it
-      if (this->aec_mic_fill_ >= static_cast<size_t>(this->aec_frame_samples_)) {
-        // Read speaker reference from buffer (same frame size)
-        size_t ref_bytes_needed = this->aec_frame_samples_ * sizeof(int16_t);
+        // Process when we have a full frame
+        if (this->aec_mic_fill_ >= frame_size) {
+          // Read speaker reference from buffer (same frame size)
+          size_t ref_bytes_needed = frame_size * sizeof(int16_t);
 
-        if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
-          size_t ref_avail = this->spk_ref_buffer_->available();
-          if (ref_avail >= ref_bytes_needed) {
-            this->spk_ref_buffer_->read(this->aec_ref_, ref_bytes_needed, 0);
+          if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+            size_t ref_avail = this->spk_ref_buffer_->available();
+            if (ref_avail >= ref_bytes_needed) {
+              this->spk_ref_buffer_->read(this->aec_ref_, ref_bytes_needed, 0);
+            } else {
+              memset(this->aec_ref_, 0, ref_bytes_needed);
+            }
+            xSemaphoreGive(this->spk_ref_mutex_);
           } else {
-            // Not enough reference - use silence (still process to reduce latency)
             memset(this->aec_ref_, 0, ref_bytes_needed);
-            static uint32_t last_warn = 0;
-            if (millis() - last_warn > 5000) {
-              ESP_LOGW(TAG, "AEC: ref buffer low (%zu/%zu bytes)", ref_avail, ref_bytes_needed);
-              last_warn = millis();
+          }
+
+          this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_, frame_size);
+          this->aec_mic_fill_ = 0;
+
+          // Send processed audio
+          size_t out_bytes = frame_size * sizeof(int16_t);
+          if (this->active_.load(std::memory_order_acquire) && this->client_.socket.load() >= 0) {
+            int socket = this->client_.socket.load();
+            MessageHeader header;
+            header.type = static_cast<uint8_t>(MessageType::AUDIO);
+            header.flags = static_cast<uint8_t>(MessageFlags::NONE);
+            header.length = out_bytes;
+
+            memcpy(this->audio_tx_buffer_, &header, HEADER_SIZE);
+            memcpy(this->audio_tx_buffer_ + HEADER_SIZE, this->aec_out_, out_bytes);
+
+            size_t total = HEADER_SIZE + out_bytes;
+            ssize_t sent = send(socket, this->audio_tx_buffer_, total, MSG_DONTWAIT);
+
+            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+              if (this->client_.streaming.load(std::memory_order_acquire)) {
+                ESP_LOGW(TAG, "TX send error: %d", errno);
+              }
             }
           }
-          xSemaphoreGive(this->spk_ref_mutex_);
-        } else {
-          memset(this->aec_ref_, 0, ref_bytes_needed);
-          ESP_LOGW(TAG, "AEC: mutex timeout");
-        }
-
-        // Always process AEC - no skip threshold to avoid audio discontinuities
-        this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_, this->aec_frame_samples_);
-
-        // Send processed audio (may be larger than AUDIO_CHUNK_SIZE)
-        size_t out_bytes = this->aec_frame_samples_ * sizeof(int16_t);
-
-        // Check still active before sending
-        if (this->active_.load(std::memory_order_acquire) && this->client_.socket.load() >= 0) {
-          int socket = this->client_.socket.load();
-          MessageHeader header;
-          header.type = static_cast<uint8_t>(MessageType::AUDIO);
-          header.flags = static_cast<uint8_t>(MessageFlags::NONE);
-          header.length = out_bytes;
-
-          memcpy(this->audio_tx_buffer_, &header, HEADER_SIZE);
-          memcpy(this->audio_tx_buffer_ + HEADER_SIZE, this->aec_out_, out_bytes);
-
-          size_t total = HEADER_SIZE + out_bytes;
-          ssize_t sent = send(socket, this->audio_tx_buffer_, total, MSG_DONTWAIT);
-
-          if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            // Only log if still streaming - avoid noise during shutdown
-            if (this->client_.streaming.load(std::memory_order_acquire)) {
-              ESP_LOGW(TAG, "TX send error: %d", errno);
-            }
-          }
-        }
-
-        // Reset accumulators
-        this->aec_mic_fill_ = 0;
-
-        // Handle overflow: if we had more samples than frame_size, carry over
-        if (samples_to_copy < num_samples) {
-          size_t remaining = num_samples - samples_to_copy;
-          memcpy(this->aec_mic_, mic_samples + samples_to_copy, remaining * sizeof(int16_t));
-          this->aec_mic_fill_ = remaining;
         }
       }
 
-      // Minimal delay
       yield();
       continue;  // Skip non-AEC path
     }

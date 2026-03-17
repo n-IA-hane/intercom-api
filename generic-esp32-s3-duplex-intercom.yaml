@@ -1,27 +1,26 @@
 # =============================================================================
-# GENERIC ESP32-S3 INTERCOM — Intercom only (no VA, no MWW)
+# GENERIC ESP32-S3 INTERCOM (DUPLEX) — Single I2S bus, no codec
 # =============================================================================
-# Uses intercom_api with AEC for full-duplex echo-cancelled calls.
-# Speaker direct (no mixer, no resamplers) — same proven path as s3-mini.
-#
-# WIP: ringtone not yet implemented (requires mixer or speaker sharing fix)
+# Uses i2s_audio_duplex for mic + speaker on the SAME I2S bus (shared BCLK/LRCLK).
+# AEC reference is sample-aligned via ring buffer mode (same DMA frame).
+# No codec needed: works with MEMS mic (INMP441) + I2S amp (MAX98357A).
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
-#   - Microphone: Any I2S MEMS (INMP441, MSM261, SPH0645)
-#   - Speaker: Any I2S amplifier (MAX98357A, NS4168, PCM5102A)
+#   - Microphone: I2S MEMS (INMP441, MSM261, SPH0645) on DIN pin
+#   - Speaker: I2S amplifier (MAX98357A, NS4168) on DOUT pin
+#   - Mic and speaker SHARE BCLK + LRCLK (same I2S bus, full-duplex)
 #   - LED: SK6812/WS2812 RGB (optional)
 #
 # GPIO PINOUT (example, change to match your wiring):
-#   Microphone I2S bus:  WS=GPIO37, SCK=GPIO36, SD=GPIO35
-#   Speaker I2S bus:     LRC=GPIO6, BCLK=GPIO5, DIN=GPIO7
-#   LED:                 DATA=GPIO33
+#   Shared I2S:  BCLK=GPIO5, LRCLK=GPIO6, DIN=GPIO35 (mic), DOUT=GPIO7 (speaker)
+#   LED:         DATA=GPIO33
 #
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3
-  friendly_name: Generic Esp32-s3
+  name: generic-esp32-s3-duplex
+  friendly_name: Generic Esp32-s3 Duplex
 
 esphome:
   name: ${name}
@@ -51,8 +50,6 @@ preferences:
 # CONNECTIVITY
 # =============================================================================
 api:
-  on_client_connected:
-    - lambda: 'id(intercom).publish_entity_states();'
 
 ota:
   - platform: esphome
@@ -60,11 +57,6 @@ ota:
 logger:
   hardware_uart: USB_CDC
   level: INFO
-  logs:
-    intercom_api: INFO
-
-network:
-  enable_high_performance: true
 
 wifi:
   ssid: !secret wifi_ssid
@@ -77,47 +69,7 @@ external_components:
   - source:
       type: local
       path: esphome/components
-    components: [intercom_api, esp_aec]
-
-# =============================================================================
-# I2S AUDIO BUSES
-# =============================================================================
-i2s_audio:
-  - id: i2s_mic_bus
-    i2s_lrclk_pin: GPIO37
-    i2s_bclk_pin: GPIO36
-  - id: i2s_spk_bus
-    i2s_lrclk_pin: GPIO6
-    i2s_bclk_pin: GPIO5
-
-# =============================================================================
-# MICROPHONE
-# =============================================================================
-microphone:
-  - platform: i2s_audio
-    id: mic_component
-    i2s_audio_id: i2s_mic_bus
-    i2s_din_pin: GPIO35
-    adc_type: external
-    pdm: false
-    bits_per_sample: 32bit
-    sample_rate: 16000
-    channel: left
-
-# =============================================================================
-# SPEAKER (direct — no mixer, no resampler, proven path)
-# =============================================================================
-speaker:
-  - platform: i2s_audio
-    id: spk_component
-    i2s_audio_id: i2s_spk_bus
-    i2s_dout_pin: GPIO7
-    dac_type: external
-    i2s_mode: primary
-    sample_rate: 16000
-    bits_per_sample: 16bit
-    timeout: never
-    buffer_duration: 100ms
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
 # AEC (Acoustic Echo Cancellation)
@@ -125,11 +77,42 @@ speaker:
 esp_aec:
   id: aec_processor
   sample_rate: 16000
-  filter_length: 8
-  mode: voip_high_perf
+  filter_length: 4
+  mode: sr_low_cost
 
 # =============================================================================
-# INTERCOM API
+# I2S Audio Duplex — single bus, full-duplex (mic + speaker on same BCLK/LRCLK)
+# =============================================================================
+# MEMS mic on DIN, I2S amp on DOUT, shared clock pins.
+# AEC reference comes from the same DMA frame (ring buffer mode, sample-aligned).
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO6
+  i2s_bclk_pin: GPIO5
+  i2s_din_pin: GPIO35           # From MEMS mic (INMP441 etc.)
+  i2s_dout_pin: GPIO7           # To I2S amp (MAX98357A etc.)
+  sample_rate: 16000
+  aec_id: aec_processor
+
+# =============================================================================
+# Microphone (via i2s_audio_duplex, post-AEC)
+# =============================================================================
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_component
+    i2s_audio_duplex_id: i2s_duplex
+
+# =============================================================================
+# Speaker (via i2s_audio_duplex)
+# =============================================================================
+speaker:
+  - platform: i2s_audio_duplex
+    id: spk_component
+    i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 16000
+
+# =============================================================================
+# INTERCOM API — no aec_id (AEC handled by i2s_audio_duplex)
 # =============================================================================
 intercom_api:
   id: intercom
@@ -137,8 +120,6 @@ intercom_api:
   microphone: mic_component
   speaker: spk_component
   dc_offset_removal: true
-  aec_id: aec_processor
-  aec_reference_delay_ms: 80    # Tune for your hardware (10-200ms). Try lower values with filter_length: 4.
   ringing_timeout: 30s
 
   on_outgoing_call:
@@ -163,7 +144,6 @@ intercom_api:
         red: 100%
         green: 0%
         blue: 0%
-    # WIP: ringtone playback requires mixer (speaker sharing with intercom causes distortion)
 
   on_answered:
     - logger.log: "Call answered"
@@ -313,6 +293,10 @@ switch:
       name: Auto Answer
       icon: mdi:phone-in-talk
       restore_mode: RESTORE_DEFAULT_OFF
+
+  # AEC switch via i2s_audio_duplex (not intercom_api, avoids conflict)
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     aec:
       id: aec_switch
       name: Echo Cancellation
@@ -349,13 +333,9 @@ switch:
 # Numbers
 # =============================================================================
 number:
-  - platform: intercom_api
-    intercom_api_id: intercom
-    speaker_volume:
-      id: speaker_volume
-      name: Speaker Volume
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     mic_gain:
-      id: mic_gain
       name: Mic Gain
 
 # =============================================================================

@@ -124,6 +124,7 @@ class IntercomApi : public Component {
 
 #ifdef USE_ESP_AEC
   void set_aec(esp_aec::EspAec *aec) { this->aec_ = aec; }
+  void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
   void set_aec_enabled(bool enabled);
   bool is_aec_enabled() const { return this->aec_enabled_; }
 #endif
@@ -381,6 +382,7 @@ class IntercomApi : public Component {
   // AEC (Acoustic Echo Cancellation)
   esp_aec::EspAec *aec_{nullptr};
   bool aec_enabled_{false};
+  uint32_t aec_ref_delay_ms_{80};  // Configurable via YAML (default 80ms)
 
   // Speaker reference buffer for AEC (fed by speaker_task)
   std::unique_ptr<RingBuffer> spk_ref_buffer_;
