@@ -131,6 +131,7 @@ speaker:
   - platform: resampler
     id: intercom_speaker
     output_speaker: hw_speaker
+    bits_per_sample: 16
 
 # =============================================================================
 # INTERCOM API
