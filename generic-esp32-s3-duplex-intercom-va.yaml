@@ -396,6 +396,38 @@ switch:
       - script.execute: restore_led
 
 # =============================================================================
+# AEC Mode Select
+# =============================================================================
+select:
+  - platform: template
+    name: AEC Mode
+    id: aec_mode_select
+    icon: mdi:tune-vertical
+    options:
+      - "sr_low_cost"
+      - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "sr_low_cost"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - logger.log:
+          format: "Switching AEC mode to %s"
+          args: ['x.c_str()']
+      - lambda: |-
+          int mode = 0;
+          if (x == "sr_low_cost") mode = 0;
+          else if (x == "sr_high_perf") mode = 1;
+          else if (x == "voip_low_cost") mode = 3;
+          else if (x == "voip_high_perf") mode = 4;
+          id(i2s_duplex).stop();
+          if (!id(aec_processor).reinit(static_cast<aec_mode_t>(mode))) {
+            ESP_LOGE("aec_mode", "AEC reinit failed!");
+          }
+          id(i2s_duplex).start();
+
+# =============================================================================
 # Numbers
 # =============================================================================
 number:
