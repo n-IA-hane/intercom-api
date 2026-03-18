@@ -37,7 +37,6 @@ CONF_I2S_DIN_PIN = "i2s_din_pin"
 CONF_I2S_DOUT_PIN = "i2s_dout_pin"
 CONF_OUTPUT_SAMPLE_RATE = "output_sample_rate"
 CONF_AEC_ID = "aec_id"
-CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
@@ -184,9 +183,6 @@ CONFIG_SCHEMA = cv.All(
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
         cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
-        # AEC reference delay: 0 = direct reference from TX data (single-bus, no ring buffer).
-        # >0 = ring buffer with delay (for separate buses or when acoustic path needs compensation).
-        cv.Optional(CONF_AEC_REF_DELAY_MS, default=0): cv.int_range(min=0, max=200),
         # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
         cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=1.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
@@ -300,9 +296,6 @@ async def to_code(config):
     # Set output sample rate if specified (enables decimation)
     if CONF_OUTPUT_SAMPLE_RATE in config:
         cg.add(var.set_output_sample_rate(config[CONF_OUTPUT_SAMPLE_RATE]))
-
-    # Set AEC reference delay (must be set BEFORE set_aec for buffer sizing)
-    cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
 
     # Set mic attenuation for hot mics (applied BEFORE AEC)
     cg.add(var.set_mic_attenuation(config[CONF_MIC_ATTENUATION]))

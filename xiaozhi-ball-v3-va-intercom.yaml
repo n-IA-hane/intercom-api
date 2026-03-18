@@ -279,7 +279,6 @@ i2s_audio_duplex:
   # Sample-accurate reference alignment, no ring buffer delay needed.
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
   use_stereo_aec_reference: true
-  aec_reference_delay_ms: 10   # Minimal (sample-aligned via stereo feedback)
   buffers_in_psram: true       # All audio buffers in PSRAM — required for sr_low_cost (512-sample frames)
 
 # =============================================================================

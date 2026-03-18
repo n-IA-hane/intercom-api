@@ -168,8 +168,6 @@ i2s_audio_duplex:
   # Gives sample-accurate reference for AEC (no ring buffer timing issues)
   # Requires ES8311 register 0x44 bits[6:4]=4 (set in on_boot)
   use_stereo_aec_reference: true
-  # Minimal delay for stereo mode - reference is nearly sample-aligned
-  aec_reference_delay_ms: 10
 
 # ==============================================================================
 # MICROPHONE (via duplex platform)
