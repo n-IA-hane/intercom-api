@@ -1,16 +1,17 @@
 # =============================================================================
-# GENERIC ESP32-S3 INTERCOM (DUPLEX) - Single I2S bus, no hardware codec
+# GENERIC ESP32-S3 INTERCOM + VA (DUPLEX) - Single I2S bus, no hardware codec
 # =============================================================================
-# Simple intercom-only config. No media player, no mixer, no VA/MWW.
+# Full-featured config: Intercom + Media Player + mixer (VA/MWW ready).
 # For ESP32 boards where mic and speaker share the SAME I2S bus.
 #
 # Audio pipeline:
 #   MEMS mic -> i2s_audio_duplex (48kHz) -> FIR decimation (16kHz) -> AEC -> intercom TX
-#   Intercom RX (16kHz) -> resampler (48kHz) -> hw_speaker -> amp
+#   Media       -> media_speaker (resampler) -------+
+#   Intercom RX -> intercom_speaker (resampler) ----+-- mixer (48kHz) -> hw_speaker -> amp
+#   Announcements -> announcement_speaker (resampler) +
 #
-# Volume controlled by speaker_volume number entity (persisted to flash).
-# For full-featured (media player, mixer, VA-ready), see
-# generic-esp32-s3-duplex-intercom-va.yaml
+# Volume controlled by media_player (persisted, HA slider).
+# For intercom-only (no media player), see generic-esp32-s3-duplex-intercom.yaml
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
@@ -26,8 +27,8 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3-duplex
-  friendly_name: Generic Esp32-s3 Duplex
+  name: generic-esp32-s3-duplex-va
+  friendly_name: Generic Esp32-s3 Duplex VA
 
 esphome:
   name: ${name}
@@ -95,24 +96,25 @@ esp_aec:
   mode: sr_low_cost
 
 # =============================================================================
-# I2S Audio Duplex - single bus, full-duplex (mic + speaker on same BCLK/LRCLK)
+# I2S Audio Duplex — single bus, full-duplex (mic + speaker on same BCLK/LRCLK)
 # =============================================================================
+# MEMS mic on DIN, I2S amp on DOUT, shared clock pins.
 # Bus runs at 48kHz for optimal mic quality, FIR decimation to 16kHz for AEC/intercom.
 i2s_audio_duplex:
   id: i2s_duplex
-  i2s_lrclk_pin: GPIO37          # WS - shared with mic
-  i2s_bclk_pin: GPIO36           # SCK - shared with mic
-  i2s_din_pin: GPIO35            # mic data
-  i2s_dout_pin: GPIO7            # amp DIN
-  sample_rate: 48000
-  output_sample_rate: 16000
+  i2s_lrclk_pin: GPIO37          # Left side pin "37" (WS) - shared with mic
+  i2s_bclk_pin: GPIO36           # Left side pin "36" (SCK) - shared with mic
+  i2s_din_pin: GPIO35            # Left side pin "35" (SD) - mic data
+  i2s_dout_pin: GPIO7            # Right side pin "07" - amp DIN
+  sample_rate: 48000             # Bus rate: 48kHz (MSM261 native, BCLK=3.072MHz)
+  output_sample_rate: 16000      # Mic/AEC output at 16kHz via FIR decimation
   slot_bit_width: 32
-  correct_dc_offset: true
+  correct_dc_offset: true        # MSM261 has no built-in HPF (unlike INMP441)
   aec_id: aec_processor
-  buffers_in_psram: true
+  buffers_in_psram: true         # Required for sr_low_cost (512-sample frames)
 
 # =============================================================================
-# Microphone (post-AEC)
+# Microphone (via i2s_audio_duplex, post-AEC)
 # =============================================================================
 microphone:
   - platform: i2s_audio_duplex
@@ -120,20 +122,63 @@ microphone:
     i2s_audio_duplex_id: i2s_duplex
 
 # =============================================================================
-# Speaker: hw_speaker (48kHz) <- resampler <- intercom (16kHz)
+# Speaker Pipeline: hw_speaker → mixer (48kHz) ← resampler ← sources
 # =============================================================================
 speaker:
+  # Hardware output: writes 48kHz PCM to I2S bus
   - platform: i2s_audio_duplex
     id: hw_speaker
     i2s_audio_duplex_id: i2s_duplex
     sample_rate: 48000
 
+  # Mixer combines media and intercom at 48kHz
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    source_speakers:
+      - id: media_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: announcement_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: intercom_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+
+  # Resamplers: convert any input rate to 48kHz before the mixer
+  - platform: resampler
+    id: media_speaker
+    output_speaker: media_speaker_mix
+
+  - platform: resampler
+    id: announcement_speaker
+    output_speaker: announcement_speaker_mix
+
   - platform: resampler
     id: intercom_speaker
-    output_speaker: hw_speaker
+    output_speaker: intercom_speaker_mix
 
 # =============================================================================
-# INTERCOM API
+# Media Player
+# =============================================================================
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    internal: false
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 48000
+      format: FLAC
+    announcement_pipeline:
+      speaker: announcement_speaker
+      sample_rate: 48000
+      format: FLAC
+
+# =============================================================================
+# INTERCOM API - no aec_id (AEC handled by i2s_audio_duplex)
 # =============================================================================
 intercom_api:
   id: intercom
@@ -323,6 +368,7 @@ switch:
       icon: mdi:ear-hearing
       restore_mode: RESTORE_DEFAULT_ON
 
+
   - platform: template
     id: mute
     name: Mic Mute
@@ -355,13 +401,11 @@ switch:
 number:
   - platform: i2s_audio_duplex
     i2s_audio_duplex_id: i2s_duplex
-    speaker_volume:
-      name: Speaker Volume
     mic_gain:
       name: Mic Gain
 
 # =============================================================================
-# Status LED (SK6812 on GPIO33 - change pin/chipset for your board)
+# Status LED (SK6812 on GPIO33 — change pin/chipset for your board)
 # =============================================================================
 light:
   - platform: esp32_rmt_led_strip

@@ -48,7 +48,11 @@ class SpeakerVolumeNumber : public number::Number, public Component {
   void set_parent(I2SAudioDuplex *parent) { this->parent_ = parent; }
 
   void setup() override {
-    if (this->parent_ != nullptr) {
+    float value;
+    this->pref_ = global_preferences->make_preference<float>(this->get_object_id_hash());
+    if (this->pref_.load(&value)) {
+      this->control(value);
+    } else if (this->parent_ != nullptr) {
       this->publish_state(this->parent_->get_speaker_volume());
     }
   }
@@ -62,10 +66,12 @@ class SpeakerVolumeNumber : public number::Number, public Component {
     if (this->parent_ != nullptr) {
       this->parent_->set_speaker_volume(value);
       this->publish_state(value);
+      this->pref_.save(&value);
     }
   }
 
   I2SAudioDuplex *parent_{nullptr};
+  ESPPreferenceObject pref_;
 };
 
 }  // namespace i2s_audio_duplex
