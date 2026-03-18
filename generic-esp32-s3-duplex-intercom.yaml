@@ -360,6 +360,9 @@ number:
       name: Speaker Volume
     mic_gain:
       name: Mic Gain
+    mic_gain_pre_aec:
+      name: Mic Gain Pre-AEC
+      pre_aec: true
 
 # =============================================================================
 # Status LED (SK6812 on GPIO33 - change pin/chipset for your board)

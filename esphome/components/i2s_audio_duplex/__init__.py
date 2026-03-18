@@ -183,8 +183,8 @@ CONFIG_SCHEMA = cv.All(
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
         cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
-        # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
-        cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=1.0),
+        # Pre-AEC mic gain/attenuation: <1.0 attenuates (hot mics), >1.0 amplifies (weak mics)
+        cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=32.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
         # Requires ES8311 register 0x44 bits[6:4]=4 (ADCDAT_SEL=DACL+ADC)
         cv.Optional(CONF_USE_STEREO_AEC_REF, default=False): cv.boolean,

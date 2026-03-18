@@ -14,6 +14,7 @@ namespace i2s_audio_duplex {
 class MicGainNumber : public number::Number, public Component {
  public:
   void set_parent(I2SAudioDuplex *parent) { this->parent_ = parent; }
+  void set_pre_aec(bool pre_aec) { this->pre_aec_ = pre_aec; }
 
   void setup() override {
     float value;
@@ -26,14 +27,18 @@ class MicGainNumber : public number::Number, public Component {
   }
 
   void dump_config() override {
-    ESP_LOGCONFIG("mic_gain", "Mic Gain Number (dB)");
+    ESP_LOGCONFIG("mic_gain", "Mic Gain Number (dB, %s)", this->pre_aec_ ? "pre-AEC" : "post-AEC");
   }
 
  protected:
   void control(float value) override {
     if (this->parent_ != nullptr) {
       float linear = std::pow(10.0f, value / 20.0f);
-      this->parent_->set_mic_gain(linear);
+      if (this->pre_aec_) {
+        this->parent_->set_mic_attenuation(linear);
+      } else {
+        this->parent_->set_mic_gain(linear);
+      }
       this->publish_state(value);
       this->pref_.save(&value);
     }
@@ -41,6 +46,7 @@ class MicGainNumber : public number::Number, public Component {
 
   I2SAudioDuplex *parent_{nullptr};
   ESPPreferenceObject pref_;
+  bool pre_aec_{false};
 };
 
 class SpeakerVolumeNumber : public number::Number, public Component {

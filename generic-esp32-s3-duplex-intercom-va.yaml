@@ -403,6 +403,9 @@ number:
     i2s_audio_duplex_id: i2s_duplex
     mic_gain:
       name: Mic Gain
+    mic_gain_pre_aec:
+      name: Mic Gain Pre-AEC
+      pre_aec: true
 
 # =============================================================================
 # Status LED (SK6812 on GPIO33 — change pin/chipset for your board)
