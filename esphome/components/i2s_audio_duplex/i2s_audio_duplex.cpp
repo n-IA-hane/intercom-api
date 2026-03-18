@@ -97,18 +97,29 @@ void I2SAudioDuplex::setup() {
     return;
   }
 
-  // AEC reference buffer (mono mode only — stereo/TDM get ref from I2S RX).
-  // Stores data at bus rate; decimated to output rate in audio_task before AEC.
-  if (this->aec_ != nullptr && !this->speaker_ref_buffer_ &&
-      !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
-    size_t delay_bytes = (this->sample_rate_ * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
-    size_t ref_buffer_size = delay_bytes + this->speaker_buffer_size_;
-    this->speaker_ref_buffer_ = RingBuffer::create(ref_buffer_size);
-    if (this->speaker_ref_buffer_) {
-      ESP_LOGD(TAG, "AEC reference buffer: %u bytes (delay=%ums)", (unsigned)ref_buffer_size,
-               (unsigned)this->aec_ref_delay_ms_);
+  // AEC reference (mono mode only — stereo/TDM get ref from I2S RX).
+  if (this->aec_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
+    if (this->aec_ref_delay_ms_ > 0) {
+      // Ring buffer mode: delayed reference for acoustic path compensation
+      size_t delay_bytes = (this->sample_rate_ * this->aec_ref_delay_ms_ / 1000) * BYTES_PER_SAMPLE;
+      size_t ref_buffer_size = delay_bytes + this->speaker_buffer_size_;
+      this->speaker_ref_buffer_ = RingBuffer::create(ref_buffer_size);
+      if (this->speaker_ref_buffer_) {
+        ESP_LOGD(TAG, "AEC reference: ring buffer %u bytes (delay=%ums)",
+                 (unsigned)ref_buffer_size, (unsigned)this->aec_ref_delay_ms_);
+      } else {
+        ESP_LOGE(TAG, "Failed to create AEC speaker reference buffer");
+      }
     } else {
-      ESP_LOGE(TAG, "Failed to create AEC speaker reference buffer");
+      // Direct mode: reference from previous TX frame (no ring buffer, ~1 chunk latency)
+      size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
+      this->direct_aec_ref_ = static_cast<int16_t *>(
+          heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
+      if (this->direct_aec_ref_) {
+        ESP_LOGD(TAG, "AEC reference: direct from TX (no ring buffer, %u samples)", (unsigned)bus_frame_size);
+      } else {
+        ESP_LOGE(TAG, "Failed to allocate direct AEC reference buffer");
+      }
     }
   }
 
@@ -928,14 +939,25 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr && ctx.speaker_running &&
       (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)) {
 
-    // Mono mode: read reference from ring buffer, decimate to output rate
+    // Mono mode: get AEC reference (direct from TX or ring buffer)
     if (!ctx.use_stereo_aec_ref) {
-      size_t min_ref_bytes = ctx.aec_delay_bytes + ctx.bus_frame_bytes;
-      size_t ref_available = this->speaker_ref_buffer_ ? this->speaker_ref_buffer_->available() : 0;
-
-      if (this->speaker_ref_buffer_ != nullptr && ref_available >= min_ref_bytes && ctx.ref_bus_buffer != nullptr) {
-        this->speaker_ref_buffer_->read((void *) ctx.ref_bus_buffer, ctx.bus_frame_bytes, 0);
-        this->play_ref_decimator_.process(ctx.ref_bus_buffer, ctx.spk_ref_buffer, ctx.bus_frame_size);
+      if (this->direct_aec_ref_ != nullptr) {
+        // Direct mode: use previous TX frame as reference (no ring buffer)
+        if (this->direct_aec_ref_valid_) {
+          this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
+        } else {
+          memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
+        }
+      } else if (this->speaker_ref_buffer_ != nullptr) {
+        // Ring buffer mode: read delayed reference
+        size_t min_ref_bytes = ctx.aec_delay_bytes + ctx.bus_frame_bytes;
+        size_t ref_available = this->speaker_ref_buffer_->available();
+        if (ref_available >= min_ref_bytes && ctx.ref_bus_buffer != nullptr) {
+          this->speaker_ref_buffer_->read((void *) ctx.ref_bus_buffer, ctx.bus_frame_bytes, 0);
+          this->play_ref_decimator_.process(ctx.ref_bus_buffer, ctx.spk_ref_buffer, ctx.bus_frame_size);
+        } else {
+          memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
+        }
       } else {
         memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
       }
@@ -1002,6 +1024,14 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
   } else {
     memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
   }
+
+  // Save post-volume TX data as direct AEC reference (used in next iteration)
+#ifdef USE_ESP_AEC
+  if (this->direct_aec_ref_ != nullptr) {
+    memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
+    this->direct_aec_ref_valid_ = ctx.speaker_running && !ctx.speaker_paused;
+  }
+#endif
 
   // Prepare TX: format expansion + TDM interleave
   const void *tx_data;

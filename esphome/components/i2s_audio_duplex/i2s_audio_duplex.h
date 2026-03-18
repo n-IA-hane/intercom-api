@@ -337,14 +337,16 @@ class I2SAudioDuplex : public Component {
   // AEC support
   AecProcessor *aec_{nullptr};
   std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
-  std::unique_ptr<RingBuffer> speaker_ref_buffer_;  // Reference for AEC (bus rate in mono mode)
+  std::unique_ptr<RingBuffer> speaker_ref_buffer_;  // Reference for AEC (bus rate, ring buffer mode)
+  int16_t *direct_aec_ref_{nullptr};                // Reference for AEC (bus rate, direct mode)
+  bool direct_aec_ref_valid_{false};                 // True after first TX frame has been saved
 
   // Volume control — atomic: written from main loop, read from audio task via snapshot.
   std::atomic<float> mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
   std::atomic<float> aec_ref_volume_{1.0f};   // AEC reference scaling (set to codec's output volume for proper echo matching)
-  uint32_t aec_ref_delay_ms_{80}; // AEC reference delay in ms (80 for separate I2S, 20-40 for ES8311)
+  uint32_t aec_ref_delay_ms_{0};  // 0 = direct ref from TX (no ring buffer), >0 = ring buffer with delay
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
 

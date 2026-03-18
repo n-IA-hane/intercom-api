@@ -184,8 +184,9 @@ CONFIG_SCHEMA = cv.All(
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
         cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
-        # AEC reference delay: 80ms for separate I2S, 20-40ms for integrated codecs like ES8311
-        cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
+        # AEC reference delay: 0 = direct reference from TX data (single-bus, no ring buffer).
+        # >0 = ring buffer with delay (for separate buses or when acoustic path needs compensation).
+        cv.Optional(CONF_AEC_REF_DELAY_MS, default=0): cv.int_range(min=0, max=200),
         # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
         cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=1.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
