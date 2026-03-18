@@ -4,10 +4,10 @@
   "codeowners": ["@n-IA-hane"],
   "config_flow": true,
   "dependencies": ["esphome", "http", "lovelace"],
-  "documentation": "https://github.com/n-IA-hane/intercom-api",
+  "documentation": "https://github.com/n-IA-hane/esphome-intercom",
   "integration_type": "service",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/n-IA-hane/intercom-api/issues",
+  "issue_tracker": "https://github.com/n-IA-hane/esphome-intercom/issues",
   "requirements": [],
   "version": "2.1.4"
 }

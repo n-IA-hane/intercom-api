@@ -53,7 +53,7 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/intercom-api
+      url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
     components: [intercom_api, esp_aec]
 

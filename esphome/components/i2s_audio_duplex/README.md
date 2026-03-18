@@ -104,7 +104,7 @@ graph TD
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/intercom-api
+      url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
     components: [i2s_audio_duplex, esp_aec]
 ```

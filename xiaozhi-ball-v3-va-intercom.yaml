@@ -53,7 +53,7 @@ substitutions:
   friendly_name: Xiaozhi Ball V3 LVGL
 
   # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/n-IA-hane/intercom-api/raw/main/"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
   # ---- Local mode (for development, clone repo first) ----
   # assets_base: ""
 
@@ -159,7 +159,7 @@ psram:
 # =============================================================================
 # Remote:
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
+  - source: github://n-IA-hane/esphome-intercom@main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================

@@ -147,7 +147,7 @@ graph TB
 #### Option A: Install via HACS (Recommended)
 
 1. In HACS, go to **⋮ → Custom repositories**
-2. Add `https://github.com/n-IA-hane/intercom-api` as **Integration**
+2. Add `https://github.com/n-IA-hane/esphome-intercom` as **Integration**
 3. Find "Intercom Native" and click **Download**
 4. Restart Home Assistant
 5. Go to **Settings → Integrations → Add Integration** → search "Intercom Native" → click **Submit**
@@ -179,7 +179,7 @@ Add the external component to your ESPHome device configuration:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/intercom-api
+  - source: github://n-IA-hane/esphome-intercom
     components: [intercom_api, esp_aec]
 ```
 
@@ -701,7 +701,7 @@ Many integrated codecs use a single I2S bus for both mic and speaker. Standard E
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/intercom-api
+  - source: github://n-IA-hane/esphome-intercom
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 i2s_audio_duplex:
