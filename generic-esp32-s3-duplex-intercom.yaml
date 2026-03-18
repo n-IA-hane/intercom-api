@@ -1,19 +1,30 @@
 # =============================================================================
-# GENERIC ESP32-S3 INTERCOM (DUPLEX) — Single I2S bus, no codec
+# GENERIC ESP32-S3 INTERCOM (DUPLEX) - Single I2S bus, no hardware codec
 # =============================================================================
-# Uses i2s_audio_duplex for mic + speaker on the SAME I2S bus (shared BCLK/LRCLK).
-# AEC reference is sample-aligned via ring buffer mode (same DMA frame).
-# No codec needed: works with MEMS mic (INMP441) + I2S amp (MAX98357A).
+# For ESP32 boards where mic and speaker share the SAME I2S bus (shared
+# BCLK/LRCLK), using discrete I2S components instead of an audio codec.
+#
+# Typical setup: I2S MEMS mic (INMP441, MSM261, SPH0645) + I2S class-D
+# amplifier (MAX98357A, NS4168) wired to the same BCLK and LRCLK lines,
+# with separate DIN (mic data) and DOUT (speaker data) pins.
+#
+# AEC reference is provided via ring buffer mode inside i2s_audio_duplex.
+# intercom_api acts as a lightweight TCP audio forwarder (no AEC, no audio
+# tasks of its own).
+#
+# If your board has a hardware codec (ES8311, ES8388, WM8960, etc.), this
+# file is NOT for you. See the i2s_audio_duplex README for codec-specific
+# configurations with stereo or TDM AEC reference modes.
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
 #   - Microphone: I2S MEMS (INMP441, MSM261, SPH0645) on DIN pin
-#   - Speaker: I2S amplifier (MAX98357A, NS4168) on DOUT pin
+#   - Speaker: I2S class-D amp (MAX98357A, NS4168) on DOUT pin
 #   - Mic and speaker SHARE BCLK + LRCLK (same I2S bus, full-duplex)
 #   - LED: SK6812/WS2812 RGB (optional)
 #
 # GPIO PINOUT (example, change to match your wiring):
-#   Shared I2S:  BCLK=GPIO5, LRCLK=GPIO6, DIN=GPIO35 (mic), DOUT=GPIO7 (speaker)
+#   Shared I2S:  BCLK=GPIO36, LRCLK=GPIO37, DIN=GPIO35 (mic), DOUT=GPIO7 (speaker)
 #   LED:         DATA=GPIO33
 #
 # =============================================================================
@@ -84,15 +95,19 @@ esp_aec:
 # I2S Audio Duplex — single bus, full-duplex (mic + speaker on same BCLK/LRCLK)
 # =============================================================================
 # MEMS mic on DIN, I2S amp on DOUT, shared clock pins.
-# AEC reference comes from the same DMA frame (ring buffer mode, sample-aligned).
+# Bus runs at 48kHz for optimal mic quality, FIR decimation to 16kHz for AEC/intercom.
 i2s_audio_duplex:
   id: i2s_duplex
-  i2s_lrclk_pin: GPIO6
-  i2s_bclk_pin: GPIO5
-  i2s_din_pin: GPIO35           # From MEMS mic (INMP441 etc.)
-  i2s_dout_pin: GPIO7           # To I2S amp (MAX98357A etc.)
-  sample_rate: 16000
+  i2s_lrclk_pin: GPIO37          # Left side pin "37" (WS) - shared with mic
+  i2s_bclk_pin: GPIO36           # Left side pin "36" (SCK) - shared with mic
+  i2s_din_pin: GPIO35            # Left side pin "35" (SD) - mic data
+  i2s_dout_pin: GPIO7            # Right side pin "07" - amp DIN
+  sample_rate: 48000             # Bus rate: 48kHz (MSM261 native, BCLK=3.072MHz)
+  output_sample_rate: 16000      # Mic/AEC output at 16kHz via FIR decimation
+  slot_bit_width: 32
+  correct_dc_offset: true        # MSM261 has no built-in HPF (unlike INMP441)
   aec_id: aec_processor
+  buffers_in_psram: true         # Required for sr_low_cost (512-sample frames)
 
 # =============================================================================
 # Microphone (via i2s_audio_duplex, post-AEC)
@@ -103,23 +118,70 @@ microphone:
     i2s_audio_duplex_id: i2s_duplex
 
 # =============================================================================
-# Speaker (via i2s_audio_duplex)
+# Speaker Pipeline: hw_speaker → mixer (48kHz) ← resampler ← sources
 # =============================================================================
 speaker:
+  # Hardware output: writes 48kHz PCM to I2S bus
   - platform: i2s_audio_duplex
-    id: spk_component
+    id: hw_speaker
     i2s_audio_duplex_id: i2s_duplex
-    sample_rate: 16000
+    sample_rate: 48000
+
+  # Mixer combines media and intercom at 48kHz
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    source_speakers:
+      - id: media_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: announcement_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: intercom_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+
+  # Resamplers: convert any input rate to 48kHz before the mixer
+  - platform: resampler
+    id: media_speaker
+    output_speaker: media_speaker_mix
+
+  - platform: resampler
+    id: announcement_speaker
+    output_speaker: announcement_speaker_mix
+
+  - platform: resampler
+    id: intercom_speaker
+    output_speaker: intercom_speaker_mix
 
 # =============================================================================
-# INTERCOM API — no aec_id (AEC handled by i2s_audio_duplex)
+# Media Player
+# =============================================================================
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    internal: false
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 48000
+      format: FLAC
+    announcement_pipeline:
+      speaker: announcement_speaker
+      sample_rate: 48000
+      format: FLAC
+
+# =============================================================================
+# INTERCOM API - no aec_id (AEC handled by i2s_audio_duplex)
 # =============================================================================
 intercom_api:
   id: intercom
   mode: full
   microphone: mic_component
-  speaker: spk_component
-  dc_offset_removal: true
+  speaker: intercom_speaker
+  dc_offset_removal: false
   ringing_timeout: 30s
 
   on_outgoing_call:
@@ -294,7 +356,6 @@ switch:
       icon: mdi:phone-in-talk
       restore_mode: RESTORE_DEFAULT_OFF
 
-  # AEC switch via i2s_audio_duplex (not intercom_api, avoids conflict)
   - platform: i2s_audio_duplex
     i2s_audio_duplex_id: i2s_duplex
     aec:
@@ -302,6 +363,7 @@ switch:
       name: Echo Cancellation
       icon: mdi:ear-hearing
       restore_mode: RESTORE_DEFAULT_ON
+
 
   - platform: template
     id: mute
@@ -323,10 +385,10 @@ switch:
     optimistic: true
     restore_mode: ALWAYS_OFF
     on_turn_on:
-      - speaker.mute_on: spk_component
+      - speaker.mute_on: hw_speaker
       - script.execute: restore_led
     on_turn_off:
-      - speaker.mute_off: spk_component
+      - speaker.mute_off: hw_speaker
       - script.execute: restore_led
 
 # =============================================================================
@@ -335,6 +397,8 @@ switch:
 number:
   - platform: i2s_audio_duplex
     i2s_audio_duplex_id: i2s_duplex
+    speaker_volume:
+      name: Speaker Volume
     mic_gain:
       name: Mic Gain
 

@@ -63,16 +63,6 @@ graph TD
     HA <--> Browser
 ```
 
-### Why This Project?
-
-I love Home Assistant and ESPHome. I believed in the project from the early days: well-structured, resilient, stable, and thoughtfully designed from the start. Over the years, for clients, friends, family, and myself, I've managed to automate all kinds of things, but I always struggled with one particular challenge: building a Home Assistant-centric intercom system.
-
-Years ago I had started writing a server that received audio from an ESP microphone, but I abandoned it due to lack of time. Now, with the help of advanced reasoning AI models, the development speed has been incredible. I started in late December 2025 with [esphome-intercom](https://github.com/n-IA-hane/esphome-intercom), which used ESP-to-ESP audio via UDP and go2rtc/WebRTC for the browser side. But several issues quickly emerged with that approach (NAT traversal, STUN/TURN configuration, WebRTC browser quirks), so I set off on a new adventure: creating an intercom standard for ESPHome.
-
-Along the way I discovered that ESPHome couldn't handle a codec and I2S components simultaneously on the same I2S bus, which led to the creation of `i2s_audio_duplex`. I keep having new ideas about use cases, and users have started showing interest in individual components and making feature requests. The situation got out of hand! So here we are:
-
----
-
 ## Features
 
 - **Full-duplex audio** - Talk and listen simultaneously
@@ -781,7 +771,7 @@ i2s_audio_duplex:
   tdm_ref_slot: 1             # ADC3(MIC3) = ES8311 DAC feedback
 ```
 
-> **Note**: ES7210 requires an `on_boot` lambda (priority 200) to enable TDM mode and set MIC3 gain to 0dB. See `waveshare-s3-audio-va-intercom.yaml` for the complete working config.
+> **Note**: ES7210 requires an `on_boot` lambda (priority 200) to enable TDM mode and set MIC3 gain to 30dB. See `waveshare-s3-audio-va-intercom.yaml` for the complete working config.
 
 ### Dual Mic Paths
 
