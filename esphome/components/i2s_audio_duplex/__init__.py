@@ -240,6 +240,14 @@ def _final_validate(config):
             f"task_core={task_core} not available on {variant} (single-core SoC)"
         )
 
+    # APLL is only available on ESP32, ESP32-S2, and ESP32-P4
+    APLL_VARIANTS = {VARIANT_ESP32, VARIANT_ESP32S2, VARIANT_ESP32P4}
+    if config.get(CONF_USE_APLL, False) and variant not in APLL_VARIANTS:
+        raise cv.Invalid(
+            f"use_apll is not supported on {variant}. "
+            f"APLL clock source is only available on ESP32, ESP32-S2, and ESP32-P4."
+        )
+
     # Cross-component validation: check for AEC conflict with intercom_api
     from esphome.core import CORE
     full_config = CORE.config or {}
