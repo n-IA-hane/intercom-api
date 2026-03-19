@@ -46,11 +46,16 @@ substitutions:
   name: waveshare-p4-touch
   friendly_name: Waveshare P4 Touch
 
+  # ---- Remote mode (for users, just download and flash) ----
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Local mode (for development, clone repo first) ----
+  # assets_base: ""
+
   # Display dimensions (portrait)
   display_width: "800"
   display_height: "1280"
 
-  # AI avatar folder (images/assistant/<ai_avatar>/)
+  # AI avatar folder (${assets_base}images/assistant/<ai_avatar>/)
   ai_avatar: troiaio
 
   # Wake word sensitivity (per-device tuning)
@@ -345,9 +350,9 @@ media_player:
       sample_rate: 48000
     files:
       - id: timer_finished_sound
-        file: sounds/timer_finished.flac
+        file: ${assets_base}sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: sounds/ringtone.flac
+        file: ${assets_base}sounds/ringtone.flac
     on_announcement:
       - if:
           condition:
@@ -873,144 +878,144 @@ font:
 # =============================================================================
 image:
   # VA state images
-  - file: images/assistant/${ai_avatar}/listening.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/listening.png
     id: img_listening
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/thinking.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/thinking.png
     id: img_thinking
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/error.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error.png
     id: img_error
     resize: 400x400
     type: RGB565
     byte_order: little_endian
   # Mood backgrounds for replying (set based on LLM emoticon prefix)
-  - file: images/assistant/${ai_avatar}/happy.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/happy.png
     id: mood_happy
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/neutral.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/neutral.png
     id: mood_neutral
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/angry.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/angry.png
     id: mood_angry
     resize: 400x400
     type: RGB565
     byte_order: little_endian
   # Overlay page images
-  - file: images/assistant/${ai_avatar}/error_no_wifi.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_wifi.png
     id: error_no_wifi
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/error_no_ha.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_ha.png
     id: error_no_ha
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_00.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_00.png
     id: idle_00
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_01.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_01.png
     id: idle_01
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_02.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_02.png
     id: idle_02
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_03.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_03.png
     id: idle_03
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_04.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_04.png
     id: idle_04
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_05.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_05.png
     id: idle_05
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_06.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_06.png
     id: idle_06
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_07.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_07.png
     id: idle_07
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_08.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_08.png
     id: idle_08
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_09.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_09.png
     id: idle_09
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_10.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_10.png
     id: idle_10
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_11.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_11.png
     id: idle_11
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_12.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_12.png
     id: idle_12
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_13.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_13.png
     id: idle_13
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_14.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_14.png
     id: idle_14
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_15.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_15.png
     id: idle_15
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_16.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_16.png
     id: idle_16
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_17.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_17.png
     id: idle_17
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_18.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_18.png
     id: idle_18
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_19.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_19.png
     id: idle_19
     resize: 400x400
     type: RGB565

@@ -42,6 +42,11 @@ substitutions:
   name: waveshare-s3-audio
   friendly_name: Waveshare S3 Audio
 
+  # ---- Remote mode (for users, just download and flash) ----
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Local mode (for development, clone repo first) ----
+  # assets_base: ""
+
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
   wake_word_sliding_window_size: "6"
@@ -284,9 +289,9 @@ media_player:
       format: FLAC
     files:
       - id: timer_finished_sound
-        file: sounds/timer_finished.flac
+        file: ${assets_base}sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: sounds/ringtone.flac
+        file: ${assets_base}sounds/ringtone.flac
     on_announcement:
       # Only show LED for announcements when intercom is idle
       # During intercom calls, keep current intercom LED state
