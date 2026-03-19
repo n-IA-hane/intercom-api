@@ -674,128 +674,68 @@ sequenceDiagram
 
 ## i2s_audio_duplex
 
-This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)**, a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with:
+Standard ESPHome `i2s_audio` **cannot drive mic and speaker on the same I2S bus simultaneously**. This is a problem for most audio codecs (ES8311, ES8388, WM8960) and single-bus setups with discrete MEMS mics and I2S amps. **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** solves this.
 
-- **True full-duplex** on a single I2S bus
-- **Built-in AEC integration**: stereo digital feedback, TDM hardware reference, or direct TX reference
-- **Single mic path for all**: with `sr_low_cost` AEC, MWW + VA + intercom all use the same post-AEC mic (linear AEC preserves spectral features)
-- **PSRAM buffer support**: `buffers_in_psram` option frees ~28KB internal heap (required for SR AEC mode)
-- **FIR decimation**: the bus runs at 48kHz (codec native) for full-quality speaker output; microphone audio is decimated to 16kHz only for components that require it (AEC, Voice Assistant STT, Intercom)
-- **Reference counting**: multiple consumers share the same mic safely
+### Why it matters
 
-### Audio Pipeline
+Without full-duplex I2S, you can't have Voice Assistant, Micro Wake Word, intercom, and media playback all running at the same time. With `i2s_audio_duplex`:
 
-The I2S bus runs at 48kHz for full-quality audio playback (TTS, media, intercom). Microphone output is decimated to 16kHz via FIR filter only because AEC, Voice Assistant STT, and Intercom are hardcoded to 16kHz:
+- **Intercom, VA, and MWW receive completely clean audio** - echo cancellation removes speaker output from the mic signal. You can listen to music, receive an intercom call, and talk to the voice assistant without any of them hearing each other's audio
+- **Wake word detection works during music/TTS playback** - barge-in support: say the wake word while music is playing, the system ducks the audio and starts listening
+- **Media plays at full quality** - the I2S bus runs at 48kHz (codec native rate). Only the mic output is decimated to 16kHz via FIR filter for AEC/VA/intercom
 
-| Parameter | Value |
-|-----------|-------|
-| I2S Bus Rate | Configurable (`sample_rate`, e.g. 48000 Hz) |
-| Output Rate | Configurable (`output_sample_rate`, e.g. 16000 Hz) |
-| Decimation | FIR filter, ratio = bus/output (e.g. ×3 for 48→16kHz) |
-| FIR Filter | 31-tap, Kaiser beta=8.0, ~60dB stopband, linear phase |
-| Speaker Input | Bus rate (48kHz), ESPHome resampler upsamples before play |
-| Mic Output | Output rate (16kHz), for MWW, Voice Assistant, Intercom |
+### Key features
 
-MWW, Voice Assistant STT, and Intercom operate at 16kHz internally. The I2S bus runs at 48kHz (the codec's native rate), so:
-- **TTS** via `announcement_pipeline` with `sample_rate: 48000` arrives at 48kHz from HA. Full 48kHz quality to the DAC.
-- **Streaming radio / Music Assistant** audio arrives at the sample rate declared by the media player -48kHz when configured as such.
-- **Media files** (timer sounds, notifications) at native 48kHz are played directly without resampling.
-- **Intercom audio** is sent/received at 16kHz over TCP and upsampled to 48kHz for local playback via the resampler speaker.
+- **True full-duplex** on a single I2S bus (or discrete MEMS mic + I2S amp on same bus with `slot_bit_width: 32`)
+- **Three AEC reference modes**, all zero-configuration:
+  - **Direct TX reference** (default) - uses previous TX frame, no delay tuning needed. Works with any hardware
+  - **ES8311 stereo digital feedback** - sample-accurate DAC loopback via I2S stereo frame
+  - **ES7210 TDM hardware reference** - DAC output captured by dedicated ADC channel
+- **48kHz FIR decimation** - bus runs at 48kHz, mic output decimated to 16kHz (31-tap Kaiser FIR, ~60dB stopband)
+- **Dual mic outputs** - post-AEC mic for VA/STT/intercom, raw (pre-AEC) mic available for any consumer that needs unprocessed audio
+- **Pre-AEC and post-AEC gain** - `mic_gain_pre_aec` for weak MEMS mics (SPH0645), `mic_gain` for post-AEC amplification. Both as HA number entities, persistent across reboots
+- **Runtime AEC mode switching** - change between sr_low_cost, sr_high_perf, voip_low_cost, voip_high_perf from HA without reflashing
+- **DC offset correction** - `correct_dc_offset: true` for MEMS mics without built-in HPF (MSM261, SPH0645)
+- **PSRAM buffer support** - `buffers_in_psram` frees ~28KB internal heap (required for SR AEC on memory-constrained devices)
+- **Audio mixer with ducking** - combine media, TTS, and intercom through a mixer. Music auto-ducks during calls and VA interactions
 
-### Single-Bus Codecs (ES8311, ES8388, WM8960)
-
-Many integrated codecs use a single I2S bus for both mic and speaker. Standard ESPHome `i2s_audio` **cannot handle this** simultaneously. Use `i2s_audio_duplex`:
+### Quick start
 
 ```yaml
 external_components:
   - source: github://n-IA-hane/esphome-intercom
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+    components: [i2s_audio_duplex, esp_aec]
+
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000
+  mode: sr_low_cost
 
 i2s_audio_duplex:
   id: i2s_duplex
-  i2s_lrclk_pin: GPIO45
-  i2s_bclk_pin: GPIO9
-  i2s_mclk_pin: GPIO16
-  i2s_din_pin: GPIO10
-  i2s_dout_pin: GPIO8
-  sample_rate: 48000           # I2S bus rate (codec native)
-  output_sample_rate: 16000    # Mic output rate for AEC/VA/Intercom (FIR decimation x3)
+  i2s_lrclk_pin: GPIO37
+  i2s_bclk_pin: GPIO36
+  i2s_din_pin: GPIO35          # mic data
+  i2s_dout_pin: GPIO7          # speaker data
+  sample_rate: 48000
+  output_sample_rate: 16000    # FIR decimation to 16kHz
+  slot_bit_width: 32           # required for MEMS mics without codec
+  correct_dc_offset: true
+  aec_id: aec_processor
 
 microphone:
   - platform: i2s_audio_duplex
-    id: mic_component
+    id: mic_aec
     i2s_audio_duplex_id: i2s_duplex
 
 speaker:
   - platform: i2s_audio_duplex
-    id: spk_component
+    id: hw_speaker
     i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 48000
 ```
 
-### ES8311 Stereo L/R Reference
-
-If your codec supports it (ES8311, and potentially others with DAC loopback), **stereo digital feedback is the optimal AEC reference method**. This is the single most impactful configuration choice.
-
-**How it works:**
-- ES8311 outputs a stereo I2S frame: **L channel = DAC loopback** (what the speaker is playing), **R channel = ADC** (microphone)
-- The reference signal is **sample-accurate**: same I2S frame as the mic capture, no timing estimation needed
-
-```yaml
-i2s_audio_duplex:
-  aec_id: aec_component
-  use_stereo_aec_reference: true   # Enable DAC feedback
-
-esphome:
-  on_boot:
-    - lambda: |-
-        // Configure ES8311 register 0x44: output DAC+ADC on stereo ASDOUT
-        uint8_t data[2] = {0x44, 0x48};
-        id(i2c_bus).write(0x18, data, 2);
-```
-
-**Without stereo or TDM feedback** (discrete MEMS mic + I2S amp), the component uses a **direct reference from the previous TX frame**. Since `i2s_audio_duplex` always operates on a single I2S bus, TX and RX share the same controller. The AEC adaptive filter compensates for the ~1 chunk latency automatically. No ring buffer, no delay tuning needed.
-
-### TDM Hardware Reference (ES7210 + ES8311)
-
-For boards with a multi-channel ADC (ES7210), the AEC reference can be captured as a hardware analog signal: the ES8311 DAC output is wired to an ES7210 input (MIC3), providing a sample-aligned reference from the same TDM I2S frame:
-
-```yaml
-i2s_audio_duplex:
-  id: i2s_duplex
-  i2s_lrclk_pin: GPIO14
-  i2s_bclk_pin: GPIO13
-  i2s_mclk_pin: GPIO12
-  i2s_din_pin: GPIO15
-  i2s_dout_pin: GPIO16
-  sample_rate: 48000
-  output_sample_rate: 16000
-  aec_id: aec_processor
-  use_tdm_reference: true
-  tdm_total_slots: 4
-  tdm_mic_slots: [0, 2]       # ADC1(MIC1), ADC2(MIC2)
-  tdm_ref_slot: 1             # ADC3(MIC3) = ES8311 DAC feedback
-```
-
-> **Note**: ES7210 requires an `on_boot` lambda (priority 200) to enable TDM mode and set MIC3 gain to 30dB. See `waveshare-s3-audio-va-intercom.yaml` for the complete working config.
-
-### Dual Mic Paths
-
-`i2s_audio_duplex` provides two microphone outputs, raw (pre-AEC) and AEC-processed, enabling wake word detection during TTS playback:
-
-```yaml
-microphone:
-  - platform: i2s_audio_duplex
-    id: mic_aec                    # AEC-processed: for VA STT + intercom TX
-    i2s_audio_duplex_id: i2s_duplex
-
-micro_wake_word:
-  microphone: mic_aec              # Post-AEC: SR linear AEC preserves spectral features
-
-voice_assistant:
-  microphone: mic_aec              # Post-AEC: clean STT without speaker echo
-```
-
-See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md) for full details.
+For codec-specific configurations (ES8311 stereo feedback, ES7210 TDM, register setup), see the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md).
 
 ---
 
@@ -973,105 +913,15 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 
 ## Home Assistant Automation
 
-When an ESP device calls "Home Assistant", it fires an `esphome.intercom_call` event. Use this automation to receive push notifications:
+When an ESP device calls "Home Assistant", it fires an `esphome.intercom_call` event. Use this to trigger push notifications, flash lights, play chimes, or any other automation.
 
-```yaml
-alias: Doorbell Notification
-description: Send push notification when doorbell rings - tap to open intercom
-triggers:
-  - trigger: event
-    event_type: esphome.intercom_call
-conditions: []
-actions:
-  - action: notify.mobile_app_your_phone
-    data:
-      title: "🔔 Incoming Call"
-      message: "📞 {{ trigger.event.data.caller }} is calling..."
-      data:
-        clickAction: /lovelace/intercom
-        channel: doorbell
-        importance: high
-        ttl: 0
-        priority: high
-        actions:
-          - action: URI
-            title: "📱 Open"
-            uri: /lovelace/intercom
-          - action: ANSWER
-            title: "✅ Answer"
-  - action: persistent_notification.create
-    data:
-      title: "🔔 Incoming Call"
-      message: "📞 {{ trigger.event.data.caller }} is calling..."
-      notification_id: intercom_call
-mode: single
-```
-
-**Event data available:**
-- `trigger.event.data.caller` - Device name (e.g., "Intercom Xiaozhi")
-- `trigger.event.data.destination` - Always "Home Assistant"
-- `trigger.event.data.type` - "doorbell"
-
-> **Note**: Replace `notify.mobile_app_your_phone` with your mobile app service and `/lovelace/intercom` with your dashboard URL.
-
-> **💡 The possibilities are endless!** This event can trigger any Home Assistant automation. Some ideas: flash smart lights to get attention, play a chime on media players, announce "Someone is at the door" via TTS on your smart speakers, auto-unlock for trusted callers, trigger a camera snapshot, or notify all family members simultaneously.
+See [examples/doorbell-automation.yaml](examples/doorbell-automation.yaml) for a ready-to-use doorbell notification with mobile push and action buttons.
 
 ---
 
 ## Example Dashboard
 
-Each device section includes the intercom card plus all available controls: volume, mic gain, AEC on/off, AEC mode select (SR/VOIP runtime switching), auto answer, wake word selection, wake word on/off, mic mute, and speaker mute.
-
-```yaml
-title: Intercom
-views:
-  - title: Intercom
-    icon: mdi:phone-voip
-    cards: []
-    type: sections
-    max_columns: 2
-    sections:
-      # --- VA + Intercom device (i2s_audio_duplex with AEC mode select) ---
-      - type: grid
-        cards:
-          - type: custom:intercom-card
-            entity_id: <your_device_id>
-            name: My Device
-            mode: full
-          - type: entities
-            entities:
-              - entity: number.<your_device>_speaker_volume
-                name: Volume
-              - entity: number.<your_device>_mic_gain
-                name: Mic gain
-              - entity: switch.<your_device>_echo_cancellation
-              - entity: select.<your_device>_aec_mode
-              - entity: switch.<your_device>_auto_answer
-              - entity: button.<your_device>_restart
-              - entity: sensor.<your_device>_contacts
-              - entity: select.<your_device>_wake_word
-              - entity: switch.<your_device>_wake_word
-              - entity: switch.<your_device>_mic_mute
-              - entity: switch.<your_device>_speaker_mute
-      # --- Intercom-only device (no VA, no wake word, no AEC mode select) ---
-      - type: grid
-        cards:
-          - type: custom:intercom-card
-            entity_id: <your_device_id>
-            name: My Intercom
-            mode: full
-          - type: entities
-            entities:
-              - entity: number.<your_device>_speaker_volume
-                name: Volume
-              - entity: number.<your_device>_mic_gain
-                name: Mic gain
-              - entity: switch.<your_device>_echo_cancellation
-              - entity: switch.<your_device>_auto_answer
-              - entity: button.<your_device>_restart
-              - entity: switch.<your_device>_mic_mute
-              - entity: switch.<your_device>_speaker_mute
-```
+See [examples/dashboard.yaml](examples/dashboard.yaml) for a complete Lovelace dashboard with intercom card, volume controls, AEC mode select, auto answer, wake word, and mute switches.
 
 ---
 
