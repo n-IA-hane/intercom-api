@@ -62,6 +62,7 @@ IntercomIsCallingCondition = intercom_api_ns.class_("IntercomIsCallingCondition"
 IntercomIsIncomingCondition = intercom_api_ns.class_("IntercomIsIncomingCondition", automation.Condition)
 IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondition", automation.Condition)
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
+IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
 
 def _aec_schema(value):
     """Validate aec_id - import esp_aec only if used."""
@@ -495,4 +496,25 @@ async def intercom_is_in_call_to_code(config, condition_id, template_arg, args):
     var = cg.new_Pvariable(condition_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
     cg.add(var.set_parent(parent))
+    return var
+
+
+CONF_DESTINATION = "destination"
+
+@automation.register_condition(
+    "intercom_api.destination_is",
+    IntercomDestinationIsCondition,
+    automation.maybe_simple_id(
+        {
+            cv.GenerateID(): cv.use_id(IntercomApi),
+            cv.Required(CONF_DESTINATION): cv.templatable(cv.string),
+        }
+    ),
+)
+async def intercom_destination_is_to_code(config, condition_id, template_arg, args):
+    var = cg.new_Pvariable(condition_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
+    templ = await cg.templatable(config[CONF_DESTINATION], args, cg.std_string)
+    cg.add(var.set_destination(templ))
     return var

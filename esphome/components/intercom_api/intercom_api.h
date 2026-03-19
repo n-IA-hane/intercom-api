@@ -604,6 +604,15 @@ class IntercomIsInCallCondition : public Condition<Ts...>, public Parented<Inter
   }
 };
 
+template<typename... Ts>
+class IntercomDestinationIsCondition : public Condition<Ts...>, public Parented<IntercomApi> {
+ public:
+  TEMPLATABLE_VALUE(std::string, destination)
+  bool check(const Ts &...x) override {
+    return this->parent_->get_current_destination() == this->destination_.value(x...);
+  }
+};
+
 }  // namespace intercom_api
 }  // namespace esphome
 

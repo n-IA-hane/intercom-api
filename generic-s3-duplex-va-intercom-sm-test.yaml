@@ -394,7 +394,9 @@ intercom_api:
     - script.execute: update_status
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call
