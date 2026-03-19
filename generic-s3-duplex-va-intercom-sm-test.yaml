@@ -562,13 +562,11 @@ script:
       # === Ducking: duck media 20dB when VA or IC active ===
       - if:
           condition:
-            and:
-              - media_player.is_playing:
-              - or:
-                  - voice_assistant.is_running:
-                  - lambda: 'return id(g_mww_recent) != 0 || id(g_barge_in_pending) != 0;'
-                  - not:
-                      intercom_api.is_idle: intercom
+            or:
+              - voice_assistant.is_running:
+              - lambda: 'return id(g_va_state) != 0;'
+              - not:
+                  intercom_api.is_idle: intercom
           then:
             # Should duck, apply only if not already ducked
             - if:
@@ -621,7 +619,13 @@ script:
                   not:
                     voice_assistant.is_running:
                 timeout: 2s
+            - logger.log:
+                level: INFO
+                format: "Barge-in: restarting VA"
             - voice_assistant.start:
+            - logger.log:
+                level: INFO
+                format: "Barge-in: VA start issued"
           else:
             # Normal end: wait for TTS to start (up to 0.5s), then finish.
             # on_end can fire before media_player starts TTS playback.
