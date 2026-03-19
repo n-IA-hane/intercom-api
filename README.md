@@ -648,12 +648,17 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | YAML | Microphone | Speaker | I2S Mode | AEC | VA/MWW |
-|--------|------|------------|---------|----------|-----|--------|
-| **Generic ESP32-S3** | `generic-esp32-s3-intercom.yaml` | Any MEMS | Any I2S amp | Dual bus | VOIP (intercom_api) | Intercom only |
+| Device | YAML | Microphone | Speaker | I2S Mode | AEC | Features |
+|--------|------|------------|---------|----------|-----|----------|
+| **Generic S3 (dual bus)** | `generic-s3-dual-intercom.yaml` | Any I2S MEMS | Any I2S amp | Dual bus | Ring buffer (intercom_api) | Intercom only |
+| **Generic S3 (single bus)** | `generic-s3-duplex-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom only |
+| **Generic S3 (single bus, VA)** | `generic-s3-duplex-va-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom + Media Player + mixer |
 | **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
-| **Waveshare S3-AUDIO** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
-| **Waveshare P4-Touch-LCD** | `waveshare-p4-touch-lcd-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
+| **Xiaozhi Ball V3 (intercom)** | `xiaozhi-ball-v3-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | Intercom only |
+| **Waveshare S3-Audio** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
+| **Waveshare P4-Touch** | `waveshare-p4-touch-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
+| **ESP32-S3 Mini** | `esp32-s3-mini-va-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | VA + MWW + Intercom |
+| **ESP32-S3 Mini (intercom)** | `esp32-s3-mini-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | Intercom only |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -672,7 +677,7 @@ sequenceDiagram
 This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)**, a full-duplex I2S component for single-bus audio codecs (ES8311, ES8388, WM8960) and multi-codec TDM setups (ES8311 + ES7210). Standard ESPHome `i2s_audio` cannot drive mic and speaker on the same I2S bus simultaneously; `i2s_audio_duplex` solves this with:
 
 - **True full-duplex** on a single I2S bus
-- **Built-in AEC integration**: stereo digital feedback, TDM hardware reference, or ring buffer
+- **Built-in AEC integration**: stereo digital feedback, TDM hardware reference, or direct TX reference
 - **Single mic path for all**: with `sr_low_cost` AEC, MWW + VA + intercom all use the same post-AEC mic (linear AEC preserves spectral features)
 - **PSRAM buffer support**: `buffers_in_psram` option frees ~28KB internal heap (required for SR AEC mode)
 - **FIR decimation**: the bus runs at 48kHz (codec native) for full-quality speaker output; microphone audio is decimated to 16kHz only for components that require it (AEC, Voice Assistant STT, Intercom)
@@ -734,13 +739,11 @@ If your codec supports it (ES8311, and potentially others with DAC loopback), **
 **How it works:**
 - ES8311 outputs a stereo I2S frame: **L channel = DAC loopback** (what the speaker is playing), **R channel = ADC** (microphone)
 - The reference signal is **sample-accurate**: same I2S frame as the mic capture, no timing estimation needed
-- `aec_reference_delay_ms: 10` (just a few ms for internal codec latency, vs ~80ms for ring buffer mode)
 
 ```yaml
 i2s_audio_duplex:
   aec_id: aec_component
   use_stereo_aec_reference: true   # Enable DAC feedback
-  aec_reference_delay_ms: 10       # Sample-aligned, minimal delay
 
 esphome:
   on_boot:
@@ -750,7 +753,7 @@ esphome:
         id(i2c_bus).write(0x18, data, 2);
 ```
 
-Without stereo feedback, the component falls back to a **ring buffer reference**: it copies speaker audio to a delay buffer and reads it back ~80ms later to match the acoustic path. This works with any codec but requires careful delay tuning and is never perfectly aligned.
+**Without stereo or TDM feedback** (discrete MEMS mic + I2S amp), the component uses a **direct reference from the previous TX frame**. Since `i2s_audio_duplex` always operates on a single I2S bus, TX and RX share the same controller. The AEC adaptive filter compensates for the ~1 chunk latency automatically. No ring buffer, no delay tuning needed.
 
 ### TDM Hardware Reference (ES7210 + ES8311)
 
@@ -886,7 +889,7 @@ micro_wake_word:
 
 ### LVGL Display
 
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-va-intercom.yaml` and `waveshare-p4-touch-lcd-va-intercom.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-va-intercom.yaml` and `waveshare-p4-touch-va-intercom.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -1081,7 +1084,7 @@ Working configs tested on real hardware are included in the repository:
 | [`xiaozhi-ball-v3-va-intercom.yaml`](xiaozhi-ball-v3-va-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
 | [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
 | [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
-| [`waveshare-p4-touch-lcd-va-intercom.yaml`](waveshare-p4-touch-lcd-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
+| [`waveshare-p4-touch-va-intercom.yaml`](waveshare-p4-touch-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
 | [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
 | [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
 

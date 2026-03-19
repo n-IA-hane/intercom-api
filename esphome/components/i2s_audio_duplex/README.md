@@ -19,12 +19,13 @@ With i2s_audio_duplex:
 - **True Full-Duplex**: Simultaneous mic input and speaker output on one I2S bus
 - **Standard Platforms**: Exposes `microphone` and `speaker` platform classes (compatible with Voice Assistant, MWW, intercom_api)
 - **AEC Integration**: Built-in echo cancellation via `esp_aec` component, three reference modes:
-  - **Ring buffer** (default): Works with any codec. Speaker audio is copied to a delay buffer as reference. Configure `aec_reference_delay_ms` to match your acoustic path (typically 60-100ms). `aec_reference_volume` scales the reference to match hardware DAC volume.
-  - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference, no delay tuning needed. Enable with `use_stereo_aec_reference: true`. The digital loopback is post-DSP-volume — no `aec_reference_volume` scaling needed.
-  - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data, no ring buffer delay. Enable with `use_tdm_reference: true`. The analog reference already reflects hardware volume — no scaling needed.
+  - **Direct TX reference** (default): Uses the previous TX frame as AEC reference. No ring buffer, no delay tuning. Works with any setup (discrete MEMS mic + amp, or codec). The AEC adaptive filter compensates for the ~1 chunk latency automatically.
+  - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference. Enable with `use_stereo_aec_reference: true`.
+  - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data. Enable with `use_tdm_reference: true`.
 - **Dual Mic Path**: `pre_aec` option for raw mic (diagnostics) alongside AEC-processed mic (VA/STT/MWW)
 - **PSRAM Buffers**: `buffers_in_psram` option moves all audio buffers to PSRAM (~28KB internal heap saved). ESP-IDF new I2S driver uses memcpy for user buffers (not DMA), so PSRAM is safe. Required for `sr_low_cost` AEC on memory-constrained devices.
-- **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic attenuation (pre-AEC), speaker volume, AEC reference volume
+- **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic gain pre-AEC (for weak MEMS mics), speaker volume (persistent)
+- **Codec-less Support**: `slot_bit_width: 32` for MEMS mics (INMP441, MSM261, SPH0645) + I2S amp on same bus. `correct_dc_offset: true` for mics without built-in HPF
 - **Number Platform**: Native `mic_gain` and `speaker_volume` entities with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, `i2s_audio_duplex` owns the number entities and `intercom_api` defers to avoid conflicts.
 - **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` prevents dual AEC (both `i2s_audio_duplex` and `intercom_api` with `aec_id`) and dual DC offset removal, catching configuration errors at compile time
 - **AEC Gating**: Auto-disables AEC when speaker is silent in mono/stereo modes (prevents filter drift). TDM mode is always-on (hardware ref captures silence naturally).
@@ -39,7 +40,7 @@ With i2s_audio_duplex:
 graph TD
     RX[I2S RX] --> Stereo["Stereo mode (ES8311)<br/>split L=ref, R=mic"]
     RX --> TDM["TDM mode (ES7210)<br/>deinterleave mic_slot, ref_slot"]
-    RX --> Mono["Mono mode<br/>mic only, ref from ring buffer"]
+    RX --> Mono["Mono mode<br/>mic only, ref from prev TX"]
 
     Stereo --> mic_path[mic]
     Stereo --> ref_path[ref]
@@ -65,7 +66,7 @@ graph TD
     Mixer["mixer<br/>(VA TTS + Intercom RX)"] --> SPK[Speaker buffer]
     SPK --> VOL[volume scaling]
     VOL --> TX[I2S TX]
-    VOL --> RingBuf["ref ring buffer<br/>(mono mode only)"]
+    VOL --> DirectRef["direct ref buffer<br/>(mono mode only)"]
     RingBuf -.-> reference
 ```
 
@@ -147,8 +148,9 @@ speaker:
 | `sample_rate` | int | 16000 | I2S bus sample rate (8000-48000) |
 | `output_sample_rate` | int | - | Mic/AEC output rate. If set, enables FIR decimation (must divide `sample_rate` evenly, max ratio 6) |
 | `aec_id` | ID | - | Reference to `esp_aec` component for echo cancellation |
-| `aec_reference_delay_ms` | int | 80 | AEC reference delay in ms for ring buffer mode (typically 60-100ms). Ignored when `use_stereo_aec_reference` is enabled. |
-| `mic_attenuation` | float | 1.0 | Pre-AEC mic attenuation (0.01-1.0, for hot mics like ES8311) |
+| `mic_attenuation` | float | 1.0 | Pre-AEC mic gain/attenuation (0.01-32.0). <1.0 attenuates hot mics, >1.0 amplifies weak mics. Use `mic_gain_pre_aec` number platform for runtime control. |
+| `slot_bit_width` | int | auto | I2S slot width in bits (16 or 32). Set to 32 for MEMS mics without codec (INMP441, MSM261, SPH0645). |
+| `correct_dc_offset` | bool | false | Enable DC offset removal. Required for MEMS mics without built-in HPF (MSM261, SPH0645). |
 | `use_stereo_aec_reference` | bool | false | ES8311 digital feedback mode (see below) |
 | `reference_channel` | string | left | Which stereo channel carries AEC reference: `left` or `right` |
 | `use_tdm_reference` | bool | false | TDM hardware reference mode (ES7210, see below) |
@@ -230,7 +232,7 @@ i2s_audio_duplex:
 - ES8311 register 0x44 is configured to output DAC+ADC on ASDOUT as stereo
 - L channel = DAC loopback (reference signal), R channel = ADC (microphone) — configurable via `reference_channel`
 - Reference is **sample-accurate** (same I2S frame as mic) → best possible AEC
-- `aec_reference_delay_ms` is **ignored** in this mode — the reference comes directly from the I2S RX deinterleave, not from the ring buffer
+- The reference comes directly from the I2S RX deinterleave, sample-accurate
 
 ### TDM Hardware Reference (ES7210 + ES8311)
 
@@ -252,7 +254,7 @@ i2s_audio_duplex:
 - MIC1 (slot 0) captures voice, MIC3 (slot 1) captures the ES8311 analog output
 - I2S is configured as `I2S_SLOT_MODE_STEREO` with TDM slot mask so all slots appear in DMA
 - The audio task deinterleaves mic and ref from the TDM frame — they are inherently sample-aligned
-- No ring buffer delay, no speaker gating — the hardware ref is naturally silent when speaker is silent
+- The hardware ref is naturally silent when speaker is silent
 - The analog reference already reflects DAC hardware volume — no `aec_reference_volume` scaling needed
 
 **ES7210 TDM register configuration** (required in `on_boot` lambda):
@@ -386,7 +388,7 @@ esphome:
         id(i2c_bus).write(0x18, data, 2);
 ```
 
-> **Note**: Without `use_stereo_aec_reference`, the component uses a ring buffer with configurable delay (`aec_reference_delay_ms`, default 80ms) for the AEC reference signal. The stereo mode eliminates timing issues and is strongly recommended for ES8311.
+> **Note**: Without `use_stereo_aec_reference`, the component uses a direct reference from the previous TX frame. Stereo mode is sample-accurate and recommended for ES8311.
 
 ## Pin Mapping by Codec
 
@@ -445,7 +447,7 @@ i2s_audio_duplex:
 | Scenario | Use This Component | Use Standard i2s_audio |
 |----------|-------------------|----------------------|
 | ES8311/ES8388/WM8960 codec | Yes | No (won't work properly) |
-| INMP441 + MAX98357A on same bus | Yes (mono ring buffer mode) | No |
+| INMP441 + MAX98357A on same bus | Yes (direct TX reference, `slot_bit_width: 32`) | No |
 | INMP441 + MAX98357A on separate buses | Either works | Yes |
 | PDM microphone + I2S speaker | No | Yes (different protocols) |
 | Need true full-duplex on single bus | Yes | Limited |
@@ -615,7 +617,7 @@ With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Cor
 - **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless** — these components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
 - **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker has been silent for >250ms) is the workaround.
 - **TDM analog reference vs ES8311 digital feedback**: The digital feedback path (ES8311 stereo loopback) provides a cleaner reference signal for AEC than the TDM analog path (ES7210 MIC3 capturing speaker output). Analog loopback introduces non-linear distortion from the DAC/amplifier chain that the AEC linear adaptive filter cannot fully model. Expect ~95-98% echo cancellation with analog reference vs ~99% with digital feedback. Both are adequate for voice assistant and intercom use.
-- **AEC reference volume**: `aec_reference_volume` should ONLY be used with ring buffer mode (mono, no stereo/TDM). Both ES8311 digital feedback and TDM analog reference already include the hardware volume in the reference signal — applying additional scaling would double-attenuate and degrade AEC performance.
+- **AEC reference volume**: `aec_reference_volume` should ONLY be used with direct TX reference mode (mono, no stereo/TDM). Both ES8311 digital feedback and TDM analog reference already include the hardware volume in the reference signal.
 
 ## License
 
