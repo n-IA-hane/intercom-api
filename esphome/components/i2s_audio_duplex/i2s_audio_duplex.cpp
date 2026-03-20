@@ -16,8 +16,6 @@
 namespace esphome {
 namespace i2s_audio_duplex {
 
-static constexpr size_t BYTES_PER_SAMPLE = 2;
-
 static const char *const TAG = "i2s_duplex";
 
 // Helper: get MCLK multiple enum from integer value
@@ -339,7 +337,7 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
         },
     };
     tx_cfg.slot_cfg.slot_mask = (this->num_channels_ == 2)
-        ? I2S_STD_SLOT_BOTH : I2S_STD_SLOT_LEFT;
+        ? I2S_STD_SLOT_BOTH : (this->tx_slot_right_ ? I2S_STD_SLOT_RIGHT : I2S_STD_SLOT_LEFT);
     // Apply slot_bit_width override
     if (slot_bw != I2S_SLOT_BIT_WIDTH_AUTO) {
       tx_cfg.slot_cfg.slot_bit_width = slot_bw;
@@ -416,10 +414,6 @@ void I2SAudioDuplex::deinit_i2s_() {
   ESP_LOGD(TAG, "I2S deinitialized");
 }
 
-void I2SAudioDuplex::prefill_aec_ref_buffer_() {
-  // No-op: ring buffer removed. Direct AEC reference needs no pre-fill.
-}
-
 void I2SAudioDuplex::start() {
   if (this->duplex_running_.load(std::memory_order_relaxed)) {
     ESP_LOGW(TAG, "Already running");
@@ -445,7 +439,6 @@ void I2SAudioDuplex::start() {
   this->ref_decimator_.reset();
   this->play_ref_decimator_.reset();
 
-  this->prefill_aec_ref_buffer_();
 #ifdef USE_ESP_AEC
   if (this->use_stereo_aec_ref_) {
     ESP_LOGD(TAG, "ES8311 digital feedback - reference is sample-aligned");
@@ -505,9 +498,14 @@ void I2SAudioDuplex::stop() {
 
   if (this->audio_task_handle_) {
     int wait_count = 0;
-    while (!this->task_exited_.load(std::memory_order_relaxed) && wait_count < 50) {
+    while (!this->task_exited_.load(std::memory_order_relaxed) && wait_count < 100) {
       delay(10);
       wait_count++;
+    }
+    if (!this->task_exited_.load(std::memory_order_relaxed)) {
+      ESP_LOGE(TAG, "Audio task did not exit within 1s, skipping channel deletion");
+      this->audio_task_handle_ = nullptr;
+      return;
     }
     this->audio_task_handle_ = nullptr;
   }
@@ -545,10 +543,6 @@ void I2SAudioDuplex::start_speaker() {
   this->speaker_running_.store(true, std::memory_order_relaxed);
 
   this->play_ref_decimator_.reset();
-
-  // Request audio task to reset speaker buffer and prefill AEC reference.
-  // Avoids concurrent ring buffer access (main thread vs audio task).
-  this->request_ref_prefill_.store(true, std::memory_order_relaxed);
 }
 
 void I2SAudioDuplex::stop_speaker() {
@@ -612,8 +606,6 @@ void I2SAudioDuplex::audio_task_() {
   ctx.bus_frame_size = ctx.out_frame_size * ctx.ratio;
   ctx.out_frame_bytes = ctx.out_frame_size * sizeof(int16_t);
   ctx.bus_frame_bytes = ctx.bus_frame_size * sizeof(int16_t);
-  ctx.aec_delay_bytes = 0;  // Direct AEC reference, no delay
-
   if (ctx.use_tdm_ref) {
     ctx.rx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
   } else if (ctx.use_stereo_aec_ref) {
@@ -671,9 +663,6 @@ void I2SAudioDuplex::audio_task_() {
           heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
     ctx.aec_output = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
-    if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
-      ctx.ref_bus_buffer = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-    }
   }
 #endif
 
@@ -701,9 +690,6 @@ void I2SAudioDuplex::audio_task_() {
     if ((ctx.use_stereo_aec_ref || ctx.use_tdm_ref) && !ctx.spk_ref_buffer) {
       alloc_fail("AEC reference buffer"); goto cleanup;
     }
-    if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref && !ctx.ref_bus_buffer) {
-      alloc_fail("AEC mono reference buffer"); goto cleanup;
-    }
   }
 #endif
 
@@ -715,11 +701,6 @@ void I2SAudioDuplex::audio_task_() {
       this->speaker_buffer_->reset();
       this->direct_aec_ref_valid_ = false;
     }
-    if (this->request_ref_prefill_.exchange(false, std::memory_order_relaxed)) {
-      this->speaker_buffer_->reset();
-      this->prefill_aec_ref_buffer_();
-    }
-
     // Reset per-frame state
     ctx.output_buffer = nullptr;
 
@@ -764,7 +745,6 @@ cleanup:
   if (ctx.tdm_deint_mic) heap_caps_free(ctx.tdm_deint_mic);
   if (ctx.tdm_deint_ref) heap_caps_free(ctx.tdm_deint_ref);
   if (ctx.tdm_tx_buffer) heap_caps_free(ctx.tdm_tx_buffer);
-  if (ctx.ref_bus_buffer) heap_caps_free(ctx.ref_bus_buffer);
   if (ctx.aec_output) heap_caps_free(ctx.aec_output);
   ESP_LOGI(TAG, "Audio task stopped");
 }

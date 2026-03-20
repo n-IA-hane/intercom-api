@@ -1,8 +1,6 @@
 /**
  * Intercom AudioWorklet Processor
  * Based on Home Assistant's recorder-worklet.js
- * VERSION: 2.3.0 - Proper resampling for any input sample rate (44.1kHz, 48kHz, etc)
- *
  * This processor runs in a separate audio thread and converts
  * Float32 audio samples to Int16 PCM format at 16kHz.
  */

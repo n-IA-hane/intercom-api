@@ -130,6 +130,7 @@ class I2SAudioDuplex : public Component {
   void set_mclk_multiple(uint32_t mult) { this->mclk_multiple_ = mult; }
   void set_i2s_comm_fmt(uint8_t fmt) { this->i2s_comm_fmt_ = fmt; }
   void set_mic_channel_right(bool right) { this->mic_channel_right_ = right; }
+  void set_tx_slot_right(bool right) { this->tx_slot_right_ = right; }
   void set_slot_bit_width(uint8_t sbw) { this->slot_bit_width_ = sbw; }
 
   // AEC setter
@@ -211,7 +212,6 @@ class I2SAudioDuplex : public Component {
  protected:
   bool init_i2s_duplex_();
   void deinit_i2s_();
-  void prefill_aec_ref_buffer_();
 
   static void audio_task(void *param);
   void audio_task_();
@@ -238,7 +238,6 @@ class I2SAudioDuplex : public Component {
     size_t bus_frame_bytes{0};
     size_t rx_frame_bytes{0};
     size_t tdm_tx_frame_bytes{0};
-    size_t aec_delay_bytes{0};
 
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
     int16_t *rx_buffer{nullptr};
@@ -250,7 +249,6 @@ class I2SAudioDuplex : public Component {
     int16_t *tdm_deint_mic{nullptr};
     int16_t *tdm_deint_ref{nullptr};
     int16_t *tdm_tx_buffer{nullptr};
-    int16_t *ref_bus_buffer{nullptr};
     int16_t *aec_output{nullptr};
 
     // ── Loop mutable state ──
@@ -294,6 +292,7 @@ class I2SAudioDuplex : public Component {
   uint32_t mclk_multiple_{256};        // MCLK multiple: 128, 256, 384, or 512
   uint8_t i2s_comm_fmt_{0};            // 0=philips, 1=msb, 2=pcm_short, 3=pcm_long
   bool mic_channel_right_{false};      // RX mono slot: false=LEFT, true=RIGHT
+  bool tx_slot_right_{false};          // TX mono slot: false=LEFT (default), true=RIGHT
   uint8_t slot_bit_width_{0};          // 0 = auto (match bits_per_sample), or 16/24/32
   uint32_t output_sample_rate_{0};     // 0 = use sample_rate_ (no decimation)
   uint32_t decimation_ratio_{1};       // sample_rate_ / output_sample_rate_ (computed in setup)
@@ -315,9 +314,8 @@ class I2SAudioDuplex : public Component {
   std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
   TaskHandle_t audio_task_handle_{nullptr};
 
-  // Cross-thread buffer operation requests (main thread → audio task, avoids concurrent ring buffer access)
+  // Cross-thread buffer operation request (main thread -> audio task, avoids concurrent ring buffer access)
   std::atomic<bool> request_speaker_reset_{false};
-  std::atomic<bool> request_ref_prefill_{false};
 
   // Mic data callbacks
   std::vector<MicDataCallback> mic_callbacks_;       // Post-AEC (for VA/STT)

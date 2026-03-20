@@ -58,7 +58,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2026.2.0
   platformio_options:
     board_build.flash_mode: dio
   on_boot:
@@ -248,32 +247,29 @@ speaker:
     task_stack_in_psram: true
     source_speakers:
       - id: media_speaker_mix       # Music/radio streams (duckable)
-        timeout: 2s
+        timeout: 10s
         buffer_duration: 100ms
       - id: tts_speaker_mix         # VA TTS announcements (never ducked)
-        timeout: 1s
+        timeout: 10s
         buffer_duration: 100ms
       - id: intercom_speaker_mix    # Intercom audio
-        timeout: 500ms
-        buffer_duration: 80ms
+        timeout: 10s
+        buffer_duration: 100ms
 
   # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
   - platform: resampler
     id: media_speaker              # Music/radio → 48kHz
     output_speaker: media_speaker_mix
-    buffer_duration: 250ms
     task_stack_in_psram: true
 
   - platform: resampler
     id: tts_speaker                # VA TTS → 48kHz
     output_speaker: tts_speaker_mix
-    buffer_duration: 120ms
     task_stack_in_psram: true
 
   - platform: resampler
     id: intercom_speaker           # Intercom RX (16kHz) → 48kHz
     output_speaker: intercom_speaker_mix
-    buffer_duration: 80ms          # Low latency for real-time voice
     task_stack_in_psram: true
 
 # =============================================================================
@@ -422,8 +418,12 @@ voice_assistant:
         value: "false"
     # Re-publish intercom + media_player states (workaround for stale HA entities after reconnect)
     - lambda: |-
-        id(intercom).publish_entity_states();
-        id(speaker_media_player).publish_state();
+        static bool published = false;
+        if (!published) {
+          published = true;
+          id(intercom).publish_entity_states();
+          id(speaker_media_player).publish_state();
+        }
     - if:
         condition:
           and:
@@ -474,7 +474,9 @@ intercom_api:
     - script.execute: update_status
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call

@@ -70,7 +70,7 @@ async def to_code(config):
     cv.Schema(
         {
             cv.GenerateID(): cv.use_id(EspAec),
-            cv.Required(CONF_MODE): cv.templatable(cv.enum(AEC_MODES, lower=True)),
+            cv.Required(CONF_MODE): cv.templatable(cv.string),
         }
     ),
 )
@@ -78,6 +78,6 @@ async def set_mode_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
     cg.add(var.set_parent(parent))
-    templ = await cg.templatable(config[CONF_MODE], args, int)
+    templ = await cg.templatable(config[CONF_MODE], args, cg.std_string)
     cg.add(var.set_mode(templ))
     return var

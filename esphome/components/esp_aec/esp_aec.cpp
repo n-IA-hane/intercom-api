@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include <cstring>
+#include <string>
 
 #include "esphome/core/log.h"
 
@@ -70,6 +71,19 @@ bool EspAec::reinit(aec_mode_t new_mode) {
            (int)this->mode_, this->cached_frame_size_,
            this->cached_frame_size_ * 1000 / this->sample_rate_);
   return true;
+}
+
+bool EspAec::reinit_by_name(const std::string &name) {
+  aec_mode_t mode;
+  if (name == "sr_low_cost") mode = AEC_MODE_SR_LOW_COST;
+  else if (name == "sr_high_perf") mode = AEC_MODE_SR_HIGH_PERF;
+  else if (name == "voip_low_cost") mode = static_cast<aec_mode_t>(3);
+  else if (name == "voip_high_perf") mode = static_cast<aec_mode_t>(4);
+  else {
+    ESP_LOGW(TAG, "Unknown AEC mode name: %s", name.c_str());
+    return false;
+  }
+  return this->reinit(mode);
 }
 
 void EspAec::process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size) {

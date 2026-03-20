@@ -33,7 +33,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2025.5.0
   platformio_options:
     board_build.flash_mode: dio
 
@@ -46,6 +45,9 @@ esp32:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
   mode: quad
@@ -136,6 +138,7 @@ speaker:
     id: audio_mixer
     output_speaker: hw_speaker
     num_channels: 1
+    task_stack_in_psram: true
     source_speakers:
       - id: media_speaker_mix
         timeout: 10s
@@ -151,14 +154,17 @@ speaker:
   - platform: resampler
     id: media_speaker
     output_speaker: media_speaker_mix
+    task_stack_in_psram: true
 
   - platform: resampler
     id: announcement_speaker
     output_speaker: announcement_speaker_mix
+    task_stack_in_psram: true
 
   - platform: resampler
     id: intercom_speaker
     output_speaker: intercom_speaker_mix
+    task_stack_in_psram: true
 
 # =============================================================================
 # Media Player
@@ -194,7 +200,9 @@ intercom_api:
         effect: "Calling"
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call

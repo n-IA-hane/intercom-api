@@ -78,7 +78,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2026.2.0
   on_boot:
     - priority: 600
       then:
@@ -189,9 +188,12 @@ wifi:
 api:
   on_client_connected:
     - lambda: |-
-        id(intercom).publish_entity_states();
-        // Force media_player to re-publish volume to HA (prevents stale slider)
-        id(speaker_media_player).publish_state();
+        static bool published = false;
+        if (!published) {
+          published = true;
+          id(intercom).publish_entity_states();
+          id(speaker_media_player).publish_state();
+        }
     - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
     - delay: 5s
@@ -601,7 +603,9 @@ intercom_api:
     - script.execute: draw_display
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call

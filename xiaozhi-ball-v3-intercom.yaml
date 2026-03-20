@@ -24,7 +24,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2024.12.0
   on_boot:
     priority: 600
     then:
@@ -224,7 +223,9 @@ intercom_api:
     # ESP-to-ESP bridge is handled automatically by HA detecting state change to "Outgoing"
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call

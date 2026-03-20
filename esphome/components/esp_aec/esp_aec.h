@@ -30,6 +30,9 @@ class EspAec : public Component, public AecProcessor {
   /// Destroy and recreate AEC with a new mode. Returns true on success.
   /// Caller must stop audio processing before calling this (frame size may change).
   bool reinit(aec_mode_t new_mode);
+  /// Reinit by mode name string (e.g. "sr_low_cost", "voip_high_perf").
+  /// Returns true on success. Unknown names are ignored (returns false).
+  bool reinit_by_name(const std::string &name);
   aec_mode_t get_mode() const { return this->mode_; }
 
   ~EspAec() override;
@@ -46,9 +49,9 @@ class EspAec : public Component, public AecProcessor {
 template<typename... Ts>
 class SetModeAction : public Action<Ts...>, public Parented<EspAec> {
  public:
-  TEMPLATABLE_VALUE(int, mode)
+  TEMPLATABLE_VALUE(std::string, mode)
   void play(const Ts &...x) override {
-    this->parent_->reinit(static_cast<aec_mode_t>(this->mode_.value(x...)));
+    this->parent_->reinit_by_name(this->mode_.value(x...));
   }
 };
 

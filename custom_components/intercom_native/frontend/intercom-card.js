@@ -749,7 +749,7 @@ class IntercomCard extends HTMLElement {
       for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
 
       this._playScheduled(float32);
-    } catch (err) {}
+    } catch (err) { console.debug("intercom: audio error", err); }
   }
 
   _playScheduled(float32) {
@@ -765,7 +765,7 @@ class IntercomCard extends HTMLElement {
       src.connect(this._gainNode);
       src.start(this._nextPlayTime);
       this._nextPlayTime += buffer.duration;
-    } catch (err) {}
+    } catch (err) { console.debug("intercom: audio error", err); }
   }
 
   _updateStats() {

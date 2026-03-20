@@ -26,7 +26,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2025.5.0
   platformio_options:
     board_build.flash_mode: dio
 
@@ -39,6 +38,9 @@ esp32:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
   mode: quad
@@ -52,7 +54,12 @@ preferences:
 # =============================================================================
 api:
   on_client_connected:
-    - lambda: 'id(intercom).publish_entity_states();'
+    - lambda: |-
+        static bool published = false;
+        if (!published) {
+          published = true;
+          id(intercom).publish_entity_states();
+        }
 
 ota:
   - platform: esphome
@@ -147,7 +154,9 @@ intercom_api:
         effect: "Calling"
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call
@@ -344,6 +353,30 @@ switch:
     on_turn_off:
       - speaker.mute_off: spk_component
       - script.execute: restore_led
+
+# =============================================================================
+# AEC Mode Select
+# =============================================================================
+select:
+  - platform: template
+    name: AEC Mode
+    id: aec_mode_select
+    icon: mdi:tune-vertical
+    options:
+      - "sr_low_cost"
+      - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "voip_high_perf"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - logger.log:
+          format: "Switching AEC mode to %s"
+          args: ['x.c_str()']
+      - esp_aec.set_mode:
+          id: aec_processor
+          mode: !lambda 'return x;'
 
 # =============================================================================
 # Numbers

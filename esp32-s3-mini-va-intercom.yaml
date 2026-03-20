@@ -28,7 +28,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2025.5.0
   platformio_options:
     board_build.flash_mode: dio
   on_boot:
@@ -56,7 +55,12 @@ psram:
 # =============================================================================
 api:
   on_client_connected:
-    - lambda: 'id(intercom).publish_entity_states();'
+    - lambda: |-
+        static bool published = false;
+        if (!published) {
+          published = true;
+          id(intercom).publish_entity_states();
+        }
   on_client_disconnected:
     - voice_assistant.stop:
 
@@ -298,7 +302,9 @@ intercom_api:
         blue: 0%
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call

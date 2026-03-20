@@ -57,6 +57,7 @@ CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 CONF_TASK_PRIORITY = "task_priority"
 CONF_TASK_CORE = "task_core"
 CONF_TASK_STACK_SIZE = "task_stack_size"
+CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
@@ -172,6 +173,7 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_CORRECT_DC_OFFSET, default=False): cv.boolean,
         cv.Optional(CONF_NUM_CHANNELS, default=1): cv.one_of(1, 2, int=True),
         cv.Optional(CONF_MIC_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
+        cv.Optional(CONF_TX_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
         cv.Optional(CONF_I2S_MODE, default="primary"): cv.one_of("primary", "secondary", lower=True),
         cv.Optional(CONF_USE_APLL, default=False): cv.boolean,
         cv.Optional(CONF_I2S_NUM, default=0): cv.int_range(min=0, max=2),
@@ -296,6 +298,9 @@ async def to_code(config):
 
     # Mic channel selection (for mono RX: which I2S slot to capture)
     cg.add(var.set_mic_channel_right(config[CONF_MIC_CHANNEL] == "right"))
+
+    # TX channel selection (for mono TX: which I2S slot to output)
+    cg.add(var.set_tx_slot_right(config[CONF_TX_CHANNEL] == "right"))
 
     # Slot bit width: 0 = auto (match bits_per_sample)
     sbw = config[CONF_SLOT_BIT_WIDTH]
