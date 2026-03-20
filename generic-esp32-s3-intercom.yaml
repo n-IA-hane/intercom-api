@@ -74,7 +74,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
+  - source: github://n-IA-hane/esphome-intercom@main
     components: [intercom_api, esp_aec]
 
 # =============================================================================

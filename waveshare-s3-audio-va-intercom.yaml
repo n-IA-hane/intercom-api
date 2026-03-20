@@ -140,7 +140,7 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
+  - source: github://n-IA-hane/esphome-intercom@main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
